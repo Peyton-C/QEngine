@@ -26,9 +26,9 @@ Emulate Engine OS inside QEMU
 |                         | SOC    | Signed FW | Arch  | 5.0.4 | 4.6.0 | 4.3.0 |
 |-------------------------|--------|-----------|-------|-------|-------|-------|
 | Denon DJ Prime 2        | RK3288 | N         | armv7 | ?     | N/A   | ?     |
-| Denon DJ Prime 4        | RK3288 | N         | armv7 | Y     | N/A   | Y     |
+| Denon DJ Prime 4        | RK3288 | N         | armv7 | ?     | N/A   | Y     |
 | Denon DJ Prime 4+       | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
-| Denon DJ Prime GO       | RK3288 | N         | armv7 | !     | N/A   | !     |
+| Denon DJ Prime GO       | RK3288 | N         | armv7 | ?     | N/A   | !     |
 | Denon DJ Prime GO+      | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC5000 Prime   | RK3288 | N         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC5000M Prime  | RK3288 | N         | armv7 | ?     | N/A   | ?     |
@@ -39,7 +39,7 @@ Emulate Engine OS inside QEMU
 | Numark Mixstream Pro    | RK3288 | N         | armv7 | ?     | N/A   | ?     |
 | Numark Mixstream Pro+   | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Numark Mixstream Pro GO | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
-| RANE SYSTEM ONE         | RK3588 | Y         | arm64 | ?     | Y     | N/A   |
+| RANE SYSTEM ONE         | RK3588 | Y         | arm64 | Y     | Y     | N/A   |
 
 | Denon DJ Prime 4 | RANE SYSTEM ONE |
 |------------------|-----------------|

@@ -15,11 +15,9 @@ exec qemu-system-aarch64 \
   -display egl-headless,rendernode=/dev/dri/renderD128 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
   -device ich9-intel-hda -device hda-duplex,audiodev=mac -audiodev coreaudio,id=mac \
-  -drive if=none,file=$BUILD_DIR/usb_test.img,format=raw,id=usbtest \
-  -device usb-storage,drive=usbtest,bus=xhci.0 \
   -kernel "$BUILD_DIR/vmlinuz-generic-arm64" \
   -initrd "$BUILD_DIR/initrd-generic-arm64" \
-  -drive if=none,file=$BUILD_DIR/rootfs_504.img,format=raw,id=hd \
+  -drive if=none,file=$BUILD_DIR/rootfs_out.img,format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file=$BUILD_DIR/data_disk.img,format=raw,id=data \
   -device virtio-blk-device,drive=data \

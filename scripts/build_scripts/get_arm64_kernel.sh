@@ -12,6 +12,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
+echo Getting Kernel...
+
 # Every module this project has needed and previously had to manually
 # decompress by hand at some point — see ENGINEOS.md's MIDI section and
 # BUILDING.md's Status section for where each group came from — plus the

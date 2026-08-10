@@ -1,6 +1,8 @@
 # QEngine - Engine OS Emulator
 Emulate Engine OS inside QEMU
 
+**NOTE:** Docs are currently **awful**, they will be better eventually. Basic docs for setting up arn64 emulation are [here.](scripts/build_scripts/BUILD_ARM64.md)
+
 ## Documentation
 - [BUILDING.md](docs/BUILDING.md) — building/assembling and booting an Engine OS image under QEMU
 - [ENGINEOS.md](docs/ENGINEOS.md) — Engine OS internals, product spoofing, known limitations

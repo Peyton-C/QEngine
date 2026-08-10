@@ -9,16 +9,16 @@ Emulate Engine OS inside QEMU
 ## Engine OS Support Matrix
 |                         | 5.0.4 | 4.6.0 | 4.3.0 |
 |-------------------------|-------|-------|-------|
-| Rootfs Extraction       | ?     | Y     | Y     |
-| Engine                  | ?     | ~     | Y     |
-| SoundSwitch             | ?     | ?     | N     |
-| Native Display          | ?     | Y     | N     |
-| QT VNC Display          | ?     | N     | Y     |
-| Fake Touch              | ?     | Y     | Y     |
-| Keyboard Navigation     | ?     | ?     | Y     |
-| Audio Playback          | ?     | ?     | N     |
-| MIDI                    | ?     | ?     | ~     |
-| External Media (USB/SD) | ?     | Y     | N     |
+| Rootfs Extraction       | Y     | Y     | Y     |
+| Engine                  | Y     | Y     | Y     |
+| SoundSwitch             | Y     | Y     | N     |
+| Native Display          | Y     | Y     | N     |
+| QT VNC Display          | N     | N     | Y     |
+| Fake Touch              | Y     | Y     | Y     |
+| Keyboard Navigation     | Y     | Y     | Y     |
+| Audio Playback          | N     | N     | N     |
+| MIDI                    | ~     | ?     | ~     |
+| External Media (USB/SD) | Y     | Y     | N     |
 
 ## Emulated Controllers
 |                         | SOC    | Signed FW | Arch  | 5.0.4 | 4.6.0 | 4.3.0 |
@@ -32,7 +32,6 @@ Emulate Engine OS inside QEMU
 | Denon DJ SC5000M Prime  | RK3288 | N         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC6000 Prime   | RK3288 | N         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC6000M Prime  | RK3288 | N         | armv7 | ?     | N/A   | ?     |
-| Denon DJ LC6000 Prime   | RK3288 | ?         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC Live 2      | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC Live 4      | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Numark Mixstream Pro    | RK3288 | N         | armv7 | ?     | N/A   | ?     |

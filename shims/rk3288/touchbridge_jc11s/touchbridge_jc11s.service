@@ -1,0 +1,16 @@
+[Unit]
+Description=JC11S QEMU tablet -> synthetic multitouch bridge
+Before=engine.service
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/root/touchbridge_jc11s /dev/input/event2 1280 800
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

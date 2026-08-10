@@ -8,8 +8,8 @@ and bringing the guest up.
 
 | Arch | SoC | Controllers | Status |
 |------|-----|-------------|--------|
-| armv7 (armhf) | RK3288 | Prime 2/4/4+/GO/GO+, SC5000(M), SC6000(M), LC6000, SC Live 2/4, Mixstream Pro/Pro+/Pro GO | Documented below |
-| arm64 (aarch64) | RK3588 | RANE SYSTEM ONE | Boots Engine with working on-screen display — see [arm64 / RK3588](#arm64--rk3588-rane-system-one) |
+| armv7 (armhf) | RK3288 | Prime 2/4/4+/GO/GO+, SC5000(M), SC6000(M), SC Live 2/4, Mixstream Pro/Pro+/Pro GO | Documented below (Engine 4.3.0 and earlier); Engine 5.0.4 blocked — see [Engine 5.0.4 on armv7](#engine-504-on-armv7-rk3288--in-progress-blocked) |
+| arm64 (aarch64) | RK3588 | RANE SYSTEM ONE | Boots Engine with working display, touch, and external media — see [arm64 / RK3588](#arm64--rk3588-rane-system-one) |
 
 Everything below (Docker `--platform linux/arm/v7`, `debian:bullseye` armhf
 packages, `qemu-system-arm`) is the armv7/RK3288 path. It won't carry over to
@@ -405,6 +405,70 @@ they didn't block boot in testing; revisit if something later needs them.)
 
 ### 4. QEMU launch
 
+**Recommended: a native arm64 host (e.g. Apple Silicon) via HVF.** Since the
+guest is aarch64, an aarch64 host can run it with hardware-assisted
+virtualization instead of TCG software emulation — a much bigger win than
+anything GPU-specific, because it speeds up *all* CPU-side execution
+(Engine's own C++/QML logic, the guest kernel, everything), not just
+rendering. See [build/run-system1.sh](../build/run-system1.sh):
+
+```bash
+#!/bin/bash
+exec qemu-system-aarch64 \
+  -machine virt,highmem=on -accel hvf -cpu host -m 8192 -smp 8 \
+  -device virtio-gpu-pci,edid=off,xres=1280,yres=800 \
+  -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
+  -kernel vmlinuz-generic-arm64 \
+  -initrd initrd-generic-arm64 \
+  -drive if=none,file=rootfs_out.img,format=raw,id=hd \
+  -device virtio-blk-device,drive=hd \
+  -drive if=none,file=data_disk.img,format=raw,id=data \
+  -device virtio-blk-device,drive=data \
+  -netdev user,id=net0,hostfwd=tcp::2224-:22 -device virtio-net-pci,netdev=net0 \
+  -vnc :1 \
+  -serial mon:stdio \
+  -append "root=UUID=<rootfs-ext-uuid> rw rootwait console=ttyAMA0"
+```
+
+No virgl needed to get a dramatic win here — Homebrew's macOS QEMU build has
+no virgl/GL-accelerated `virtio-gpu` support at all (`-display` only lists
+`none`/`curses`/`cocoa`/`dbus`, no `egl-headless`; no `virtio-gpu-gl-pci`
+device), so rendering still falls back to software (`llvmpipe`) same as
+without virgl on Linux. But since the CPU itself is no longer
+software-emulated, that software rendering runs at *native* speed instead
+of underneath a second layer of instruction translation — the difference
+is not subtle (interactive, "nearly realtime" by feel, vs. 15+ second
+input-to-response lag under plain TCG). `-cpu host` (not `-cpu max`, which
+is a TCG-oriented catch-all) passes through the actual host CPU under HVF.
+
+Moving hosts/QEMU builds resurfaces both gotchas already described in
+[Status](#status) below, worth checking first if things crash on a new
+host even though the exact same `rootfs_out.img` worked elsewhere:
+- **IRQ numbers in `/root/fake-dt/interrupts` drift with the real device
+  topology**, which can differ across QEMU builds/versions even with an
+  identical command line. Symptom: `Failed to set CPU affinity for IRQ
+  ttyS0 to CPU 4` (or similar) crash-looping `engine.service`. Fix: compare
+  against the real `/proc/interrupts`, remap to a currently-writable `Edge`
+  IRQ (see [shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)).
+- **Compressed kernel modules silently fail to load** if this rootfs's
+  `kmod` lacks `zstd` support (`modprobe --version` shows `-ZSTD`) — first
+  found blocking `nls_iso8859-1` (external media wouldn't mount), but hit
+  again moving to this Mac's QEMU/kernel pairing for `hid`/`hid-generic`/
+  `usbhid` (`lsmod | grep hid` empty, no `/dev/input/eventN` for the USB
+  keyboard/tablet at all despite `dmesg` showing them enumerate fine at the
+  USB level — `usbhid` never claimed them). Same fix each time: `zstd -d
+  foo.ko.zst -o foo.ko`, delete the `.zst`, `depmod -a`, `modprobe foo`.
+  Worth checking `lsmod`/the relevant `/dev` or `/proc` node any time a
+  module-backed feature doesn't work for no obvious reason.
+
+**Alternative: an x86_64 host via TCG, optionally with virgl.** Without
+native arm64 hardware, `-cpu max` (not a specific Cortex model — QEMU has
+no discrete `cortex-a76`/`cortex-a55` model to match RK3588's big.LITTLE
+cores; `max` exposes the broadest feature set TCG can emulate) is the
+fallback, and it's slow enough (15+ second input latency observed) that
+GPU offload via virgl is worth the extra setup even though it only
+addresses rendering, not the rest of TCG's overhead:
+
 ```bash
 #!/bin/bash
 exec qemu-system-aarch64 \
@@ -424,12 +488,8 @@ exec qemu-system-aarch64 \
   -append "root=UUID=<rootfs-ext-uuid> rw rootwait console=ttyAMA0"
 ```
 
-A few things that bit during bring-up, worth calling out directly:
+A few more things that bit during bring-up, worth calling out directly:
 
-- **`-cpu max`**, not a specific Cortex model — QEMU has no discrete
-  `cortex-a76`/`cortex-a55` model to match RK3588's big.LITTLE cores;
-  `max` exposes the broadest feature set TCG can emulate, which a modern
-  6.x-targeted kernel wants.
 - **`-smp 8` / `-m 8192`**, to roughly match a 2025/2026 8-core RK3588
   product rather than arbitrarily reusing the RK3288 lineup's 4-core/4GB
   numbers — not derived from a real System One teardown, just a sanity
@@ -559,7 +619,7 @@ preset defaults, EDisks hotplug handling for the attached virtio disks).
 
 Getting from "Engine execs" to "real Qt/QML startup" took two rounds of
 the same `dtshim`-style fix, both landing in
-[shims/dtshim/dtshim_rmz2.c](shims/dtshim/dtshim_rmz2.c) (cross-compiled
+[shims/rk3588/dtshim/dtshim_rmz2.c](../shims/rk3588/dtshim/dtshim_rmz2.c) (cross-compiled
 in a Debian 12 arm64 `podman`/`docker` container per
 [6.](#6-toolchain-for-cross-compiling-shims) above — `docker` itself
 needs a daemon that isn't always running/passwordless-startable; rootless
@@ -573,7 +633,7 @@ needs a daemon that isn't always running/passwordless-startable; rootless
    [1.](#1-extracting-kernel--initrd--devicetree-from-the-signed-fit) for
    where those values came from) to files under `/root/fake-dt/`. Fake
    files and the updated shim source live in
-   [shims/dtshim/fake-dt-rmz2/](shims/dtshim/fake-dt-rmz2/).
+   [shims/rk3588/dtshim/fake-dt-rmz2/](../shims/rk3588/dtshim/fake-dt-rmz2/).
 2. **Hardware IRQ-affinity crashes** — separately, Engine itself
    (compiled in, not a shell script) hard-throws
    (`std::runtime_error`, uncaught, aborts) if it can't find a
@@ -581,7 +641,7 @@ needs a daemon that isn't always running/passwordless-startable; rootless
    `dwc3`, `fe210000.sata`, `fea10000.dma-controller`, `ff0c0000.dwmmc`,
    `ff0f0000.dwmmc`, `ttyS0` — none of which exist under QEMU. Fixed by
    also remapping `/proc/interrupts` to a fake file
-   ([shims/dtshim/fake-dt-rmz2/interrupts](shims/dtshim/fake-dt-rmz2/interrupts))
+   ([shims/rk3588/dtshim/fake-dt-rmz2/interrupts](../shims/rk3588/dtshim/fake-dt-rmz2/interrupts))
    containing all six names, each reusing a real IRQ number already
    present in the guest — necessary because after finding each IRQ,
    Engine immediately writes its CPU affinity, which needs the number to
@@ -595,7 +655,7 @@ Deployed via an `engine.service` systemd drop-in
 `Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so` and
 `Environment=QT_QPA_PLATFORM=eglfs`) rather than editing the vendor
 `runengine`/`engine` scripts in place — see
-[shims/dtshim/fake-dt-rmz2/README.md](shims/dtshim/fake-dt-rmz2/README.md)
+[shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)
 for the exact deployment steps and a couple of file-format gotchas
 (`printf` vs. plain file copy for the product-code/serial-number values;
 `rotation`'s raw big-endian binary cell).
@@ -635,7 +695,7 @@ incompatibility. This explains why the failure was identical whether
 `SETCRTC` was legacy or hand-rolled atomic — the framebuffer itself was
 never valid for that plane, regardless of which ioctl path submitted it.
 
-The fix, in [shims/dtshim/drmatomic_rmz2.c](shims/dtshim/drmatomic_rmz2.c):
+The fix, in [shims/rk3588/dtshim/drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c):
 intercepts `DRM_IOCTL_MODE_ADDFB2` and rewrites `pixel_format` from
 `ARGB8888` to `XRGB8888` before it reaches the kernel, **and** separately
 replaces Qt's legacy `SETCRTC`/`PAGE_FLIP` calls with a real
@@ -708,7 +768,7 @@ VNC server. Here Engine uses `eglfs` (direct KMS/DRM scanout, no VNC QPA
 plugin at all — see [Qt6, and no VNC QPA plugin](ENGINEOS.md#qt6-and-no-vnc-qpa-plugin))
 and *QEMU* is the VNC server, already injecting real client clicks into
 the emulated `usb-tablet` as normal kernel evdev events. So there's no RFB
-protocol to parse at all — [shims/touchbridge_rmz2/touchbridge_rmz2.c](shims/touchbridge_rmz2/touchbridge_rmz2.c)
+protocol to parse at all — [shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c](../shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c)
 is a much smaller program that just reads `/dev/input/event2` directly and
 re-emits it as a synthetic multitouch device via `uinput`
 (`ABS_MT_SLOT`/`TRACKING_ID`/`POSITION_X`/`Y` protocol B + `BTN_TOUCH`,
@@ -720,7 +780,7 @@ startup rather than assuming QEMU's current `0..32767` — self-adjusting if
 that ever changes, not hardcoded.
 
 Deployed as a systemd service
-([shims/touchbridge_rmz2/touchbridge_rmz2.service](shims/touchbridge_rmz2/touchbridge_rmz2.service))
+([shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.service](../shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.service))
 ordered before `engine.service` (`Before=`/`WantedBy=multi-user.target` on
 the bridge; `After=touchbridge_rmz2.service` +
 `Requires=touchbridge_rmz2.service` added to `engine.service.d/override.conf`)
@@ -738,9 +798,24 @@ software rendering (`llvmpipe`) on top of QEMU's own software (TCG) aarch64
 emulation, not anything touch-specific, since the bridge itself is a
 trivial blocking read/write loop with no added latency of its own.
 
+**Performance: solved by running on native arm64 hardware instead of
+chasing GPU offload further.** The same `rootfs_out.img` — no shim changes,
+same touch bridge, same atomic-commit/pixel-format fixes — boots natively
+on Apple Silicon via HVF (see [4. QEMU launch](#4-qemu-launch)) and reaches
+the *actual* Engine collection browser (real demo tracks, deck UI, track
+detail views, all touch-navigable) at what the user described as "nearly
+realtime" — a different experience entirely from the multi-second
+input lag on TCG, virgl or not. This ended up mattering more than the
+virgl work above: virgl only ever addressed rendering, while HVF removes
+software emulation from *all* guest CPU execution. The two gotchas that
+resurfaced moving to this host (IRQ drift, compressed kernel modules
+silently failing under a `kmod` without zstd support) are documented in
+[4. QEMU launch](#4-qemu-launch) rather than repeated here — both are
+generic to "moved to a different QEMU build/host," not new bugs.
+
 Also worth noting for whoever picks this back up: the shim files above
 were pushed into the *running* guest live (`wget` from an HTTP server on
-the host, per [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)'s workflow)
+the host, per [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md)'s workflow)
 for fast iteration, not baked into `rootfs_out.img` on disk — and
 separately, `debugfs -w` was used at one point to inject files into that
 same image file *while QEMU still had it open* for the live boot test.
@@ -753,6 +828,277 @@ trusting it for a from-scratch boot, and prefer the live-guest-`wget`
 approach (or a clean shutdown first) over `debugfs -w` on an
 already-booted image going forward.
 
+### Engine 5.0.4
+
+The hypothesis going in: the base OS's own `VERSION_ID` (`/usr/lib/os-release`
+— `az04`, `5.0.14 (scarthgap)`) was already in the 5.x line even on the
+firmware packaged as "Engine 4.6.0", and InMusic was unlikely to maintain
+Engine against two different Qt major versions at once — so 5.0.4 (current
+latest, `SYSTEMONE-5.0.4-Update.img`) was expected to need little beyond
+what 4.6.0 already required. Confirmed on every count after extracting it
+with the same recipe as [1.](#1-extracting-kernel--initrd--devicetree-from-the-signed-fit)
+(same `rk3588-az04-rmz2` FIT description, signed with the same `rane-1`
+key): identical Qt **6.7.2** (`libqeglfs.so` present, still no `libqvnc.so`),
+identical `engine.service` (`Type=forking`, same `runengine`/`cleanup`
+scripts), and identical `/data`/`/factory` `PARTUUID`s
+(`d6a62570-...`/`f2a055c0-...`) — meaning the *existing* `data_disk.img`
+from the 4.6.0 setup is reusable as-is, no rebuild needed.
+
+Brought up with **zero shim changes**: the exact same
+`dtshim_rmz2.so`/`drmatomic.so`/`touchbridge_rmz2` binaries and
+`fake-dt-rmz2` files from the working 4.6.0 setup, copied unmodified into a
+fresh 5.0.4 rootfs. For a transplant this size (several files across
+`/root`, `/etc/systemd/system/`, `/usr/Engine/ScreenConfiguration/`),
+bulk file operations in a real Linux environment beat repeating
+`debugfs -w` one file at a time: a `--privileged` Docker container (Docker
+Desktop's Linux VM has real loop-device support) with both rootfs images
+bind-mounted, `losetup` + `mount` on each individually (mounting two loop
+devices in one `mount -o loop` invocation was unreliable — attach each
+explicitly with `losetup -f` first), then plain `cp -a`. Confirmed working
+after that: display renders (a visibly refreshed onboarding UI — different
+background/button layout from 4.6.0, but through the identical `eglfs` +
+atomic-commit-shim path), and touch works, confirmed directly by hand over
+a real VNC client.
+
+One more thing this surfaced: **the kernel-module gap (kmod lacking zstd,
+[4.](#4-qemu-launch)) is not a rootfs property and does not persist across
+a real reboot.** `/lib/modules/6.8.0-136-generic/` isn't present on either
+rootfs image on disk at all (confirmed by loop-mounting and checking
+directly) — it's provided fresh at boot time (almost certainly unpacked by
+`initrd-generic-arm64`, which both this and the 4.6.0 rootfs share
+unmodified), still zstd-compressed, every single boot. So the
+`nls_iso8859-1`/`hid`/`hid-generic`/`usbhid` decompress-and-`depmod` fix
+has to be re-run after *every* fresh VM boot — not a one-time fix baked
+into the image, regardless of which Engine version or host it's paired
+with. Worth fixing in the initrd itself at some point rather than
+repeating by hand each time; not yet done.
+
+New files: [build/run-system1-504.sh](../build/run-system1-504.sh) (host
+launch script, identical to `run-system1.sh` apart from paths/UUID/ports).
+The 5.0.4 rootfs/data-disk images themselves aren't committed (same reason
+`rootfs_out.img` isn't — large, regeneratable from the recipe above).
+
+### Audio playback: decompiling Engine.bin
+
+With display/touch/MIDI all working (see [ENGINEOS.md](ENGINEOS.md#arm64--rk3588-rane-system-one)),
+audio never plays — see
+[ENGINEOS.md#audio-playback-silent-failure-root-caused-via-decompilation](ENGINEOS.md#audio-playback-silent-failure-root-caused-via-decompilation)
+for the full symptom and root-cause chain. This section covers the two
+QEMU/toolchain-specific parts of that investigation: why the real onboard
+codec driver can't be reproduced here, and the Ghidra headless setup used
+to decompile the stripped `Engine.bin` to reach that conclusion.
+
+Migrated the whole VM off the Mac (`hvf`) onto a Radxa Dragon Q6A SBC
+(`kvm`) partway through this investigation — macOS's `usb-host` reliably
+kernel-panicked the host the moment QEMU touched the MC6000MK2 at the
+USB-audio-class level (AppleUSBAudio's driver binding never tears down
+cleanly; a known QEMU-on-macOS limitation, not fixable from this side).
+Linux's udev-based passthrough doesn't have that failure mode. Picked up
+along the way, general-purpose rather than RMZ2-specific: KVM + `-smp 8`
+at 4GB RAM (this box has 7.4GB total), `virtio-gpu-gl-pci` +
+`egl-headless,rendernode=/dev/dri/renderD128` for real virgl offload
+through the Adreno GPU, and `-audiodev pipewire` feeding an emulated
+`ich9-intel-hda`+`hda-duplex` card out to the host's PipeWire sink. See
+[build/run-system1-504-radxa.sh](../build/run-system1-504-radxa.sh).
+
+#### The `az04-codec` driver exists, and is unusable here
+
+The real devicetree (`build/systemone_linux_debive_tree.dtb`, extracted
+per [1.](#1-extracting-kernel--initrd--devicetree-from-the-signed-fit))
+defines a `simple-audio-card` named literally `"RMZ2"`, backed by an
+`az04-codec` node (`compatible = "inmusic,az04-codec"`,
+`inmusic,capture-channels`/`playback-channels = <0x06>` — a real
+6-channel DJ-mixer codec, master/booth/headphone). Tempting hypothesis:
+Engine expects an ALSA card named `RMZ2` specifically. Tested directly —
+`rmmod snd_hda_intel && modprobe snd_hda_intel id=RMZ2` renames the
+emulated card's ALSA id, confirmed via `/proc/asound/cards` — and it made
+no difference; Engine still logged the failure with an empty device
+name, not `"RMZ2"`. (Decompilation later explained why: the real gate is
+a C++ `dynamic_cast` type check, not a name lookup — see ENGINEOS.md.)
+
+The matching kernel module does genuinely exist. Binwalk-extracting
+`SYSTEMONE-4.6.0-Update.img` recovers the real ~867MB vendor rootfs
+(alongside two smaller boot-slot partitions) as a plain ext2/ext4 image —
+readable directly with `debugfs -R` without mounting or root:
+
+```sh
+debugfs -R 'ls -l /lib/modules' vendor_rootfs.img
+#   6.12.55-imb-2025-10-24-rt13
+debugfs -R 'cat /lib/modules/6.12.55-imb-2025-10-24-rt13/modules.dep' vendor_rootfs.img | grep az04
+#   kernel/sound/soc/codecs/snd-soc-inmusic-az04.ko:
+debugfs -R 'dump /lib/modules/.../snd-soc-inmusic-az04.ko /tmp/az04.ko' vendor_rootfs.img
+strings /tmp/az04.ko | grep -iE 'vermagic|description|author|alias'
+#   description=inMusic AZ04 ASoC codec driver
+#   author=John Keeping <jkeeping@inmusicbrands.com>
+#   alias=of:N*T*Cinmusic,az04-codecC*
+#   vermagic=6.12.55-imb-2025-10-24-rt13 SMP preempt mod_unload aarch64
+```
+
+Confirmed real, confirmed matching the devicetree's `compatible` string
+via its OF alias — and confirmed unusable here for two independent,
+structural reasons, not one:
+
+1. **Kernel ABI.** `vermagic` pins it to the vendor's exact
+   `6.12.55-imb-2025-10-24-rt13` **PREEMPT_RT** build. It won't load into
+   the generic Ubuntu kernel QEMU boots (see
+   [2.](#2-a-generic-kernel-that-actually-boots-under-qemu)) without
+   `insmod --force`, and RT kernels change core locking/scheduling
+   structures enough that a forced load is more likely to oops than
+   work — not attempted, given point 2 makes it moot regardless.
+2. **No hardware for it to bind to, even if loaded.** The codec driver is
+   only half of the `simple-audio-card` DAI link; the other half
+   (`sound-dai` pointing at the SoC's I2S/TDM controller) is real RK3588
+   silicon that QEMU's `virt` machine doesn't emulate at all. The card
+   can never finish probing regardless of whether the codec side loads.
+
+Same category of wall as [Why the extracted kernel can't be used to boot
+QEMU](#why-the-extracted-kernel-cant-be-used-to-boot-qemu) above — a
+genuine "QEMU doesn't emulate this SoC's IP block" gap, not something a
+`dtshim`-style spoof can paper over the way product-identity/DRM were.
+
+#### Ghidra headless: `linux_arm_64` has no decompiler, `.py` postscripts need PyGhidra
+
+Reaching the `airHost::updateAudioDeviceChanged` finding in ENGINEOS.md
+required decompiling the stripped `Engine.bin` (`ELF ... aarch64 ...
+stripped`, `.dynsym` present, no `.symtab`). Two unrelated version/platform
+gotchas hit along the way, both worth recording since they'll recur for
+any future decompilation work on this project's arm64 targets:
+
+1. **The Radxa (Linux/aarch64) host can't run Ghidra's decompiler at
+   all.** `ghidra_12.1.2_PUBLIC/Ghidra/Features/Decompiler/os/` ships
+   prebuilt native `decompile` binaries for `linux_x86_64`, `mac_arm_64`,
+   `mac_x86_64`, `win_x86_64` — **not** `linux_arm_64`. Every
+   `decompileFunction()` call fails with `os/linux_arm_64/decompile does
+   not exist`, even after a full, successful auto-analysis pass (the
+   string/xref search parts are pure Java and work fine; only actual
+   decompilation needs the missing native). No native build available
+   without compiling Ghidra's C++ decompiler from source. Fix: run the
+   same analysis on the Mac instead (`mac_arm_64` is bundled) — copy
+   `Engine.bin` over (`scp`), reuse the same script.
+2. **Ghidra 12.1.2 dropped bundled Jython for `.py` postscripts.**
+   `analyzeHeadless ... -postScript foo.py` now fails with `Ghidra was
+   not started with PyGhidra. Python is not available`, even though the
+   expensive auto-analysis phase completes and saves normally — only the
+   postscript step is affected. Fix: `pip install pyghidra` (needs a
+   venv on macOS due to PEP 668 — Homebrew's Python blocks unmanaged
+   global installs) and call `pyghidra.open_program(binary_path,
+   project_location=..., project_name=..., analyze=False,
+   nested_project_location=False)` directly instead of going through
+   `analyzeHeadless -postScript` — `analyze=False` reuses the
+   already-saved, already-analyzed project instead of repeating the ~5.5
+   minute auto-analysis pass. `nested_project_location=False` matters
+   because `analyzeHeadless`-created projects are flat
+   (`project/Name.gpr`), not nested (`project/Name/Name.gpr`, PyGhidra's
+   own default layout) — get this wrong and it silently starts a fresh
+   project instead of reopening the analyzed one. The old
+   `FlatProgramAPI` calls (`getReferencesTo`, `getFunctionContaining`,
+   `DecompInterface`) are otherwise unchanged from classic Jython
+   scripting.
+
+## Engine 5.0.4 on armv7 (RK3288) — in progress, blocked
+
+Hypothesis going in: since RANE SYSTEM ONE's 4.6.0 firmware already shipped
+a `5.0.14 (scarthgap)` base OS, and InMusic was unlikely to maintain Engine
+against two different Qt majors at once, the *entire* product line —
+including the older armv7/RK3288 controllers, not just arm64 — was likely
+already on Qt 6/`eglfs` by the time of Engine 5.0.4. Confirmed: extracting
+`PRIMEGOPLUS-5.0.4-Update.img` (signed, `denon-1` key — the first
+signed-**armv7** image this project has extracted, vs. the earlier
+unsigned Prime Go images and RANE's signed **arm64** image) with the same
+binwalk recipe shows Qt **6.7.2**, `libqeglfs.so` present, no `libqvnc.so`
+— identical finding to the arm64 side, just on RK3288. This single FIT
+image/rootfs covers four device identities at once
+(`rk3288-az01-jc11s`/Prime 4+, `rk3288-az05-jp11s`/Prime GO+,
+`rk3288-az05-jp20`, `rk3288-az05-jp21`) — confirmed by spoofing the
+product code as `JC11S` (Prime 4+) via the same `inmusic,product-code`
+devicetree-property mechanism used throughout this doc, and getting a
+fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
+
+**New shims** (`shims/rk3288/dtshim/dtshim_jc11s.c`,
+`shims/rk3288/drmatomic_jc11s/`, `shims/rk3288/touchbridge_jc11s/`):
+`drmatomic_rmz2.c` and `touchbridge_rmz2.c` from the arm64/RMZ2 work
+recompile for armhf **completely unmodified** and work identically —
+neither depends on CPU architecture at all, only on the Linux DRM/uinput
+kernel UAPIs, which use fixed-width types specifically so 32- and 64-bit
+callers are both safe. Only `dtshim_jc11s.c` needed real changes: a fresh
+file (not a port of the old `shims/rk3288/dtshim/dtshim.c`, which carries
+Qt5-era EGL/GBM interception hacks already known to break Qt6's own
+GBM handling — see the arm64 section above) that keeps RK3288's real
+devicetree paths (product-code, serial-number, rotation, `/dev/mem`,
+reused unchanged from the old file, since the underlying hardware layout
+doesn't change between Engine versions) plus a `/proc/interrupts` remap
+carried over from the RMZ2 shim, needed here too.
+
+**Two familiar gotchas resurfaced** immediately on first boot, both
+already documented above, just with RK3288-specific specifics:
+- `overlay.ko.zst` (not `nls_iso8859-1`/`hid` this time) hit the same
+  kmod-without-zstd gap, breaking the `/etc` and `/var` overlayfs mounts
+  entirely (`az0x-data-mkfs`/`etc.mount`/`var.mount` all fail, dropping to
+  emergency mode) until manually decompressed each boot.
+- Reusing the existing `emmc.img` for `/data` (its `PARTUUID`,
+  `931ad49d-ad59-0849-833a-9bf00af5b60e`, matches this rootfs's
+  `az0x-data-mkfs.service` exactly, so no new disk image was needed) hit
+  filesystem inconsistencies from that image's long history across this
+  project — `az0x-data-mkfs` runs `e2fsck` first and treats "errors
+  corrected" as a hard failure rather than success, so the *first* boot
+  after reusing an old `emmc.img` needs `systemctl restart
+  az0x-data-mkfs.service` by hand once e2fsck has already fixed things;
+  clean on every boot after that.
+
+**New gotcha, specific to this device/OS combination**: `runengine`
+auto-**powers off the whole VM** if the `Engine` binary ever exits with
+code 0 without writing an expected "quit reason" marker — a real
+production safety behavior (assume a silent clean exit means something's
+badly wrong, not worth staying up in a broken state), but it means any
+investigation here races against an automatic shutdown a few seconds after
+Engine's first launch. Worked around with `systemctl mask engine.service`
+before letting boot continue, then launching `/usr/Engine/Engine` by hand
+from a shell with the same env vars `engine.service.d/override.conf`
+would've set — the poweroff logic lives in the wrapper script, not
+`engine.service` itself, so this sidesteps it entirely for interactive
+debugging.
+
+**Root cause, found via a cross-compiled `strace` (Debian bullseye ships
+one for armhf directly — `apt-get install strace`, no static-build dance
+needed unlike the earlier aarch64 case) tracing the manually-launched
+binary**: `Engine` exits via a clean `exit_group(0)` immediately after
+`Setting QT_QPA_EGLFS_KMS_CONFIG to "/tmp/ScreenConfig.json"` — no
+crash, no printed error, nothing Qt-level (never gets far enough to hit
+`QT_DEBUG_PLUGINS=1`/`QT_LOGGING_RULES=*=true` output at all). Two
+separate things happen in that window:
+1. `access("/usr/lib/qt6/plugins/egldeviceintegrations/libqeglfs-mali-integration.so", F_OK)`
+   — a **hardcoded, and wrong even for real hardware**, path: the actual
+   EGL device integration plugins on this rootfs live at
+   `/usr/lib/plugins/egldeviceintegrations/` (`libqeglfs-kms-integration.so`,
+   `libqeglfs-emu-integration.so`) with no `qt6` path segment at all,
+   matching where `platforms/libqeglfs.so` also lives. Creating the
+   missing directory and placing a copy of the real KMS integration `.so`
+   at the expected (wrong) path makes this specific check pass
+   (`access()` now returns `0`) — confirmed via a second `strace` run —
+   but:
+2. **Independent of that check's result**, `Engine` unconditionally opens
+   `/`, `/sys`, `/sys/devices`, `/sys/devices/platform`, lists the real
+   directory entries via `getdents64`, and exits right after — with or
+   without the Mali file present. No matching device name turned up as a
+   plain string in the binary (checked for RK3288's known real GPU
+   devicetree address, `ffa30000.gpu`, among other patterns — not found),
+   so this is likely walking each platform device's own attributes
+   (driver binding, `modalias`, etc.) at runtime rather than checking a
+   fixed name, which `strings` can't reveal.
+
+**Not yet resolved.** Unlike every fix earlier in this doc, this one isn't
+a plain file `dtshim` can redirect via `open`/`fopen` — `/sys/devices/platform`
+is a real, kernel-populated directory (not a regular file), so faking an
+entry in it means intercepting `getdents64()` itself and fabricating a
+directory entry in the returned buffer, then potentially building out a
+fake sysfs subtree underneath it if `Engine` drills further into whatever
+device it's trying to find. Meaningfully more invasive than anything else
+in this project so far. Deliberately stopped here rather than build that
+out speculatively — worth attempting if this device/version combination
+becomes a priority, but the diagnosis above (masked `engine.service` +
+manual launch + cross-compiled `strace`) is the reusable part regardless
+of who picks it up next.
+
 ## See also
 - [ENGINEOS.md](ENGINEOS.md) — Engine OS internals, product spoofing, known limitations
-- [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — driving a VM on a remote build host
+- [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md) — driving a VM on a remote build host

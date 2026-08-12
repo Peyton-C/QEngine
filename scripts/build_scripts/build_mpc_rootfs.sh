@@ -1,0 +1,246 @@
+#!/bin/bash
+# Automates extraction and modifcation of a stock Akai MPC rootfs for QEngine.
+# The armv7/RK3288 sibling of build_arm64_rootfs.sh; MPC needs far less doing to
+# it than Engine does, because it drives KMS directly and links no Mali/EGL.
+#
+# Steps:
+#   1. Extract the rootfs partition out of the firmware image with binwalk 3.
+#   2. Grow the image and its filesystem to a runtime-usable size.
+#   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
+#   4. Build touchbridge for armhf (the shared source under shims/rk3588 is
+#      architecture-independent — see the build step below).
+#   5. Copy it into /root and wire touchbridge_mpc.service ahead of acvs.service.
+#   6. Blank the root password for passwordless serial-console login, and
+#      disable the tty1 getty so stray keystrokes can't reach a hidden root
+#      shell behind MPC's fullscreen display.
+#
+# Usage: build_mpc_rootfs.sh [--firmware <path>] [--out <path>]
+#                               [--size <bytes>] [--force]
+#   --firmware  MPC firmware .img to extract from.
+#   --out       Output rootfs image path. Default: build/rootfs_out.img
+#   --size      Final image size in bytes. Default: 4294967296 (4GiB)
+#   --force     Overwrite --out if it already exists.
+#
+# Requires: binwalk (3.x), qemu-img, docker.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SHIMS_DIR="$REPO_ROOT/shims"
+
+OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
+SIZE=4294967296
+FORCE=0
+# Defaulted so that omitting --firmware reaches the check below instead of
+# dying with `FIRMWARE_IMG: unbound variable` under `set -u`.
+FIRMWARE_IMG=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --firmware) FIRMWARE_IMG="$2"; shift 2 ;;
+        --out) OUT_PATH="$2"; shift 2 ;;
+        --size) SIZE="$2"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ ! -f "$FIRMWARE_IMG" ]; then
+    echo "ERROR: Valid firmware image required: $FIRMWARE_IMG" >&2
+    exit 1
+fi
+
+if [ -e "$OUT_PATH" ] && [ "$FORCE" -ne 1 ]; then
+    echo "ERROR: $OUT_PATH already exists — refusing to overwrite (pass --force to replace it)." >&2
+    exit 1
+fi
+
+for bin in binwalk qemu-img docker file; do
+    command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: '$bin' is required but not found on PATH." >&2; exit 1; }
+done
+
+OUT_DIR="$(cd "$(dirname "$OUT_PATH")" && pwd)"
+OUT_NAME="$(basename "$OUT_PATH")"
+mkdir -p "$OUT_DIR"
+
+# Pin the host-architecture containers explicitly. Docker caches images under a
+# bare tag regardless of the platform they were pulled for, so once anything has
+# pulled debian:bookworm-slim for arm64 (this script's own shim container does,
+# and so does the documented binfmt check), a later `docker run` with no
+# --platform silently reuses the arm64 image and runs emulated. That made the
+# privileged container's architecture depend on pull order rather than on intent.
+case "$(uname -m)" in
+    x86_64|amd64)   HOST_PLATFORM="linux/amd64" ;;
+    aarch64|arm64)  HOST_PLATFORM="linux/arm64" ;;
+    *)              HOST_PLATFORM="" ;;
+esac
+
+### 1. Extract the rootfs partition with binwalk ############################
+
+EXTRACT_DIR="$(mktemp -d /tmp/build-mpc-rootfs-extract.XXXXXX)"
+trap 'rm -rf "$EXTRACT_DIR"' EXIT
+
+echo "--- extracting $FIRMWARE_IMG with binwalk (this scans the whole image, ~10s+) ---"
+binwalk -e -C "$EXTRACT_DIR" "$FIRMWARE_IMG"
+
+# binwalk 3 signature-scans rather than parsing the firmware container
+# format, so it finds every embedded ext2/3/4 filesystem — the real rootfs
+# (~830MB) plus two much smaller redundant boot-slot partitions. Identify
+# the rootfs by picking the largest ext2/3/4 image found, rather than
+# hardcoding an offset that's specific to this one firmware build.
+BEST_CANDIDATE=""
+BEST_SIZE=0
+while IFS= read -r -d '' f; do
+    if file "$f" | grep -q 'ext[234] filesystem'; then
+        f_size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+        if [ "$f_size" -gt "$BEST_SIZE" ]; then
+            BEST_CANDIDATE="$f"
+            BEST_SIZE="$f_size"
+        fi
+    fi
+done < <(find "$EXTRACT_DIR" -type f -print0)
+
+if [ -z "$BEST_CANDIDATE" ]; then
+    echo "ERROR: no ext2/3/4 filesystem image found in binwalk's extraction output." >&2
+    exit 1
+fi
+
+echo "--- found rootfs candidate: $BEST_CANDIDATE ($((BEST_SIZE / 1024 / 1024)) MiB) ---"
+cp "$BEST_CANDIDATE" "$OUT_PATH"
+
+### 2. Grow the image and filesystem #########################################
+
+echo "--- resizing image to $SIZE bytes ---"
+qemu-img resize -f raw "$OUT_PATH" "$SIZE"
+
+### 2b. Build the touch bridge ###############################################
+# touchbridge is .gitignored, so a fresh clone has sources only — building it
+# here is what makes the install step below work rather than depending on
+# artifacts a previous session happened to leave in the working tree.
+#
+# The source lives under shims/rk3588 but is architecture-independent: it only
+# uses the evdev/uinput UAPIs, which are fixed-width, so it compiles for armhf
+# unmodified. debian:bookworm for glibc 2.36, comfortably older than the guest's
+# — see docs/BUILDING.md's "Toolchain for cross-compiling shims".
+echo "--- building the touch bridge from source ---"
+docker run --rm --platform linux/arm/v7 \
+    -v "$SHIMS_DIR:/shims" \
+    debian:bookworm bash -c '
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
+
+        gcc -O2 -Wall \
+            -o /shims/rk3288/touchbridge_mpc/touchbridge_mpc \
+               /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
+    '
+
+[ -s "$SHIMS_DIR/rk3288/touchbridge_mpc/touchbridge_mpc" ] || {
+    echo "ERROR: touch bridge build produced no binary" >&2; exit 1; }
+
+### 3-5. e2fsck/resize2fs + touch bridge + root password, via a
+### privileged container with real loop-device support #######################
+
+INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX.sh)"
+trap 'rm -rf "$EXTRACT_DIR"; rm -f "$INNER_SCRIPT"' EXIT
+
+cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
+# NOTE: this container intentionally runs the *host* architecture, not armhf —
+# e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
+# So it must never be the source of anything that ends up inside the guest
+# rootfs; the one such file, the touch bridge, is built in the armhf container
+# above instead.
+
+IMG="/out/$OUT_NAME"
+
+echo "--- e2fsck (required before resize2fs) ---"
+set +e
+e2fsck -f -y "$IMG"
+FSCK_RC=$?
+set -e
+# 0 = clean, 1/2 = errors found and corrected — all fine to proceed from.
+# Anything higher means e2fsck couldn't fix it.
+if [ "$FSCK_RC" -gt 2 ]; then
+    echo "ERROR: e2fsck failed with exit code $FSCK_RC" >&2
+    exit 1
+fi
+
+echo "--- resize2fs ---"
+resize2fs "$IMG"
+
+echo "--- mounting via loop device ---"
+LOOPDEV="$(losetup -f)"
+losetup "$LOOPDEV" "$IMG"
+mkdir -p /mnt/rootfs
+# extents/64bit are ext4 features even though `file` labels this ext2
+# (no journal) — mount as ext4 so the kernel driver understands them.
+mount -t ext4 "$LOOPDEV" /mnt/rootfs
+cleanup() { umount /mnt/rootfs || true; losetup -d "$LOOPDEV" || true; }
+trap cleanup EXIT
+
+echo "--- blanking root password for serial-console login ---"
+sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
+
+echo "--- installing the touch bridge ---"
+# QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
+# so no USB controller), and the virtio tablet that replaces them presents as an
+# absolute *mouse*. MPC only responds to a real touchscreen, so the bridge
+# re-emits that pointer as a uinput multitouch device. It must start before
+# acvs.service: MPC enumerates input once, at its own startup.
+cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc /mnt/rootfs/root/touchbridge_mpc
+chmod 755 /mnt/rootfs/root/touchbridge_mpc
+cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
+ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
+
+echo "--- disabling the tty1 getty (MPC's display) ---"
+# MPC renders fullscreen via KMS on the same VT the console getty lives on, and
+# the getty keeps reading the keyboard underneath it, so every keystroke goes to
+# both MPC and a root login shell you cannot see.
+#
+# Removing the enablement symlink disables it; masking getty@tty1 and
+# autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
+# allocation) stops anything bringing it back. The *serial* getty is left alone
+# — serial-getty@ttyAMA0 is a different template and remains the way in on
+# -serial stdio.
+rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
+
+umount /mnt/rootfs
+losetup -d "$LOOPDEV"
+trap - EXIT
+
+echo "--- final consistency check ---"
+e2fsck -f -y "$IMG" || true
+
+if [ ! -s "$IMG" ]; then
+    echo "ERROR: output image missing or empty — something failed silently above." >&2
+    exit 1
+fi
+DOCKER_SCRIPT
+
+echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
+docker run --rm --privileged \
+    ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
+    -e OUT_NAME="$OUT_NAME" \
+    -v "$OUT_DIR:/out" \
+    -v "$SHIMS_DIR:/shims:ro" \
+    -v "$INNER_SCRIPT:/inner.sh:ro" \
+    debian:bookworm-slim bash /inner.sh
+
+if [ ! -s "$OUT_PATH" ]; then
+    echo "FAILED: expected output file is missing from $OUT_PATH." >&2
+    exit 1
+fi
+
+echo ""
+echo "Built: $OUT_PATH"
+echo ""
+file "$OUT_PATH"
+echo ""
+echo "Still needed to boot: kernel+initrd (get_armv7_kernel.sh) and an"
+echo "/data disk (make_emmc_disk.sh) — see BUILD_MPC.md."

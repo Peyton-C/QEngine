@@ -1,0 +1,16 @@
+[Unit]
+Description=MPC QEMU tablet -> synthetic multitouch bridge
+Before=acvs.service
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/root/touchbridge_mpc
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

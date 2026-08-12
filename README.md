@@ -9,18 +9,18 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 - [BLOCKING_TELEMETRY.md](docs/BLOCKING_TELEMETRY.md) — stopping Engine's crash/analytics reporting from reaching InMusic's real Sentry project
 
 ## Engine OS Support Matrix
-|                         | 5.0.4 | 4.6.0 | 4.3.0 |
-|-------------------------|-------|-------|-------|
-| Rootfs Extraction       | Y     | Y     | Y     |
-| Engine                  | Y     | Y     | Y     |
-| SoundSwitch             | Y     | Y     | N     |
-| Native Display          | Y     | Y     | N     |
-| QT VNC Display          | N     | N     | Y     |
-| Fake Touch              | Y     | Y     | Y     |
-| Keyboard Navigation     | Y     | Y     | Y     |
-| Audio Playback          | Y     | N     | N     |
-| MIDI                    | Y     | ?     | ~     |
-| External Media (USB/SD) | Y     | Y     | N     |
+|                         | 5.0.4 (arm64) | 5.0.4 (armv7) | 4.6.0 | 4.3.0 |
+|-------------------------|---------------|---------------|-------|-------|
+| Rootfs Extraction       | Y             | Y             | Y     | Y     |
+| Engine                  | Y             | ?             | Y     | Y     |
+| SoundSwitch             | Y             | ?             | Y     | N     |
+| Native Display          | Y             | ?             | Y     | N     |
+| QT VNC Display          | N             | ?             | N     | Y     |
+| Fake Touch              | Y             | ?             | Y     | Y     |
+| Keyboard Navigation     | Y             | ?             | Y     | Y     |
+| Audio Playback          | Y             | ?             | Y     | N     |
+| MIDI                    | Y             | ?             | Y     | ~     |
+| External Media (USB/SD) | Y             | ?             | Y     | N     |
 
 ## Emulated Controllers
 |                         | SOC    | Signed FW | Arch  | 5.0.4 | 4.6.0 | 4.3.0 |

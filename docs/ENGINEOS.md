@@ -259,6 +259,23 @@ surface. Two non-obvious requirements:
   made Settings > About/Update report `Controller Version: 1.0.0.39`
   (`0x27` = 39), so `1.0.0.27` encodes as `01 00 00 1B`.
 
+  The version is release-specific — 4.5.0 ships `1.0.0.26`, 5.0.4 ships
+  `1.0.0.27` — so `midisurface_rmz2` reads it from that `firmware.json` at
+  startup rather than carrying it as a constant. A build-time pin is an
+  update-loop trigger on the first rootfs built from a different
+  `*-Update.img`; the runtime read also survives an Engine update applied
+  inside the guest. Note that `/usr/Engine/Firmware` holds firmware for the
+  entire product family the release supports (~20 directories: `JC11
+  Controller`, `JP08 Motor`, `NH10 Controller`, ...), so the product directory
+  has to be named outright — there is nothing to infer from what is present.
+  Each `firmware.json` does carry a `"deviceToFlash"` (`Rane SYSTEM ONE`) if a
+  product-agnostic lookup is ever wanted. Anything unreadable, unparseable, or
+  carrying a field above 127 — which a MIDI data byte cannot express, so it
+  means the format is not what is assumed here — warns loudly and falls back
+  to the compiled-in `1.0.0.27`. For testing the response *shape* rather than
+  its version, `MIDISURFACE_ID_RESPONSE` still overrides the whole reply as raw
+  hex and skips the file entirely.
+
 Engine also needs the client to report a card number;
 `snd_seq_client_info_get_card()` returns -1 for any userspace client, which
 Engine rejects with `client id: N - card number unavailable`. The alsashim

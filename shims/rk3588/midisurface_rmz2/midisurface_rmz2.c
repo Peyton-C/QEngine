@@ -109,10 +109,68 @@ static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
  * *decimal*. That was pinned down empirically: sending 01 00 00 27 made
  * Engine's Settings > About/Update screen report "Controller Version:
  * 1.0.0.39" — 0x27 = 39 — so the bytes below encode 1.0.0.27 as 01 00 00 1B,
- * matching firmware.json exactly and leaving the unit alone. */
+ * matching firmware.json exactly and leaving the unit alone.
+ *
+ * Those four bytes are not hardcoded at runtime, though: since the number we
+ * must echo is whatever the rootfs we are running inside ships, we read it
+ * from firmware.json at startup (see apply_rootfs_fw_version) and patch it in.
+ * A version pinned at build time would silently become an update-loop trigger
+ * the day a rootfs is built from a different *-Update.img; reading it in the
+ * guest also survives an Engine update applied inside the guest. The literal
+ * below is the fallback for when the file cannot be read or parsed. */
 static const unsigned char ID_RESPONSE_DEFAULT[] = {
     0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27,
     0x00, 0x00, 0x01, 0x00, 0x00, 0x1B, 0x7F, 0xF7};
+
+/* Offset of the four software-revision bytes within the reply above. */
+#define ID_RESPONSE_REV_OFFSET 11
+
+/* Where the shipped controller firmware version lives in the rootfs.
+ *
+ * Spelled out rather than globbed for the product: /usr/Engine/Firmware holds
+ * firmware for the whole product family the release supports, roughly twenty
+ * directories (JC11 Controller, JP08 Motor, NH10 Controller, ...), so there is
+ * nothing to infer from what is present — only the product's own name selects
+ * the right one. This program is RMZ2-specific throughout anyway (deck
+ * channels, note numbers, product id 0x27), so a path that pretended otherwise
+ * would buy nothing. Each directory's firmware.json also carries a
+ * "deviceToFlash" ("Rane SYSTEM ONE" here) if a product-agnostic lookup is
+ * ever wanted. */
+#define FW_JSON_PATH "/usr/Engine/Firmware/RMZ2 Controller/firmware.json"
+
+/* Pull "version": "1.0.0.27" out of firmware.json as four bytes. Scraped with
+ * strstr rather than parsed as JSON: one flat string field does not justify a
+ * parser, and anything the scrape gets wrong fails the checks below rather
+ * than producing a plausible-but-wrong version. */
+static int read_fw_version(const char *path, unsigned char out[4]) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    const char *key = strstr(buf, "\"version\"");
+    if (!key) return -1;
+    const char *colon = strchr(key + 9, ':');
+    if (!colon) return -1;
+    const char *val = strchr(colon, '"');
+    if (!val) return -1;
+
+    unsigned fields[4];
+    if (sscanf(val + 1, "%u.%u.%u.%u", &fields[0], &fields[1], &fields[2],
+               &fields[3]) != 4)
+        return -1;
+    for (int i = 0; i < 4; i++) {
+        /* Each field travels as a single MIDI data byte, so >127 cannot be
+         * expressed at all. That means the file is not in the form assumed
+         * here, and truncating would report exactly the kind of mismatch this
+         * whole mechanism exists to avoid. */
+        if (fields[i] > 0x7F) return -1;
+        out[i] = (unsigned char)fields[i];
+    }
+    return 0;
+}
 
 /* Overridable via MIDISURFACE_ID_RESPONSE (space-separated hex), since the
  * exact placement of the revision field inside the reply is inferred rather
@@ -120,6 +178,28 @@ static const unsigned char ID_RESPONSE_DEFAULT[] = {
  * cycle is worth the few lines. */
 static unsigned char id_response[64];
 static size_t id_response_len = 0;
+
+/* Patch the revision bytes of id_response with the rootfs's own firmware
+ * version, leaving the compiled-in default in place if it cannot be read. */
+static void apply_rootfs_fw_version(void) {
+    unsigned char rev[4];
+    if (read_fw_version(FW_JSON_PATH, rev) == 0) {
+        memcpy(id_response + ID_RESPONSE_REV_OFFSET, rev, sizeof(rev));
+        printf("reporting controller firmware %u.%u.%u.%u (from %s)\n",
+               rev[0], rev[1], rev[2], rev[3], FW_JSON_PATH);
+        return;
+    }
+
+    /* Loud, and on stderr: falling back is not a graceful degradation. The
+     * built-in version is only right for the release it was taken from, and
+     * being wrong is what puts Engine on the un-completable update screen. */
+    const unsigned char *def = id_response + ID_RESPONSE_REV_OFFSET;
+    fprintf(stderr,
+            "WARNING: could not read a version from %s — falling back to the "
+            "built-in %u.%u.%u.%u. If this rootfs ships a different controller "
+            "firmware, Engine will try to flash the unit.\n",
+            FW_JSON_PATH, def[0], def[1], def[2], def[3]);
+}
 
 static void init_id_response(void) {
     const char *env = getenv("MIDISURFACE_ID_RESPONSE");
@@ -136,6 +216,8 @@ static void init_id_response(void) {
     }
     memcpy(id_response, ID_RESPONSE_DEFAULT, sizeof(ID_RESPONSE_DEFAULT));
     id_response_len = sizeof(ID_RESPONSE_DEFAULT);
+    apply_rootfs_fw_version();
+    fflush(stdout);
 }
 
 static snd_seq_t *seq = NULL;

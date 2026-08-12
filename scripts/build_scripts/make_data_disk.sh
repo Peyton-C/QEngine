@@ -27,6 +27,17 @@ OUT_DIR="$(cd "$(dirname "$OUT_PATH")" && pwd)"
 OUT_NAME="$(basename "$OUT_PATH")"
 mkdir -p "$OUT_DIR"
 
+# Nothing here is architecture-specific (parted/sgdisk on an image file), so run
+# natively. Pinned explicitly because Docker caches images under a bare tag
+# regardless of the platform they were pulled for: once something has pulled
+# debian:bookworm-slim for arm64, a bare `docker run` reuses that and runs the
+# whole thing emulated for no reason.
+case "$(uname -m)" in
+    x86_64|amd64)   HOST_PLATFORM="linux/amd64" ;;
+    aarch64|arm64)  HOST_PLATFORM="linux/arm64" ;;
+    *)              HOST_PLATFORM="" ;;
+esac
+
 # From usr/lib/systemd/system/data.mount and factory.mount in the
 # extracted rootfs (see docs/BUILDING.md) — must match exactly, or
 # systemd never finds either partition.
@@ -67,11 +78,21 @@ if [ ! -s "\$IMG" ]; then
     echo "ERROR: output file missing or empty — something failed silently above." >&2
     exit 1
 fi
+
+# The image is created in here, so it lands owned by the container's root. QEMU
+# opens its disks read-write, so leaving it root-owned makes the VM fail to
+# start with "Could not open ...: Permission denied". Hand it back to the user
+# who invoked the script.
+if [ -n "\${HOST_UID:-}" ] && [ -n "\${HOST_GID:-}" ]; then
+    chown "\$HOST_UID:\$HOST_GID" "\$IMG"
+fi
 DOCKER_SCRIPT
 
 echo "Building $OUT_PATH ..."
 
 docker run --rm \
+    ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -v "$OUT_DIR:/out" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

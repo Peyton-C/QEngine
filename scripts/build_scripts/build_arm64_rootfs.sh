@@ -33,6 +33,9 @@ SHIMS_DIR="$REPO_ROOT/shims/rk3588"
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
 FORCE=0
+# Defaulted so that omitting --firmware reaches the check below instead of
+# dying with `FIRMWARE_IMG: unbound variable` under `set -u`.
+FIRMWARE_IMG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,13 +57,25 @@ if [ -e "$OUT_PATH" ] && [ "$FORCE" -ne 1 ]; then
     exit 1
 fi
 
-for bin in binwalk qemu-img docker; do
+for bin in binwalk qemu-img docker file; do
     command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: '$bin' is required but not found on PATH." >&2; exit 1; }
 done
 
 OUT_DIR="$(cd "$(dirname "$OUT_PATH")" && pwd)"
 OUT_NAME="$(basename "$OUT_PATH")"
 mkdir -p "$OUT_DIR"
+
+# Pin the host-architecture containers explicitly. Docker caches images under a
+# bare tag regardless of the platform they were pulled for, so once anything has
+# pulled debian:bookworm-slim for arm64 (this script's own shim container does,
+# and so does the documented binfmt check), a later `docker run` with no
+# --platform silently reuses the arm64 image and runs emulated. That made the
+# privileged container's architecture depend on pull order rather than on intent.
+case "$(uname -m)" in
+    x86_64|amd64)   HOST_PLATFORM="linux/amd64" ;;
+    aarch64|arm64)  HOST_PLATFORM="linux/arm64" ;;
+    *)              HOST_PLATFORM="" ;;
+esac
 
 ### 1. Extract the rootfs partition with binwalk ############################
 
@@ -111,9 +126,13 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
+STAGE_DIR="$(mktemp -d /tmp/build-arm64-rootfs-stage.XXXXXX)"
+trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"' EXIT
+
 echo "--- building shims from source ---"
 docker run --rm --platform linux/arm64 \
     -v "$SHIMS_DIR:/shims" \
+    -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
         export DEBIAN_FRONTEND=noninteractive
@@ -121,7 +140,8 @@ docker run --rm --platform linux/arm64 \
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h.
         # libasound2-dev: midisurface links libasound directly (alsashim does
         # not — it declares what it needs and resolves via dlsym).
-        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
+        # libgl1-mesa-dri: staged out for the rootfs, see the /stage copy below.
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libgl1-mesa-dri >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_rmz2.so /shims/dtshim/dtshim_rmz2.c -ldl -lpthread
@@ -133,7 +153,22 @@ docker run --rm --platform linux/arm64 \
             -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
         gcc -O2 -Wall \
             -o /shims/midisurface_rmz2/midisurface_rmz2 /shims/midisurface_rmz2/midisurface_rmz2.c -lasound
+
+        # Stage the arm64 virtio_gpu/virgl-capable Mesa DRI driver for the
+        # rootfs. It has to be pulled *here*, in the arm64 container, rather
+        # than in the privileged container further down: that one deliberately
+        # runs the host architecture (it does e2fsck/resize2fs on a multi-GB
+        # image, which is far slower under qemu-user emulation), so on an
+        # x86_64 host its own Mesa package is x86_64 and the wrong ABI
+        # entirely. Staging it from the container that is already arm64 keeps
+        # both halves correct on any host architecture.
+        cp -a /usr/lib/aarch64-linux-gnu/dri/virtio_gpu_dri.so /stage/virtio_gpu_dri.so
     '
+
+[ -s "$STAGE_DIR/virtio_gpu_dri.so" ] || {
+    echo "ERROR: failed to stage an arm64 virtio_gpu_dri.so from the build container." >&2
+    exit 1
+}
 
 for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
                 alsashim/alsashim_rmz2.so touchbridge_rmz2/touchbridge_rmz2 \
@@ -146,19 +181,18 @@ done
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-arm64-rootfs-inner.XXXXXX.sh)"
-trap 'rm -rf "$EXTRACT_DIR"; rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
-# libgl1-mesa-dri: source of a real virtio_gpu/virgl-capable DRI driver
-# (see the /usr/lib/dri step below) — this container's own arch matches
-# the target (arm64), so a plain install pulls the right package without
-# needing the ar/tar .deb-extraction dance docs/BUILDING.md describes for
-# extracting one on macOS directly.
-apt-get install -y -qq libgl1-mesa-dri >/dev/null 2>&1
+# NOTE: this container intentionally runs the *host* architecture, not arm64 —
+# e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
+# So it must never be the source of anything that ends up inside the guest
+# rootfs. The one such file, virtio_gpu_dri.so, is staged into /stage by the
+# arm64 shim-build container instead.
 
 IMG="/out/$OUT_NAME"
 
@@ -197,12 +231,12 @@ sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
 echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
 # This rootfs has no /usr/lib/dri at all — real hardware only ever needed
 # Panthor (kernel-side, panthor.ko), so there's no userspace DRI driver on
-# disk for QEMU's virtio-gpu to dlopen. Pull one from Debian bookworm's own
-# distro-packaged Mesa (installed above) and drop in *only* the one file —
+# disk for QEMU's virtio-gpu to dlopen. Drop in *only* the one file —
 # vendor libEGL/libgbm dlopen by filename via the standard DRI ABI, no
 # libglvnd indirection to worry about, so nothing else needs to change.
+# Comes from /stage, populated by the arm64 container (see the note above).
 mkdir -p /mnt/rootfs/usr/lib/dri
-cp -a /usr/lib/aarch64-linux-gnu/dri/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
+cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 
 echo "--- inserting shims into /root ---"
 mkdir -p /mnt/rootfs/root/fake-dt
@@ -302,9 +336,11 @@ DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
 docker run --rm --privileged \
+    ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$STAGE_DIR:/stage:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh
 

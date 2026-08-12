@@ -10,7 +10,7 @@ BUILD_DIR="$REPO_ROOT/build"
 
 exec qemu-system-aarch64 \
   -machine virt,highmem=on -accel hvf \
-  -cpu host -m 8192 -smp 8 \
+  -cpu host -m 4096 -smp 8 \
   -device virtio-gpu-pci,edid=off,xres=1280,yres=800 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
   -device ich9-intel-hda -device hda-duplex,audiodev=mac -audiodev coreaudio,id=mac \

@@ -5,10 +5,12 @@
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Copy the dtshim/drmatomic/touchbridge_rmz2 shims + fake-dt files into /root.
-#   5. Wire touchbridge_rmz2.service + an engine.service.d override so engine.service actually loads the shims and starts eglfs.
-#   6. Blank the root password for passwordless serial-console login.
-#   7. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
+#   4. Build alsashim_rmz2.so (the only shim built here rather than committed
+#      prebuilt — see the build step below).
+#   5. Copy the dtshim/drmatomic/alsashim/touchbridge_rmz2 shims + fake-dt files into /root.
+#   6. Wire touchbridge_rmz2.service + an engine.service.d override so engine.service actually loads the shims and starts eglfs.
+#   7. Blank the root password for passwordless serial-console login.
+#   8. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
@@ -93,6 +95,48 @@ cp "$BEST_CANDIDATE" "$OUT_PATH"
 echo "--- resizing image to $SIZE bytes ---"
 qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 
+### 2b. Build the shims ######################################################
+# The shim binaries are .gitignored (*.so, plus touchbridge_rmz2 by name), so
+# a fresh clone has sources only — this step is what makes the install step
+# below work at all rather than silently depending on artifacts a previous
+# session happened to leave in the working tree. Building them here also
+# means an edited .c can never be shadowed by a stale .so.
+#
+# debian:bookworm for glibc 2.36, comfortably older than the guest's 2.39
+# (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
+# cross-compiling shims". One container for all of them, since the apt-get
+# dominates the cost.
+echo "--- building shims from source ---"
+docker run --rm --platform linux/arm64 \
+    -v "$SHIMS_DIR:/shims" \
+    debian:bookworm bash -c '
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        # libdrm-dev: drmatomic includes drm.h/drm_mode.h.
+        # libasound2-dev: midisurface links libasound directly (alsashim does
+        # not — it declares what it needs and resolves via dlsym).
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
+
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/dtshim/dtshim_rmz2.so /shims/dtshim/dtshim_rmz2.c -ldl -lpthread
+        gcc -shared -fPIC -O2 -I/usr/include/libdrm \
+            -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
+        gcc -O2 -Wall \
+            -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
+        gcc -O2 -Wall \
+            -o /shims/midisurface_rmz2/midisurface_rmz2 /shims/midisurface_rmz2/midisurface_rmz2.c -lasound
+    '
+
+for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
+                alsashim/alsashim_rmz2.so touchbridge_rmz2/touchbridge_rmz2 \
+                midisurface_rmz2/midisurface_rmz2; do
+    [ -s "$SHIMS_DIR/$artifact" ] || {
+        echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
+done
+
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
 
@@ -159,14 +203,21 @@ echo "--- inserting shims into /root ---"
 mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
 cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
+cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
+# Not preloaded into engine.service — a manually-run tool for driving the
+# emulated unit's transport, which has no on-screen equivalent. See
+# docs/BUILDING.md.
+cp -a /shims/midisurface_rmz2/midisurface_rmz2 /mnt/rootfs/root/midisurface_rmz2
 cp -a "/shims/dtshim/fake-dt-rmz2/inmusic,product-code" /mnt/rootfs/root/fake-dt/
 cp -a /shims/dtshim/fake-dt-rmz2/serial-number /mnt/rootfs/root/fake-dt/
 cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 # Raw big-endian <u32> devicetree cell, not text — 0 (no rotation), the
 # value confirmed working against RMZ2's real panel orientation.
 printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
-chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so /mnt/rootfs/root/touchbridge_rmz2
+chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
+          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/touchbridge_rmz2 \
+          /mnt/rootfs/root/midisurface_rmz2
 
 echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
@@ -177,9 +228,15 @@ cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Service]
 After=touchbridge_rmz2.service
 Requires=touchbridge_rmz2.service
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
+# alsashim: gets an emulated sound card past Engine's compiled-in card-name
+# allowlist and routes its PCM opens through ALSA's format-converting plug
+# layer. Card 0 is QEMU's emulated HDA controller; attach it playback-only
+# (-device hda-output, not hda-duplex) or Engine picks the capture device as
+# its default and never drives playback at all. See docs/ENGINEOS.md.
+Environment=ALSASHIM_CARD=0
 EOF
 
 umount /mnt/rootfs

@@ -8,13 +8,21 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 
+# Audio: hda-output (playback-only), NOT hda-duplex. Engine marks the first
+# device of each enumeration pass as its default, and the capture pass runs
+# second — so when a capture PCM exists it becomes the default, gets assigned
+# as the input device, and the playback slot is left null. Engine then drives
+# capture only and never feeds playback, which shows up as a stuck XRUN and a
+# frozen "Audio_probe" watchdog rather than any error. Playback-only removes
+# the ambiguity. Requires alsashim_rmz2.so preloaded into engine.service (see
+# build_arm64_rootfs.sh) — without it Engine rejects the card on name alone.
 exec qemu-system-aarch64 \
   -machine virt,highmem=on -accel hvf \
   -cpu host -m 4096 -smp 8 \
   -device virtio-gpu-gl-pci,edid=off,xres=1280,yres=800 \
   -display egl-headless,rendernode=/dev/dri/renderD128 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
-  -device ich9-intel-hda -device hda-duplex,audiodev=mac -audiodev coreaudio,id=mac \
+  -device ich9-intel-hda -device hda-output,audiodev=host -audiodev pipewire,id=host \
   -kernel "$BUILD_DIR/vmlinuz-generic-arm64" \
   -initrd "$BUILD_DIR/initrd-generic-arm64" \
   -drive if=none,file=$BUILD_DIR/rootfs_out.img,format=raw,id=hd \

@@ -53,6 +53,9 @@
  *   play  left|right         convenience for the deck play button
  *   cue   left|right         convenience for the deck cue button
  *   load  left|right         convenience for the deck load button
+ *   motor left|right         toggle the deck's motorized-platter mode
+ *                            (shift + slip). REQUIRED ONCE PER ENGINE START
+ *                            before play will do anything — see below.
  *   ports                    list sequencer clients/ports and our own id
  *   quit
  *
@@ -75,6 +78,10 @@
 #define NOTE_CUE 0x02
 #define LOAD_NOTE_LEFT 0x1A
 #define LOAD_NOTE_RIGHT 0x1B
+/* Shift + Slip is Action.ToggleMotor in RMZ2_Controller_Assignments.qml. */
+#define NOTE_SHIFT 0x5D
+#define NOTE_SLIP 0x20
+
 
 /* Universal MIDI device inquiry, as Engine's KnownDevices IdRequest sends it. */
 static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
@@ -171,6 +178,37 @@ static void press(int ch, int note, int ms) {
     note_on(ch, note, 0x7F);
     usleep((useconds_t)ms * 1000);
     note_off(ch, note);
+}
+
+/* SYSTEM ONE has motorized platters, and its deck assignment ends in
+ * MotorizedTimecode { } — the platter reports its position as a timecode
+ * signal carried on the codec's capture channels, DVS-style, not over MIDI.
+ * Under emulation no platter exists, so with the motor engaged a deck accepts
+ * the play command and then sits there waiting for platter timecode that will
+ * never arrive: play appears to do nothing at all, while cue still previews
+ * audio normally (it bypasses the platter). Toggling motorized mode off makes
+ * it behave like an ordinary non-motorized deck and play works.
+ *
+ * This has to be re-sent after every Engine start. The mode lives at
+ * /Client/Preferences/Profile/Application/PlatterMode but is not persisted —
+ * confirmed by stopping engine.service cleanly (so Qt flushes its settings)
+ * and diffing rmz2.user.settings/Engine.conf: no key is written, and nothing
+ * platter-related appears anywhere under /data. Because Engine therefore
+ * always starts motorized, a single toggle is deterministic rather than a
+ * coin flip on unknown state.
+ *
+ * Two alternatives were tried against the assignment file and both failed
+ * (each reverted): deleting MotorizedTimecode { } outright — other controls
+ * kept working, so the file loaded fine, but play was still dead, i.e. that
+ * component wires the timecode input rather than selecting the mode — and
+ * replacing it with a MIDI JogWheel { } as the non-motorized products
+ * (JC11/JP11) use. The mode is the gate, not the platter source. */
+static void toggle_motor(int deck_channel) {
+    note_on(deck_channel, NOTE_SHIFT, 0x7F);
+    usleep(150 * 1000);
+    press(deck_channel, NOTE_SLIP, 80);
+    usleep(150 * 1000);
+    note_off(deck_channel, NOTE_SHIFT);
 }
 
 static void send_sysex(unsigned char *buf, size_t len) {
@@ -348,6 +386,17 @@ int main(int argc, char **argv) {
                                                        : LOAD_NOTE_RIGHT;
                 press(ch, note, 80);
                 printf("sent %s -> ch %#04x note %#04x\n", cmd, ch, note);
+                fflush(stdout);
+            }
+        } else if (strcmp(cmd, "motor") == 0) {
+            char which[32] = {0};
+            sscanf(rest, "%31s", which);
+            int ch = deck_channel(which);
+            if (ch < 0) {
+                fprintf(stderr, "usage: motor left|right\n");
+            } else {
+                toggle_motor(ch);
+                printf("toggled motorized-platter mode on deck ch %#04x\n", ch);
                 fflush(stdout);
             }
         } else if (strcmp(cmd, "sysex") == 0) {

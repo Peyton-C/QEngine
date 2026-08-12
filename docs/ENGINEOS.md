@@ -52,7 +52,7 @@ Unconfirmed: QML/config properties resembling `Configuration/HasBattery` and `us
 - External MIDI/audio controllers are detected via a generic ALSA-sequencer name scan (`air.devicemanager.midi.*`), not a VID/PID allowlist — confirmed working with multiple different real controllers over USB passthrough.
 - Requires ALSA USB audio/MIDI-class kernel modules, which a generic cloud kernel doesn't ship by default: `snd-hwdep`, `mc`, `snd-seq-device`, `snd-seq`, `snd-rawmidi`, `snd-seq-midi-event`, `snd-ump`, `snd-usbmidi-lib`, `snd-seq-midi`, `snd-usb-audio` (load in that order).
 - PCM audio opens only at each device's exact fixed hardware format (no negotiable range).
-- **Unresolved**: Engine logs `"The port isn't opened for Midi::Out::<name> MIDI 1"` and a failure to fetch the audio device from an empty-string device name — reproducible even with zero MIDI hardware attached, so it's an environment-level gap, not controller-specific. `DeviceConfiguration.json`'s `AudioDevices` field does not appear to be the live source Engine reads from at startup (editing it directly has no effect). The empty-device-name symptom specifically is root-caused on the RMZ2/5.0.4 build — see [Audio playback: silent failure, root-caused via decompilation](#audio-playback-silent-failure-root-caused-via-decompilation) below; `DeviceConfiguration.json` not mattering lines up with that finding, since the actual gate is a C++ type check, not a config value.
+- **Resolved (RMZ2/5.0.4)**: the `"The port isn't opened for Midi::Out::<name>"` warning is benign — it comes from a *close* routine warning about a port that was never opened, not a failed open. The empty-device-name audio failure is unrelated to it, and is caused by Engine's card-name allowlist rejecting the emulated sound card before enumeration — see [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below). `DeviceConfiguration.json` not mattering is consistent with that: the device list is built by scanning ALSA, not read from that file.
 - Engine exposes a modular QML-based control-surface system (`:/ControlSurfaceModules/`, `GlobalAssignmentConfig.qml`) rather than hardcoded per-device logic — not compiled into the main binary, likely in a separate QML plugin or on-disk `qmldir`.
 
 ## Systemd services disabled under emulation
@@ -101,7 +101,196 @@ With no real devicetree (QEMU's `virt` machine synthesizes its own, with none of
 
 That alone wasn't sufficient, though: a probe-then-use approach still has a real gap, confirmed directly. The candidate IRQ passes a genuine read-then-write-back probe at `/proc/interrupts`-read time, then fails Engine's own affinity write moments later with the exact same `EPERM` — because Engine doesn't set affinity itself, it shells out (`sh -c "echo ... > /proc/irq/N/smp_affinity_list"`), and the underlying real MSI vector our fake name landed on can transition from freely-reaffinitizable to pinned once its actual owning driver (whatever real virtio device that vector belongs to) finishes its own initialization — on its own schedule, independent of when Engine gets around to setting affinity for our fake name. Since the whole device is already fictional, the shim now also intercepts `write()` and fakes success for `smp_affinity`/`smp_affinity_list` writes targeting the specific real IRQ numbers it mapped — propagated to Engine's shelled-out child via an environment variable (`DTSHIM_FAKE_IRQS`), the same way `LD_PRELOAD` itself reaches that child, since the child is a fresh `exec` of `/bin/sh` and never itself reads `/proc/interrupts` to populate the mapping on its own. See [BUILDING.md](BUILDING.md#status) and [shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md) for the full mechanism.
 
+### Audio playback: working — the real gate, and corrections to the sections below
+
+Audio plays, confirmed audible end-to-end on Engine 5.0.4/RMZ2: a track
+loads, stays loaded, and plays through to the host's speakers.
+
+**The sections that follow this one are a research log of how that was
+reached, and several of their conclusions turned out to be wrong.** They're
+kept because the dead ends are worth not re-walking, but read this section
+first — where it contradicts them, this section is correct. The specific
+corrections are listed at the end.
+
+#### The actual root cause: a card-name allowlist, before anything else
+
+`ALSADeviceEnumerator::scanDevices()` walks every ALSA card
+(`snd_card_next`/`snd_ctl_open`/`snd_ctl_card_info`) and, **before it looks
+at a card's PCM devices, formats or channel counts at all**, does a plain
+`std::find()` of `snd_ctl_card_info_get_name()`'s result in a
+`vector<string>` of accepted card names. A card whose name isn't in that
+list is `snd_ctl_close()`d immediately and skipped.
+
+That vector is built from the `"AudioDevices"` key of Engine's per-product
+config map (alongside `"AudioDeviceSampleRates"`, `"AudioDeviceBufferSizes"`,
+`"KnownDeviceList"`, ...), which is compiled into `Engine.bin` — no file on
+the rootfs contains it, confirmed by grepping the whole filesystem. An empty
+list means accept-everything; this product's list is not empty.
+
+QEMU's emulated `ich9-intel-hda` reports its name as `"HDA Intel"`, which
+isn't in RANE SYSTEM ONE's list. So Engine never enumerated it, never
+constructed an `ALSADevice`, and consequently had no audio device to select
+— surfacing much further downstream as
+`airHost::updateAudioDeviceChanged`'s `Failed to fetch the audio device ""`
+warning. **That warning is a symptom of having nothing to choose from, not
+of a failed type check**, which is what sent the investigation below into
+the `dynamic_cast`/RTTI rabbit hole for so long.
+
+Directly observable with `QT_LOGGING_RULES=air.devicemanager.*=true`: a
+rejected card logs `Get card info for hw:0 ...` and then nothing further,
+while an accepted one continues to `Query device 0 ...` / `Device name
+hw:N`.
+
+An earlier attempt renamed the emulated card with `modprobe snd_hda_intel
+id=RMZ2` and concluded name-matching wasn't the mechanism. That test was
+right in idea and wrong in field: `id=` sets the card's short **id** (the
+bracketed token in `/proc/asound/cards`), while the check reads
+`snd_ctl_card_info_get_name()`, i.e. the card's **shortname** — a separate
+string the HDA driver derives from its codec, which no module parameter
+exposes.
+
+#### Four gates, stacked
+
+Each one hid the next, which is why this took so long to unpick:
+
+1. **Card name** — as above. Fixed by intercepting
+   `snd_ctl_card_info_get_name()`
+   ([shims/rk3588/alsashim/alsashim_rmz2.c](../shims/rk3588/alsashim/alsashim_rmz2.c)).
+2. **Capture format** — with the card accepted, `ConfigureHwParams`
+   succeeds for playback (44100Hz, 256-frame buffer, 128-frame periods) but
+   fails for capture at `snd_pcm_hw_params_set_format` with `EINVAL`, and
+   that aborts the *whole* combined device, playback included
+   (`ALSACombinedDevice::start() Input Device does not initialize
+   correctly`). The emulated HDA card offers only S16_LE/2ch/16000-96000Hz
+   in both directions (`aplay/arecord --dump-hw-params`), while Engine asks
+   capture for a format only the real 6-channel codec provides. Fixed by
+   rewriting PCM device names from `hw:N` to `plughw:N` in the same shim, so
+   ALSA's `plug` layer converts rather than forcing a format behind Engine's
+   back.
+3. **Default-device selection** — Engine marks the first device of each
+   enumeration pass as its default, and the capture pass runs second. So
+   when a capture PCM exists it wins, gets assigned as the input device, and
+   the playback slot (`ALSACombinedDevice+0x150`) is left null;
+   `ALSACombinedDevice::start()` then takes its capture-only path and never
+   feeds playback. Symptom: capture `RUNNING`, playback stuck in `XRUN` with
+   its hardware pointer never advancing, and Engine's own watchdog
+   reporting `1 probes have frozen: "Audio_probe" : 0` — its audio callback
+   never ticking. Fixed by attaching the card playback-only: `-device
+   hda-output`, never `hda-duplex`.
+4. **Motorized platter** — see below. Blocks the transport, not the audio.
+
+With 1–3 fixed, the stream runs continuously, the hardware pointer advances,
+and the frozen-probe warnings stop entirely.
+
+#### The transport: motorized platters
+
+SYSTEM ONE has motorized platters, and its deck assignment ends in
+`MotorizedTimecode { }`: the platter reports its position as a timecode
+signal carried on the codec's capture channels, DVS-style, not over MIDI
+(part of why the real codec is 6-channel). Under emulation no platter
+exists, so with the motor engaged a deck accepts play and then waits
+forever for timecode that never arrives — play appears to do nothing, while
+cue still previews audio normally, since cue bypasses the platter. That
+asymmetry is the tell.
+
+Toggling motorized mode off (`Action.ToggleMotor`, i.e. shift + slip —
+notes `0x5D` + `0x20` on the deck's channel) makes it an ordinary deck and
+play works. The mode lives at
+`/Client/Preferences/Profile/Application/PlatterMode` (with
+`/Engine/Deck%1/ExternalPlatterMotorOn` per deck) and is **not persisted** —
+confirmed by stopping `engine.service` cleanly so Qt flushes its settings,
+then diffing `rmz2.user.settings/Engine.conf`: no key is written, and
+nothing platter-related appears anywhere under `/data`. So it must be
+re-sent once per Engine start. Because Engine therefore always starts
+motorized, a single toggle is deterministic rather than a gamble on unknown
+state; `midisurface_rmz2`'s `motor left|right` command does exactly this.
+
+Two mapping-level alternatives were tried and both failed (each reverted):
+
+- **Deleting `MotorizedTimecode { }`** from
+  `RMZ2_Controller_Assignments.qml`. Other controls kept working
+  afterwards, so the file loaded fine — that component wires the timecode
+  *input*, it doesn't select the mode.
+- **Replacing it with a MIDI `JogWheel { }`**, as the non-motorized products
+  (JC11/JP11) use. Also no effect. The mode is the gate, not the platter
+  source.
+
+Impersonating a non-motorized product instead isn't available either:
+`KnownDevices` on this rootfs has exactly two entries — the `f_midi-0` USB
+gadget and one `Controller` requiring inMusic product `0x27` — so Engine
+here will only ever bind RMZ2's assignment. The other fifteen
+`PresetAssignmentFiles/` directories are dead weight from a shared build,
+and adding an identity means editing `/usr/Engine/Content/KnownDevices.vfsb`,
+a packed VFS blob.
+
+#### Driving the transport at all: the control surface
+
+SYSTEM ONE's transport controls are physical, so Engine's touchscreen UI has
+no way to start a deck. [shims/rk3588/midisurface_rmz2/](../shims/rk3588/midisurface_rmz2/)
+presents an ALSA sequencer client that Engine binds as its own control
+surface. Two non-obvious requirements:
+
+- **Engine identifies control surfaces by a MIDI Device Inquiry handshake,
+  not by name.** It broadcasts `F0 7E 7F 06 01 F7` and only binds an
+  assignment file if the reply matches its `KnownDevices` pattern
+  (`7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F`). A device that never
+  answers is enumerated and connected, but its MIDI is silently ignored —
+  indistinguishable from "the buttons do nothing".
+- **The reply's version bytes must equal the shipped firmware version
+  exactly.** Engine compares them against
+  `/usr/Engine/Firmware/RMZ2 Controller/firmware.json` (`1.0.0.27`) and on
+  *any* mismatch tries to flash `UpdateImage.rbin`, putting the unit into a
+  full-screen `UPDATING... PLAYER WILL REBOOT AFTER UPDATE` state a virtual
+  device can never complete. The comparison is equality, not "older than" —
+  reporting all-`0x7F` (the largest 7-bit MIDI data bytes allow) still
+  triggered it, which makes sense given Engine OS supports official
+  downgrades. The version is the four bytes at index 11 of the reply
+  (counting the leading `F0`), rendered in *decimal*: sending `01 00 00 27`
+  made Settings > About/Update report `Controller Version: 1.0.0.39`
+  (`0x27` = 39), so `1.0.0.27` encodes as `01 00 00 1B`.
+
+Engine also needs the client to report a card number;
+`snd_seq_client_info_get_card()` returns -1 for any userspace client, which
+Engine rejects with `client id: N - card number unavailable`. The alsashim
+supplies one. That is safe because Engine drives MIDI entirely through the
+sequencer API — it imports no `snd_rawmidi_*` symbols at all — so the card
+number only ever identifies a device, never opens one.
+
+#### Corrections to the sections below
+
+- **`ALSADevice` *is* an `airAudioDevice`.** The hierarchy is plain single
+  inheritance: `ALSADevice : airAudioDevice : airDevice`, recovered by
+  parsing the binary's Itanium RTTI graph
+  ([build/ghidra/rtti_graph.py](../build/ghidra/rtti_graph.py)). It is also
+  the *only* class deriving from `airAudioDevice` anywhere in the binary,
+  so real hardware necessarily goes through this same path. The
+  `dynamic_cast<airAudioDevice*>()` in `updateAudioDeviceChanged` was never
+  the problem. The claim below that the two are "structurally
+  disconnected", and the reading of a null RTTI pointer on `ALSADevice`'s
+  vtable, are both wrong — a derived class's vtable does not contain its
+  base's typeinfo address, so finding `airDevice`'s absent there implies
+  nothing.
+- **`FUN_0181fdc0` is `ALSACombinedDevice`'s method, not `airHost`'s** —
+  slot 28 (`+0xe0`) of its vtable, i.e. "assign this device to the playback
+  or capture slot". Correspondingly `FUN_0162c3e0` is `ALSACombinedDevice`'s
+  constructor. ([build/ghidra/vtables.py](../build/ghidra/vtables.py) maps
+  any `FUN_*` address to its class and vtable slot.)
+- **The `ALSADeviceEnumerator` → `airHost` handoff is an observer pattern**
+  (`airDeviceListObservable`/`airDeviceListObserver`, with
+  `airDeviceManager` observing the enumerators and re-publishing to
+  `airHost`), not a Qt signal/slot connection. The `QObject::connectImpl`
+  search below found nothing because there was nothing to find.
+- **`The port isn't opened for Midi::Out::<name>` is benign.** `FUN_0180f84c`
+  is a *close* function: it warns when asked to close a port that was never
+  opened. It is not a failure to open, and is unrelated to the audio gate it
+  is grouped with in [MIDI](#midi) above.
+
 ### Audio playback: silent failure, root-caused via decompilation
+
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
 With display, touch, and MIDI (real bidirectional SysEx with a Denon
 MC6000MK2 over USB passthrough) all working on Engine 5.0.4/RMZ2, audio
 never plays: a track loads (cover art appears) then silently reverts to
@@ -211,6 +400,11 @@ config file anywhere on this rootfs that names or selects the onboard
 audio device.
 
 ### Audio playback: a real ALSA card, reached and opened
+
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
 
 Follow-up to the decompilation findings above. Two things prompted this:
 the RANE reverse-engineering wiki
@@ -337,6 +531,11 @@ for the toolchain and live-deployment mechanics.
 
 ### Audio playback: found the exact `dynamic_cast` call site, live confirmation inconclusive
 
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
+
 Follow-up to the above — pinning down what actually gates `airAudioDevice`
 construction, now that a real device reaches `ALSADeviceEnumerator`
 cleanly. Two threads, one that landed and one that didn't.
@@ -422,6 +621,11 @@ tracing `FUN_0181fdc0`'s caller(s) statically instead.
 
 ### Audio playback: `ALSADevice` and `airDevice` look structurally disconnected
 
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
+
 Continuing the trace statically (`FUN_0181fdc0` has no direct callers —
 Ghidra's call graph finds none, confirming it's reached only via a vtable
 slot, not a `BL`). Cross-referencing `FUN_0181fdc0`'s own address found
@@ -493,6 +697,11 @@ hasn't been found — only ruled out as *not* being the constructor or the
 one post-open virtual call this trace followed.
 
 ### Audio playback: found `airHost::updateAudioDeviceChanged` itself — the real, confirmed gate
+
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
 
 `FUN_0181fdc0` (above) turned out to be a different, parallel mechanism.
 Searching for the actual function behind the exact log message this
@@ -631,6 +840,11 @@ problem entirely) and compare it directly against the known
 `ALSADeviceEnumerator` instance address.
 
 ### Audio playback: live-attach session, and a real observer-effect finding
+
+> **Superseded in part.** Written before the root cause was found; kept as a
+> record of the investigation. See [Audio playback: working](#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+> above for what actually gates audio and which conclusions here are wrong.
+
 
 One more live-debugging round, this time solving the actual tooling
 problem from before: `gdbserver` + remote `lldb` proved fundamentally

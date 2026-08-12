@@ -878,12 +878,131 @@ launch script, identical to `run-system1.sh` apart from paths/UUID/ports).
 The 5.0.4 rootfs/data-disk images themselves aren't committed (same reason
 `rootfs_out.img` isn't — large, regeneratable from the recipe above).
 
+### Audio playback: working — build and launch requirements
+
+Full mechanism, root cause and the corrections it forced on earlier findings
+are in [ENGINEOS.md](ENGINEOS.md#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below).
+This section is only what you have to *do* to get sound out of a build.
+
+**1. Attach the sound card playback-only.** `-device hda-output`, never
+`-device hda-duplex`:
+
+```
+-device ich9-intel-hda -device hda-output,audiodev=mac -audiodev coreaudio,id=mac
+```
+
+With a capture PCM present, Engine makes the capture device its default and
+leaves the playback slot unassigned, then drives capture only — playback sits
+in `XRUN` forever with `Audio_probe` frozen, and no error is printed. All of
+[scripts/qemu/](../scripts/qemu/)'s launch scripts already do this; the
+Linux-targeted ones use `pipewire` rather than the macOS-only `coreaudio`.
+
+**2. Preload `alsashim_rmz2.so`.** Built and installed by
+[build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh), which
+adds it to `engine.service`'s `LD_PRELOAD` and sets `ALSASHIM_CARD=0`.
+Without it Engine rejects the emulated card on its *name* before ever
+touching its PCMs, and there is no configuration route around that — the
+allowlist is compiled into `Engine.bin`.
+
+**3. For playback control, run the virtual control surface.** SYSTEM ONE's
+transport buttons are physical, so nothing on the touchscreen can start a
+deck:
+
+```sh
+mkfifo /root/midififo
+/root/midisurface_rmz2 RMZ2_Controller < /root/midififo &
+exec 3>/root/midififo
+
+# Engine must be (re)started while the surface is already running: its MIDI
+# enumerator binds devices at startup, and won't pick one up later.
+systemctl restart engine.service
+
+echo 'motor left' >&3   # once per Engine start — see below
+echo 'play left'  >&3
+```
+
+`motor` is not optional. SYSTEM ONE's platters are motorized and its decks
+wait on platter timecode that cannot exist under emulation, so play silently
+does nothing until motorized mode is toggled off. It isn't persisted, so it's
+needed once per Engine start; Engine always starts motorized, so the toggle
+is deterministic. Cue works either way, which makes it a useful signal source
+when checking whether audio output itself is alive.
+
+#### The shims are built from source now
+
+Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
+so a fresh clone has sources only.
+[build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
+all five — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
+`touchbridge_rmz2`, `midisurface_rmz2` — in one `debian:bookworm` arm64
+container before installing them. Previously it copied artifacts that nothing
+produced, which worked only if a previous session had left them in the tree.
+
+`libdrm-dev` (for `drmatomic`) and `libasound2-dev` (for `midisurface`) are
+installed in that container; `alsashim` needs neither, since it declares the
+two libasound types it touches and resolves the real symbols via `dlsym`.
+
+#### Diagnostic logging is off by default
+
+Two shims used to log unconditionally, and both were expensive enough to be
+felt:
+
+- `drmatomic_rmz2.so` logged every atomic commit — i.e. a synchronous write
+  to the journal on *every rendered frame*. Now behind `DRMATOMIC_DEBUG`;
+  modesets and failures still log, since those are rare and useful.
+- `dtshim_rmz2.so`'s devicetree-access log (added to rule the devicetree out
+  of the audio investigation, which it did) took a mutex and did a separate
+  `fopen`/`fprintf`/`fclose` per matching read, and `serial-number` is re-read
+  dozens of times a session. Now behind `DTSHIM_DT_LOG`.
+
+Turning Engine's own `QT_LOGGING_RULES` up is similarly costly — useful while
+debugging, worth removing afterwards.
+
+#### Reading Engine's own audio enumeration
+
+The single most useful diagnostic here, and how the card-name allowlist was
+found:
+
+```
+Environment=QT_LOGGING_RULES=air.devicemanager.*=true
+```
+
+A rejected card logs `Get card info for hw:N ...` and then stops. An accepted
+one goes on to `Query device 0 ...` / `Device name hw:N`. Other useful
+categories: `air.assignments*` and `air.deviceidentifier*` (which dumps the
+whole `KnownDevices` table, including the identity pattern a control surface
+must match).
+
+#### Static-analysis tooling
+
+Three scripts in `build/ghidra/` (gitignored, alongside the Ghidra project and
+`Engine.bin`), reusable well beyond this investigation:
+
+- `rtti_graph.py` — parses the Itanium C++ RTTI graph straight out of the
+  binary and prints real class hierarchies. This is what showed `ALSADevice`
+  genuinely derives from `airAudioDevice`, overturning the decompilation-based
+  conclusion that it didn't. No decompiler needed.
+- `vtables.py` — recovers vtables and maps any `FUN_xxxxxx` address to its
+  owning class and slot, which turns anonymous decompiler output into named
+  methods. This is what identified `FUN_0181fdc0` as `ALSACombinedDevice`'s,
+  not `airHost`'s.
+- `decomp.py` — decompiles by address, by string reference, or lists xrefs,
+  reusing the already-analyzed project via PyGhidra (`analyze=False`) instead
+  of repeating the ~5.5 minute auto-analysis.
+
+Ghidra loads `Engine.bin` at image base `0x100000`, so addresses recorded in
+these docs are file offsets + `0x100000`.
+
 ### Audio playback: decompiling Engine.bin
 
 With display/touch/MIDI all working (see [ENGINEOS.md](ENGINEOS.md#arm64--rk3588-rane-system-one)),
-audio never plays — see
-[ENGINEOS.md#audio-playback-silent-failure-root-caused-via-decompilation](ENGINEOS.md#audio-playback-silent-failure-root-caused-via-decompilation)
-for the full symptom and root-cause chain. This section covers the two
+audio did not play. It does now — see
+[Audio playback: working](#audio-playback-working--build-and-launch-requirements)
+above for the requirements and
+[ENGINEOS.md](ENGINEOS.md#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below)
+for the mechanism. The section below records the decompilation effort that
+preceded that finding, and reached some conclusions the final answer
+overturns. This section covers the two
 QEMU/toolchain-specific parts of that investigation: why the real onboard
 codec driver can't be reproduced here, and the Ghidra headless setup used
 to decompile the stripped `Engine.bin` to reach that conclusion.

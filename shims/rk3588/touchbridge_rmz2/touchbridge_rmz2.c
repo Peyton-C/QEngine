@@ -109,7 +109,9 @@ static int detect_screen_size_from_sysfs(int *out_w, int *out_h) {
 }
 
 static int device_looks_like_tablet(int fd, const char *name) {
-    if (!strstr(name, "USB Tablet")) return 0;
+    /* "USB Tablet" on machines with USB; "Virtio Tablet" on QEMU's 32-bit virt,
+     * which has no PCI and therefore no reachable USB controller. */
+    if (!strstr(name, "USB Tablet") && !strstr(name, "Virtio Tablet")) return 0;
 
     unsigned long absbits[ABS_BITS_LEN];
     memset(absbits, 0, sizeof(absbits));

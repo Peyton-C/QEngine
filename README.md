@@ -18,8 +18,8 @@ Emulate Engine OS inside QEMU
 | QT VNC Display          | N     | N     | Y     |
 | Fake Touch              | Y     | Y     | Y     |
 | Keyboard Navigation     | Y     | Y     | Y     |
-| Audio Playback          | N     | N     | N     |
-| MIDI                    | ~     | ?     | ~     |
+| Audio Playback          | Y     | N     | N     |
+| MIDI                    | Y     | ?     | ~     |
 | External Media (USB/SD) | Y     | Y     | N     |
 
 ## Emulated Controllers
@@ -36,7 +36,7 @@ Emulate Engine OS inside QEMU
 | Denon DJ SC6000M Prime  | RK3288 | N         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC Live 2      | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Denon DJ SC Live 4      | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
-| Numark Mixstream Pro    | RK3288 | N         | armv7 | ?     | N/A   | ?     |
+| Numark Mixstream Pro    | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Numark Mixstream Pro+   | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | Numark Mixstream Pro GO | RK3288 | Y         | armv7 | ?     | N/A   | ?     |
 | RANE SYSTEM ONE         | RK3588 | Y         | arm64 | Y     | Y     | N/A   |

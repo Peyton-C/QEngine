@@ -995,6 +995,204 @@ any future decompilation work on this project's arm64 targets:
    `DecompInterface`) are otherwise unchanged from classic Jython
    scripting.
 
+### Reimplementing `az04-codec` as a loadable kernel module
+
+Follow-up to [Audio playback: decompiling
+Engine.bin](#audio-playback-decompiling-enginebin) — full narrative and
+result in
+[ENGINEOS.md#audio-playback-a-real-alsa-card-reached-and-opened](ENGINEOS.md#audio-playback-a-real-alsa-card-reached-and-opened).
+This section covers the toolchain and live-deployment mechanics; sources
+live in [shims/rk3588/az04-audio/](../shims/rk3588/az04-audio/)
+(`az04_codec.c`, `az04_card.c`, `Makefile`).
+
+#### Getting a kernel module toolchain that exactly matches the running kernel
+
+The project's kernel/initrd are pulled from Debian trixie's
+`linux-image-arm64` package
+([get_arm64_kernel.sh](../scripts/build_scripts/get_arm64_kernel.sh)),
+currently `6.12.101+deb13-arm64`. Building an out-of-tree module that
+actually loads needs an *exact* vermagic match (`CONFIG_MODVERSIONS` is
+on — even a matching kernel version with different symbol CRCs fails to
+load), so the build container has to be the same package at the same
+point in time, not just "a Debian trixie image":
+
+```sh
+docker run -d --name az04dev --platform linux/arm64 debian:trixie sleep infinity
+docker exec az04dev bash -c "
+  apt-get update -qq &&
+  apt-get install -y -qq linux-image-arm64 linux-headers-arm64 build-essential"
+```
+
+`linux-headers-arm64`'s `/lib/modules/<kver>/build` symlink points at
+`/usr/src/linux-headers-<kver>` — a normal, ready-to-use
+`make -C $KDIR M=$PWD modules` target, no kernel source tree needed.
+`linux-image-arm64` (installed alongside, not otherwise used for
+building) is where the *pool* of real Debian-built `.ko`s lives —
+needed here for `snd-soc-core.ko` and its own dependencies
+(`snd-pcm-dmaengine.ko`, `snd-compress.ko`), none of which are in this
+project's trimmed initrd (see `MODULES=` in `get_arm64_kernel.sh` — audio
+support there is deliberately curated down to USB-class/HDA only, no
+ASoC at all). Grab them with `docker cp` and `xz -d`, same as any other
+module in this project's build recipe.
+
+**Do not build modules in a newer Debian release than the guest's own
+glibc.** `snd-soc-core.ko` etc. are pure kernel code, ABI-locked to the
+kernel version alone, so `debian:trixie` (matching exactly) is correct
+and required for those. But any *userspace* diagnostic binaries pulled in
+for testing (`aplay`/`amixer`/`speaker-test` from `alsa-utils`, used
+below) link against glibc, and the guest's own `libc.so.6` reports
+**2.39** while `debian:trixie`'s is **2.41** — newer, so guest-incompatible
+(glibc symbol versioning is backwards-compatible only). Same rule as
+[Toolchain for cross-compiling shims](#6-toolchain-for-cross-compiling-shims)
+above: use `debian:bookworm` (glibc 2.36) for anything that needs to
+actually *run* on the guest, reserving the exact-version container only
+for kernel-ABI-locked `.ko` builds.
+
+#### Live-deploying into an already-booted guest, without touching the disk image
+
+Earlier shim iteration always happened offline — edit source, rebuild,
+`debugfs -w` the `.so` directly into `rootfs_out.img`, then boot. That's
+unsafe once QEMU already has the image open with the guest's ext4
+mounted read-write live (confirmed directly: `debugfs -w` succeeded
+without complaint, but risks corrupting a filesystem the kernel already
+has its own in-memory state for). Once the VM is up, get files in over
+the network instead:
+
+```sh
+python3 -m http.server 8124   # from the host, in the directory with the .ko files
+```
+
+QEMU's usermode networking (`-netdev user`, this project's default) makes
+the host reachable from the guest at the fixed gateway address
+`10.0.2.2` regardless of the guest's own DHCP-assigned address — no
+port-forward setup needed for this direction, only `curl -o file
+http://10.0.2.2:8124/file` from inside the guest.
+
+One more gotcha specific to this arm64/RMZ2 image: `/` mounts **plain
+`ro`** per `/etc/fstab` (see
+[ENGINEOS.md's arm64 filesystem layout](ENGINEOS.md#filesystem-layout-differs-from-the-rk3288-overlay-scheme)) —
+writing anything under `/root/` from a live shell fails with `Read-only
+file system` until `mount -o remount,rw /` first. `debugfs` bypasses this
+(it writes the block device directly, ignoring the live mount's state
+entirely) which is exactly why it's unsafe to mix with a live guest —
+the two writers have no idea about each other.
+
+#### Debugging a silent kernel-side `EINVAL` without a rebuild
+
+The actual `snd-soc-dummy` bug (full writeup in ENGINEOS.md) produced a
+bare `EINVAL` from `aplay` with no corresponding kernel log line at all —
+`dmesg` stayed completely empty across the failing `open()` call, even
+right after `dmesg -C`. Two facilities together (this generic kernel
+already ships `CONFIG_DYNAMIC_DEBUG`+`CONFIG_KPROBES`+`debugfs`, no
+rebuild needed) got to the exact line in one pass each, cheaper than
+re-deriving kernel internals from memory:
+
+1. **Dynamic debug**, to light up existing `dev_dbg()`/`pr_debug()`
+   call sites in specific source files:
+   ```sh
+   echo 'file soc-pcm.c +p' > /sys/kernel/debug/dynamic_debug/control
+   echo 'file pcm_native.c +p' > /sys/kernel/debug/dynamic_debug/control
+   # ...one line per file, matched by source filename, not full path
+   ```
+   This alone found the failing function's name
+   (`snd_pcm_hw_constraints_complete failed`, from a
+   `pcm_dbg()` one call site above the real ALSA-core function that
+   contains it) — but not *which* of the several constraint calls inside
+   it was the one returning negative, since only the outer wrapper had a
+   trace point.
+2. **A one-shot kretprobe**, to bisect further without adding a debug
+   line inside every candidate function by hand:
+   ```sh
+   cd /sys/kernel/debug/tracing
+   echo 'r:cmask snd_pcm_hw_constraint_mask $retval' > kprobe_events
+   echo 'r:cmask64 snd_pcm_hw_constraint_mask64 $retval' >> kprobe_events
+   echo 'r:cminmax snd_pcm_hw_constraint_minmax $retval' >> kprobe_events
+   echo 'r:crules snd_pcm_hw_rule_add $retval' >> kprobe_events
+   echo 1 > events/kprobes/enable
+   echo > trace   # clear
+   # ...trigger the failing open()...
+   cat trace
+   ```
+   The trace showed ~20 `snd_pcm_hw_rule_add` calls (constraint-list
+   init, expected), then exactly **one** `snd_pcm_hw_constraint_mask`
+   call and nothing after — meaning the very first constraint check
+   inside `snd_pcm_hw_constraints_complete()` (`ACCESS`) was the one
+   failing, and everything downstream of it (`FORMAT`, `CHANNELS`,
+   `RATE`, ...) was never even reached. That pointed straight at
+   `hw.info` being `0`, and from there to `dummy_dma_open()`'s
+   self-matching guard in the actual kernel source (pulled directly from
+   `cdn.kernel.org` — `linux-6.12.101.tar.xz`, matching Debian's patch
+   level closely enough for core ASoC/ALSA files, which Debian doesn't
+   patch).
+
+Matching real kernel source against a *specific* Debian kernel build
+(rather than working purely from headers, which only give struct/macro
+shapes, not implementations) was what actually closed this out — headers
+alone were enough to write the two new modules, but not enough to
+understand why one specific mainline helper function behaved
+unexpectedly.
+
+### A minimal native `gdb`, when `gdbserver` + remote `lldb` isn't reliable enough
+
+Full narrative in
+[ENGINEOS.md#audio-playback-live-attach-session-and-a-real-observer-effect-finding](ENGINEOS.md#audio-playback-live-attach-session-and-a-real-observer-effect-finding).
+This is the toolchain recipe on its own, since it's reusable well beyond
+that one investigation: `gdbserver` (small, few deps, easy to deploy —
+see [Reimplementing az04-codec](#reimplementing-az04-codec-as-a-loadable-kernel-module)
+above) paired with a *remote* `lldb` from the host turned out to be
+fundamentally unreliable for this project's target — attach-time thread
+storms (Engine runs 40-80+ threads at points) seem to desync the
+gdbserver/lldb remote-protocol handshake in ways that never fully
+resolved across several distinct failure modes. A real, **native**
+debugger running directly on the guest (no network/remote-protocol layer
+between the debugger and the target at all) is dramatically more stable
+for the same target — but Debian's packaged `gdb` drags in ~56 shared
+libraries (Python, ICU, Kerberos, curl, source-highlight, babeltrace...),
+and a full copy of all of them onto the guest crashed with a bare `Bus
+error` on `gdb --version`, before printing anything at all — not
+diagnosed, not worth chasing given the fix is cheaper: build a **minimal**
+`gdb` from source with the heavy optional features stripped out.
+
+```sh
+# In the debian:bookworm shim-build container (matching glibc <=
+# guest's 2.39 — see "Toolchain for cross-compiling shims" above; gdb
+# itself isn't kernel-ABI-locked like the .ko builds, so this container
+# reuses the same version-compatibility rule, not the exact-kernel one):
+apt-get install -y build-essential texinfo bison flex libncurses-dev \
+  libreadline-dev zlib1g-dev libgmp-dev   # libgmp-dev: GMP is load-bearing,
+                                           # cannot be configured out
+wget -q https://ftp.gnu.org/gnu/gdb/gdb-13.1.tar.xz   # match `gdb --version`
+tar xf gdb-13.1.tar.xz && cd gdb-13.1 && mkdir build && cd build
+../configure --disable-nls --without-python --without-guile \
+  --without-babeltrace --without-debuginfod --disable-source-highlight \
+  --without-lzma --without-libunwind-ia64 --disable-tui --without-mpfr \
+  --without-expat --without-gdb-datadir-relocatable
+make -j$(nproc)
+strip -o /tmp/gdb-stripped gdb/gdb   # 144MB unstripped -> ~10MB
+```
+
+Cuts the dependency list from ~56 down to **5**: `libtinfo`, `libgmp`,
+`libstdc++`, `libm`, `libgcc_s` — and the last three are already present
+on this rootfs (Engine itself needs `libstdc++`/`libgcc_s`, and
+`libc`/`libm` are the guest's own). Only `libtinfo.so.6` and
+`libgmp.so.10` actually need copying over alongside the binary itself,
+same `docker cp` + realpath-resolve-symlinks + `curl` pattern as every
+other file transfer in this project — see
+[Live-deploying into an already-booted guest](#live-deploying-into-an-already-booted-guest-without-touching-the-disk-image)
+above.
+
+`gdb`'s own `shell <cmd>` — runs a host command without detaching from
+the inferior — turned out to be the single most useful feature for this
+kind of session: cross-checking `journalctl` output *from inside the
+same `gdb` prompt*, without ever needing to detach/reattach, was what
+actually surfaced the observer-effect finding (a full-history, not just
+recent-window, `journalctl` search made the difference — see
+ENGINEOS.md). One gotcha: `shell` consumes the **entire rest of the
+line** as its command — `shell cmd1; shell cmd2` fails (the second
+`shell` gets passed literally to `/bin/sh -c "cmd1; shell cmd2"`, which
+then fails with `sh: shell: not found`); chain with plain `;`/`&&` inside
+a *single* `shell` invocation instead.
+
 ## Engine 5.0.4 on armv7 (RK3288) — in progress, blocked
 
 Hypothesis going in: since RANE SYSTEM ONE's 4.6.0 firmware already shipped

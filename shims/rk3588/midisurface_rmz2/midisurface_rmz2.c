@@ -1,0 +1,369 @@
+/* A virtual MIDI control surface for the emulated RANE SYSTEM ONE.
+ *
+ * SYSTEM ONE's transport controls (play, cue, load, sync, ...) are physical
+ * buttons on the unit, not touchscreen elements — Engine's on-screen UI has
+ * no way to start a deck playing. Under emulation that leaves no way to
+ * trigger playback at all: touch works (see touchbridge_rmz2) but only
+ * reaches the browse/deck views, never the transport. This creates an ALSA
+ * sequencer client that Engine's MIDI device enumerator can discover and
+ * bind to a preset assignment file, so the emulated unit can be driven
+ * exactly the way the real control surface drives it.
+ *
+ * The MIDI vocabulary comes from the rootfs's own preset assignment files
+ * (/usr/Engine/AssignmentFiles/PresetAssignmentFiles/RMZ2/), which are
+ * plain QML and readable directly — no reverse engineering needed:
+ *
+ *   RMZ2_Controller_Assignments.qml
+ *     Left deck  -> midiChannel 0x04, load note 0x1A
+ *     Right deck -> midiChannel 0x05, load note 0x1B
+ *     PlayCue    -> playNote 0x01, cueNote 0x02
+ *     Sync 0x14, Shift 0x5D, Censor 0x0B, Slip 0x20, ...
+ *   RMZ2_Controller_Device.qml
+ *     SysEx identity: F0 00 00 17 <deviceId 7F> <productId 27> ... F7
+ *     (manufacturer 00 00 17 = inMusic, product 0x27 = SYSTEM ONE)
+ *
+ * Engine does NOT bind an assignment file by device name — it identifies
+ * control surfaces with a MIDI Device Inquiry handshake, driven by a
+ * KnownDevices table it logs at startup (air.deviceidentifier):
+ *
+ *   <IdRequest message="7E 7F 06 01"/>
+ *   <Device type="USB" realName="Controller">
+ *     <property name="DeviceInquiryResponse"
+ *               value="7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F"/>
+ *     <property name="AssignmentFileName" value="RMZ2 Controller"/>
+ *
+ * So Engine broadcasts the universal identity request F0 7E 7F 06 01 F7 and
+ * waits for a reply carrying inMusic's manufacturer id (00 00 17) and
+ * product 0x27; only then does it load the assignment file and start
+ * treating incoming notes as control-surface input. A device that never
+ * answers is enumerated and connected but its MIDI is ignored — which looks
+ * exactly like "the buttons do nothing". This program therefore answers the
+ * inquiry automatically (see ID_RESPONSE), impersonating SYSTEM ONE's own
+ * control surface. The client name is cosmetic by comparison; it defaults to
+ * "RMZ2_Controller" and can be overridden with argv[1].
+ *
+ * Commands are read from stdin, one per line, so this can be driven
+ * interactively or fed from a script/fifo:
+ *
+ *   press <ch> <note> [ms]   note-on then note-off (a button tap; default 80ms)
+ *   on    <ch> <note> [vel]  note-on
+ *   off   <ch> <note>        note-off
+ *   cc    <ch> <cc> <val>    control change
+ *   sysex <hex bytes...>     raw sysex, e.g. sysex F0 00 00 17 7F 27 ... F7
+ *   play  left|right         convenience for the deck play button
+ *   cue   left|right         convenience for the deck cue button
+ *   load  left|right         convenience for the deck load button
+ *   ports                    list sequencer clients/ports and our own id
+ *   quit
+ *
+ * Events are sent to whatever has subscribed to our output port (Engine
+ * subscribes when it binds the device), so no explicit routing is needed in
+ * the normal case.
+ */
+#include <alsa/asoundlib.h>
+#include <ctype.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+/* Deck identities straight out of RMZ2_Controller_Assignments.qml. */
+#define DECK_LEFT_CH 0x04
+#define DECK_RIGHT_CH 0x05
+#define NOTE_PLAY 0x01
+#define NOTE_CUE 0x02
+#define LOAD_NOTE_LEFT 0x1A
+#define LOAD_NOTE_RIGHT 0x1B
+
+/* Universal MIDI device inquiry, as Engine's KnownDevices IdRequest sends it. */
+static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
+
+/* The reply Engine's DeviceInquiryResponse pattern accepts:
+ *   7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F
+ * i.e. a standard identity reply — 7E <device id> 06 02, inMusic's
+ * manufacturer id 00 00 17, family LSB 0x27 (SYSTEM ONE, the same product id
+ * RMZ2_Controller_Device.qml uses in its own sysex) — with family/member and
+ * the software-revision bytes left free apart from a trailing 0x7F.
+ *
+ * The revision bytes matter: Engine compares them against
+ * /usr/Engine/Firmware/RMZ2 Controller/firmware.json ("version": "1.0.0.27")
+ * and, on a mismatch, flashes UpdateImage.rbin — putting the unit into a
+ * full-screen "UPDATING... PLAYER WILL REBOOT AFTER UPDATE" state that a
+ * virtual surface can never complete. The comparison is for *equality*, not
+ * "older than": Engine OS supports official downgrades, where an older
+ * release's control-surface firmware must be flashed back over a newer one.
+ * Reporting all-0x7F (the highest value 7-bit MIDI data bytes can hold) was
+ * tried and still triggered the update, confirming that.
+ *
+ * The revision is the four bytes at index 11 of the reply (Engine parses them
+ * via FUN_0080bd84(response, 0xb)), counting the leading F0, each rendered in
+ * *decimal*. That was pinned down empirically: sending 01 00 00 27 made
+ * Engine's Settings > About/Update screen report "Controller Version:
+ * 1.0.0.39" — 0x27 = 39 — so the bytes below encode 1.0.0.27 as 01 00 00 1B,
+ * matching firmware.json exactly and leaving the unit alone. */
+static const unsigned char ID_RESPONSE_DEFAULT[] = {
+    0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27,
+    0x00, 0x00, 0x01, 0x00, 0x00, 0x1B, 0x7F, 0xF7};
+
+/* Overridable via MIDISURFACE_ID_RESPONSE (space-separated hex), since the
+ * exact placement of the revision field inside the reply is inferred rather
+ * than documented — being able to try an encoding without a rebuild/redeploy
+ * cycle is worth the few lines. */
+static unsigned char id_response[64];
+static size_t id_response_len = 0;
+
+static void init_id_response(void) {
+    const char *env = getenv("MIDISURFACE_ID_RESPONSE");
+    if (env && *env) {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%s", env);
+        char *tok = strtok(buf, " \t,");
+        while (tok && id_response_len < sizeof(id_response)) {
+            id_response[id_response_len++] =
+                (unsigned char)strtol(tok, NULL, 16);
+            tok = strtok(NULL, " \t,");
+        }
+        if (id_response_len) return;
+    }
+    memcpy(id_response, ID_RESPONSE_DEFAULT, sizeof(ID_RESPONSE_DEFAULT));
+    id_response_len = sizeof(ID_RESPONSE_DEFAULT);
+}
+
+static snd_seq_t *seq = NULL;
+static int my_port = -1;
+static int verbose = 0;
+
+static void send_event(snd_seq_event_t *ev) {
+    snd_seq_ev_set_source(ev, my_port);
+    snd_seq_ev_set_subs(ev);   /* deliver to all subscribers */
+    snd_seq_ev_set_direct(ev);
+    int err = snd_seq_event_output_direct(seq, ev);
+    if (err < 0)
+        fprintf(stderr, "send failed: %s\n", snd_strerror(err));
+}
+
+static void note_on(int ch, int note, int vel) {
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_noteon(&ev, ch, note, vel);
+    send_event(&ev);
+}
+
+static void note_off(int ch, int note) {
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_noteoff(&ev, ch, note, 0);
+    send_event(&ev);
+}
+
+static void control_change(int ch, int param, int val) {
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_controller(&ev, ch, param, val);
+    send_event(&ev);
+}
+
+/* A button tap: press, hold briefly, release. Engine distinguishes taps from
+ * holds for several controls (cue-hold, shift, sync-hold => instant double),
+ * so the hold duration is caller-controllable. */
+static void press(int ch, int note, int ms) {
+    note_on(ch, note, 0x7F);
+    usleep((useconds_t)ms * 1000);
+    note_off(ch, note);
+}
+
+static void send_sysex(unsigned char *buf, size_t len) {
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_sysex(&ev, len, buf);
+    send_event(&ev);
+}
+
+static void list_ports(void) {
+    snd_seq_client_info_t *cinfo;
+    snd_seq_port_info_t *pinfo;
+    snd_seq_client_info_alloca(&cinfo);
+    snd_seq_port_info_alloca(&pinfo);
+
+    printf("our client id: %d, port: %d\n", snd_seq_client_id(seq), my_port);
+    snd_seq_client_info_set_client(cinfo, -1);
+    while (snd_seq_query_next_client(seq, cinfo) >= 0) {
+        int client = snd_seq_client_info_get_client(cinfo);
+        printf("client %3d: \"%s\"\n", client,
+               snd_seq_client_info_get_name(cinfo));
+        snd_seq_port_info_set_client(pinfo, client);
+        snd_seq_port_info_set_port(pinfo, -1);
+        while (snd_seq_query_next_port(seq, pinfo) >= 0) {
+            printf("    port %3d: \"%s\" caps=0x%x\n",
+                   snd_seq_port_info_get_port(pinfo),
+                   snd_seq_port_info_get_name(pinfo),
+                   snd_seq_port_info_get_capability(pinfo));
+        }
+    }
+    fflush(stdout);
+}
+
+/* Drain and act on anything Engine sends us. Two reasons this must run even
+ * when we have nothing to say: the identity handshake above is mandatory
+ * before Engine will honour any input, and an unread port fills its input
+ * pool (Engine streams LED/display updates continuously once bound). */
+static void handle_incoming(void) {
+    snd_seq_event_t *ev;
+    while (snd_seq_event_input(seq, &ev) >= 0) {
+        if (ev->type == SND_SEQ_EVENT_SYSEX) {
+            const unsigned char *d = (const unsigned char *)ev->data.ext.ptr;
+            unsigned int len = ev->data.ext.len;
+            if (verbose) {
+                fprintf(stderr, "[surface] sysex in (%u):", len);
+                for (unsigned int i = 0; i < len && i < 24; i++)
+                    fprintf(stderr, " %02X", d[i]);
+                fprintf(stderr, "\n");
+            }
+            /* Identity request: F0 7E <dev> 06 01 F7, device id wildcarded. */
+            if (len >= sizeof(ID_REQUEST) && d[0] == 0xF0 && d[1] == 0x7E &&
+                d[3] == 0x06 && d[4] == 0x01) {
+                snd_seq_event_t out;
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_sysex(&out, id_response_len,
+                                     (void *)id_response);
+                send_event(&out);
+                printf("answered device inquiry (identifying as inMusic 0x27)\n");
+                fflush(stdout);
+            }
+        }
+        if (snd_seq_event_input_pending(seq, 0) <= 0) break;
+    }
+}
+
+static int deck_channel(const char *which) {
+    if (!which) return -1;
+    if (strcasecmp(which, "left") == 0 || strcmp(which, "1") == 0)
+        return DECK_LEFT_CH;
+    if (strcasecmp(which, "right") == 0 || strcmp(which, "2") == 0)
+        return DECK_RIGHT_CH;
+    return -1;
+}
+
+int main(int argc, char **argv) {
+    const char *client_name = (argc > 1) ? argv[1] : "RMZ2_Controller";
+
+    verbose = (argc > 2 && strcmp(argv[2], "-v") == 0);
+    init_id_response();
+
+    int err = snd_seq_open(&seq, "default", SND_SEQ_OPEN_DUPLEX, 0);
+    if (err < 0) {
+        fprintf(stderr, "snd_seq_open: %s\n", snd_strerror(err));
+        return 1;
+    }
+    snd_seq_set_client_name(seq, client_name);
+
+    /* Advertise both directions, and present as MIDI_GENERIC|HARDWARE rather
+     * than APPLICATION: Engine's enumerator reads snd_seq_port_info_get_type()
+     * and is looking for something that presents like a real control surface
+     * (an APPLICATION-typed port is the conventional marker for "another
+     * program", which hosts routinely skip). Bidirectional because Engine
+     * opens an output side too, for LED/display feedback. */
+    my_port = snd_seq_create_simple_port(
+        seq, client_name,
+        SND_SEQ_PORT_CAP_READ | SND_SEQ_PORT_CAP_SUBS_READ |
+            SND_SEQ_PORT_CAP_WRITE | SND_SEQ_PORT_CAP_SUBS_WRITE,
+        SND_SEQ_PORT_TYPE_MIDI_GENERIC | SND_SEQ_PORT_TYPE_HARDWARE);
+    if (my_port < 0) {
+        fprintf(stderr, "create_simple_port: %s\n", snd_strerror(my_port));
+        return 1;
+    }
+
+    printf("virtual control surface \"%s\" up as client %d port %d\n",
+           client_name, snd_seq_client_id(seq), my_port);
+    fflush(stdout);
+
+    /* Poll stdin and the sequencer together: commands can arrive at any time,
+     * but so can Engine's identity request, and missing that means the
+     * surface is never bound. */
+    int seq_npfd = snd_seq_poll_descriptors_count(seq, POLLIN);
+    struct pollfd *pfds = calloc(seq_npfd + 1, sizeof(*pfds));
+    if (!pfds) return 1;
+
+    char line[1024];
+    for (;;) {
+        pfds[0].fd = STDIN_FILENO;
+        pfds[0].events = POLLIN;
+        snd_seq_poll_descriptors(seq, pfds + 1, seq_npfd, POLLIN);
+
+        if (poll(pfds, seq_npfd + 1, -1) < 0) break;
+
+        for (int i = 1; i <= seq_npfd; i++) {
+            if (pfds[i].revents & POLLIN) {
+                handle_incoming();
+                break;
+            }
+        }
+
+        if (!(pfds[0].revents & POLLIN)) continue;
+        if (!fgets(line, sizeof(line), stdin)) {
+            /* A fifo writer closing gives EOF; keep serving MIDI rather than
+             * exiting, so the surface survives between command bursts. */
+            clearerr(stdin);
+            continue;
+        }
+
+        char cmd[64] = {0};
+        int n = 0;
+        if (sscanf(line, "%63s%n", cmd, &n) != 1) continue;
+        char *rest = line + n;
+
+        if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) break;
+
+        if (strcmp(cmd, "ports") == 0) {
+            list_ports();
+        } else if (strcmp(cmd, "press") == 0) {
+            int ch, note, ms = 80;
+            if (sscanf(rest, "%i %i %i", &ch, &note, &ms) >= 2)
+                press(ch, note, ms);
+            else
+                fprintf(stderr, "usage: press <ch> <note> [ms]\n");
+        } else if (strcmp(cmd, "on") == 0) {
+            int ch, note, vel = 0x7F;
+            if (sscanf(rest, "%i %i %i", &ch, &note, &vel) >= 2)
+                note_on(ch, note, vel);
+        } else if (strcmp(cmd, "off") == 0) {
+            int ch, note;
+            if (sscanf(rest, "%i %i", &ch, &note) == 2) note_off(ch, note);
+        } else if (strcmp(cmd, "cc") == 0) {
+            int ch, param, val;
+            if (sscanf(rest, "%i %i %i", &ch, &param, &val) == 3)
+                control_change(ch, param, val);
+        } else if (strcmp(cmd, "play") == 0 || strcmp(cmd, "cue") == 0 ||
+                   strcmp(cmd, "load") == 0) {
+            char which[32] = {0};
+            sscanf(rest, "%31s", which);
+            int ch = deck_channel(which);
+            if (ch < 0) {
+                fprintf(stderr, "usage: %s left|right\n", cmd);
+            } else {
+                int note = (strcmp(cmd, "play") == 0)  ? NOTE_PLAY
+                           : (strcmp(cmd, "cue") == 0) ? NOTE_CUE
+                           : (ch == DECK_LEFT_CH)      ? LOAD_NOTE_LEFT
+                                                       : LOAD_NOTE_RIGHT;
+                press(ch, note, 80);
+                printf("sent %s -> ch %#04x note %#04x\n", cmd, ch, note);
+                fflush(stdout);
+            }
+        } else if (strcmp(cmd, "sysex") == 0) {
+            unsigned char buf[256];
+            size_t len = 0;
+            char *tok = strtok(rest, " \t\r\n");
+            while (tok && len < sizeof(buf)) {
+                buf[len++] = (unsigned char)strtol(tok, NULL, 16);
+                tok = strtok(NULL, " \t\r\n");
+            }
+            if (len) send_sysex(buf, len);
+        } else {
+            fprintf(stderr, "unknown command: %s\n", cmd);
+        }
+    }
+
+    snd_seq_close(seq);
+    return 0;
+}

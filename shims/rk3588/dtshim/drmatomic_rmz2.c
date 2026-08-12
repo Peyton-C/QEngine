@@ -252,9 +252,18 @@ static int do_atomic_commit(int fd, uint32_t fb_id, const struct drm_mode_modein
     atomic.user_data = user_data;
 
     int ret = rioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
-    fprintf(stderr, "=== DRMATOMIC: %s commit (objs=%d props=%d flags=0x%x) -> ret=%d errno=%d (%s)\n",
-            modeset ? "MODESET" : "FLIP", o, n, atomic.flags, ret,
-            ret < 0 ? errno : 0, ret < 0 ? strerror(errno) : "ok");
+    /* A FLIP commit happens once per rendered frame, so logging it
+     * unconditionally puts a synchronous write to stderr — which under
+     * engine.service means a journald round-trip — directly in the render
+     * path, at frame rate. That is expensive enough to be felt as general
+     * slowness (and to starve the audio thread into dropouts). Modesets are
+     * rare and diagnostically valuable, so those still log by default;
+     * per-frame flips only with DRMATOMIC_DEBUG set. */
+    if (modeset || ret < 0 || getenv("DRMATOMIC_DEBUG"))
+        fprintf(stderr,
+                "=== DRMATOMIC: %s commit (objs=%d props=%d flags=0x%x) -> ret=%d errno=%d (%s)\n",
+                modeset ? "MODESET" : "FLIP", o, n, atomic.flags, ret,
+                ret < 0 ? errno : 0, ret < 0 ? strerror(errno) : "ok");
     return ret;
 }
 

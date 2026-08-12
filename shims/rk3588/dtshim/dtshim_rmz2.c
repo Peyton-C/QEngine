@@ -374,6 +374,70 @@ ssize_t write(int fd, const void *buf, size_t count) {
     return get_real_write()(fd, buf, count);
 }
 
+/* Devicetree-access logging. remap() below only special-cases the handful
+ * of /sys/firmware/devicetree/base/... paths we already know Engine reads
+ * (product-code, serial-number, rotation) — anything else under that tree
+ * (or its /proc/device-tree/ alias) passes straight through unnoticed to
+ * QEMU's synthesized virt devicetree, which has none of the real
+ * inmusic,-prefixed or az04-* nodes. If Engine's audio-device gate reads some
+ * devicetree property we haven't identified yet — e.g. something naming
+ * the onboard az04-codec/simple-audio-card — that read is currently
+ * silent. This logs every open/fopen attempt (success or failure) under
+ * either prefix so a real boot+track-load can be grepped afterward for
+ * exactly what Engine asked for.
+ *
+ * Off unless DTSHIM_DT_LOG is set. It served its purpose — two full passes
+ * showed only product-code, serial-number and one stale RK3288-era rotation
+ * probe, ruling the devicetree out of the audio investigation entirely — and
+ * it is not free to leave on: every matching access takes a mutex and does a
+ * separate fopen/fprintf/fclose, and serial-number alone is re-read dozens of
+ * times per session. */
+#define DT_ACCESS_LOG "/root/dtshim-dt-access.log"
+static pthread_mutex_t dt_log_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Resolved once: getenv() on every devicetree read would itself be overhead
+ * in a path that exists only for diagnostics. */
+static int dt_log_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("DTSHIM_DT_LOG");
+        enabled = (v && *v) ? 1 : 0;
+    }
+    return enabled;
+}
+
+static int is_dt_path(const char *path) {
+    if (!path || !dt_log_enabled()) return 0;
+    return strncmp(path, "/sys/firmware/devicetree/base/", 30) == 0 ||
+           strncmp(path, "/proc/device-tree/", 18) == 0;
+}
+
+/* fn: calling wrapper's name, orig_path: what Engine actually asked to
+ * open, remapped_path: what we opened after remap() (same pointer as
+ * orig_path if unmapped), ok/err: outcome to log. Only ever called with
+ * DT-tree paths, so no need to re-check is_dt_path() at call sites past
+ * the initial gate. Saves/restores errno around its own real_fopen/fclose
+ * calls so it never perturbs what the caller (Engine) observes. */
+static void log_dt_access(const char *fn, const char *orig_path,
+                           const char *remapped_path, int ok, int err) {
+    int saved_errno = errno;
+    pthread_mutex_lock(&dt_log_lock);
+    FILE *lf = get_real_fopen()(DT_ACCESS_LOG, "a");
+    if (lf) {
+        if (remapped_path && strcmp(orig_path, remapped_path) != 0) {
+            fprintf(lf, "[pid %d] %s(\"%s\") -> remapped \"%s\": %s\n",
+                    getpid(), fn, orig_path, remapped_path,
+                    ok ? "ok" : strerror(err));
+        } else {
+            fprintf(lf, "[pid %d] %s(\"%s\"): %s\n",
+                    getpid(), fn, orig_path, ok ? "ok" : strerror(err));
+        }
+        fclose(lf);
+    }
+    pthread_mutex_unlock(&dt_log_lock);
+    errno = saved_errno;
+}
+
 static const char *remap(const char *path) {
     if (!path) return NULL;
     if (strcmp(path, "/sys/firmware/devicetree/base/inmusic,product-code") == 0)
@@ -401,7 +465,10 @@ int open(const char *path, int flags, ...) {
         int fd = get_fake_interrupts_fd();
         if (fd >= 0) return fd;
     }
-    return get_real_open()(remap(path), flags, mode);
+    const char *mapped = remap(path);
+    int fd = get_real_open()(mapped, flags, mode);
+    if (is_dt_path(path)) log_dt_access("open", path, mapped, fd >= 0, errno);
+    return fd;
 }
 
 int open64(const char *path, int flags, ...) {
@@ -416,7 +483,10 @@ int open64(const char *path, int flags, ...) {
         int fd = get_fake_interrupts_fd();
         if (fd >= 0) return fd;
     }
-    return real_open64(remap(path), flags, mode);
+    const char *mapped = remap(path);
+    int fd = real_open64(mapped, flags, mode);
+    if (is_dt_path(path)) log_dt_access("open64", path, mapped, fd >= 0, errno);
+    return fd;
 }
 
 FILE *fopen(const char *path, const char *mode) {
@@ -428,7 +498,10 @@ FILE *fopen(const char *path, const char *mode) {
             close(fd);
         }
     }
-    return get_real_fopen()(remap(path), mode);
+    const char *mapped = remap(path);
+    FILE *f = get_real_fopen()(mapped, mode);
+    if (is_dt_path(path)) log_dt_access("fopen", path, mapped, f != NULL, errno);
+    return f;
 }
 
 FILE *fopen64(const char *path, const char *mode) {
@@ -443,5 +516,8 @@ FILE *fopen64(const char *path, const char *mode) {
             close(fd);
         }
     }
-    return real_fopen64(remap(path), mode);
+    const char *mapped = remap(path);
+    FILE *f = real_fopen64(mapped, mode);
+    if (is_dt_path(path)) log_dt_access("fopen64", path, mapped, f != NULL, errno);
+    return f;
 }

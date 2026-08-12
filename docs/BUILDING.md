@@ -904,29 +904,132 @@ Without it Engine rejects the emulated card on its *name* before ever
 touching its PCMs, and there is no configuration route around that — the
 allowlist is compiled into `Engine.bin`.
 
-**3. For playback control, run the virtual control surface.** SYSTEM ONE's
-transport buttons are physical, so nothing on the touchscreen can start a
-deck:
+**3. Playback control comes from the virtual control surface**, which the
+build installs and enables as a service. SYSTEM ONE's transport buttons are
+physical, so nothing on the touchscreen can start a deck. On an image built
+by the script this needs no setup — `midisurface_rmz2.service` starts before
+Engine, answers the identity handshake, and disables motorized mode by
+itself. To drive it, write commands to its fifo:
 
 ```sh
-mkfifo /root/midififo
-/root/midisurface_rmz2 RMZ2_Controller < /root/midififo &
-exec 3>/root/midififo
-
-# Engine must be (re)started while the surface is already running: its MIDI
-# enumerator binds devices at startup, and won't pick one up later.
-systemctl restart engine.service
-
-echo 'motor left' >&3   # once per Engine start — see below
-echo 'play left'  >&3
+echo 'play left'  > /run/midisurface_rmz2.fifo
+echo 'cue right'  > /run/midisurface_rmz2.fifo
+echo 'press 0x0F 0x05' > /run/midisurface_rmz2.fifo   # Browse button
 ```
 
-`motor` is not optional. SYSTEM ONE's platters are motorized and its decks
-wait on platter timecode that cannot exist under emulation, so play silently
-does nothing until motorized mode is toggled off. It isn't persisted, so it's
-needed once per Engine start; Engine always starts motorized, so the toggle
-is deterministic. Cue works either way, which makes it a useful signal source
-when checking whether audio output itself is alive.
+The fifo lives in `/run`, not `/root`: this rootfs mounts `/` read-only, so
+creating it under `/root` fails at boot and the service restart-loops. That
+bug was invisible during interactive testing because the rootfs had been
+manually remounted read-write — a hazard worth remembering for anything
+validated by hand in this guest.
+
+Running it manually instead (stop the service first — it holds the ALSA
+client name):
+
+```sh
+systemctl stop midisurface_rmz2
+mkfifo /tmp/midififo
+/root/midisurface_rmz2 RMZ2_Controller --motor-off < /tmp/midififo &
+exec 3>/tmp/midififo
+# Engine must be (re)started while the surface already exists: its MIDI
+# enumerator binds devices at startup and won't pick one up later.
+systemctl restart engine.service
+echo 'play left' >&3
+```
+
+The motor-off is not optional. SYSTEM ONE's platters are motorized and its
+decks wait on platter timecode that cannot exist under emulation, so play
+silently does nothing until motorized mode is toggled off — while cue still
+previews audio, which makes cue a useful signal source when checking whether
+audio output itself is alive. Engine does not persist the setting and always
+starts motorized, so `--motor-off` re-applies it on each binding. It fires on
+Engine's identity inquiry (i.e. exactly when Engine has bound the surface, so
+it re-arms across Engine restarts on its own) and is debounced, because the
+control is a *toggle* and Engine sends the inquiry more than once per
+startup — acting on each would turn the motor straight back on.
+
+#### Driving a real USB controller
+
+Engine only binds a control surface that answers its inMusic identity
+inquiry, which no third-party controller does, and this rootfs's
+`KnownDevices` table has exactly one entry that reaches Engine's decks. So a
+generic controller cannot be bound directly at all. The arrangement that
+does work:
+
+```
+real controller --> midisurface_rmz2 --forward --> Engine
+                    (answers the handshake, relays MIDI unchanged)
+```
+
+with the *mapping* supplied by the assignment QML Engine loads, swapped per
+controller by [controllermap.sh](../shims/rk3588/controllermap/controllermap.sh):
+
+```sh
+controllermap.sh --list        # connected vid:pid ids + recognised mappings
+controllermap.sh --dry-run     # what would be installed, without doing it
+controllermap.sh               # install the match (runs at boot as a service)
+controllermap.sh --restore     # back to the vendor RMZ2 mapping
+```
+
+Manifest lines are whitespace-separated, `<vid:pid> <mapping-dir>
+[description]`, and the mapping directory holds files under exactly the names
+Engine resolves from `KnownDevices`:
+
+```
+mappings/<your-controller>/RMZ2_Controller_Assignments.qml   required
+mappings/<your-controller>/RMZ2_Controller_Device.qml        optional
+```
+
+The directory name is arbitrary (it just has to match the manifest); the
+filenames are not. `Device.qml` is only needed to change how Engine talks
+*to* the surface — SysEx identity, LED/pad-display encoding, the motor
+commands — as opposed to what the controls mean.
+
+Installs always start from a `*.vendor` snapshot taken on first run, so runs
+are idempotent and switching controllers cannot compound edits; if no listed
+controller is attached the vendor mapping is restored, since a mapping for
+absent hardware is worse than none.
+
+Authoring a mapping means copying the vendor
+`RMZ2_Controller_Assignments.qml` and changing the numbers — the structure
+(which QML component provides which function) stays. RMZ2's defaults are
+listed in [ENGINEOS.md](ENGINEOS.md#audio-playback-working--the-real-gate-and-corrections-to-the-sections-below);
+the decks are on MIDI channels 0x04/0x05, mixer channels 0x00/0x01, global
+0x0F.
+
+Four things that constrain what is mappable:
+
+- **Only Engine's own QML vocabulary exists** (`PlayCue`, `Sync`,
+  `MixerChannelCore`, `ActionPads`, ...). A control with no counterpart has
+  nowhere to map to.
+- **Relative encoders may need code, not configuration.** The QML names a CC;
+  it cannot reinterpret its values. Controllers differ (two's complement,
+  offset binary, absolute), so a browse knob that scrolls backwards, too
+  fast, or one-way needs translation in the forwarder.
+- **The pitch fader is 14-bit** (`ccUpper`/`ccLower`). A 7-bit controller can
+  drive `ccUpper` alone, at lower resolution.
+- **LED/display feedback will not work.** Engine emits RMZ2's own protocol
+  (it pushes cue-point names to the pad displays, for instance) and a foreign
+  controller won't understand it. Harmless, but expect dark buttons.
+
+Note also that `loadNote` in the deck model is vestigial — nothing references
+it. On SYSTEM ONE, loading a track is the deck's browse-encoder *push*
+(`pushNote`), and both decks' encoders use identical numbers, distinguished
+only by MIDI channel.
+
+#### The tty1 getty is disabled
+
+Engine renders fullscreen via eglfs/KMS on the same VT the console getty
+lives on, and the getty keeps reading the keyboard underneath it — so every
+keystroke reaches *both* Engine and an invisible root login shell. Typing
+into Engine's search box also types into that shell, and it is entirely
+possible to power the machine off by accident that way (observed).
+
+The build removes the enablement symlink and masks both `getty@tty1` and
+`autovt@tty1` (`autovt@` is an alias of `getty@` that logind spawns on VT
+allocation, so disabling alone is not enough). `serial-getty@ttyAMA0` is left
+alone and remains the way in over `-serial stdio`. Engine's keyboard input is
+unaffected, since eglfs reads evdev directly rather than through the VT.
 
 #### The shims are built from source now
 

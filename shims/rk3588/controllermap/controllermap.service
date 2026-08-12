@@ -1,0 +1,21 @@
+[Unit]
+Description=Select the Engine control-surface mapping for the connected USB controller
+# Must complete before Engine starts: Engine reads the assignment QML when it
+# binds the control surface during startup, so swapping the file afterwards has
+# no effect until the next bind.
+Before=engine.service midisurface_rmz2.service
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/controllermap/controllermap.sh
+# A missing manifest or an unrecognised controller is a normal state, not a
+# failure — the script leaves the vendor mapping in place and exits 0. Only a
+# genuinely broken install (missing target file, manifest pointing at a mapping
+# that isn't there) fails, and that should not block boot.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

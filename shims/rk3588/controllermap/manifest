@@ -1,0 +1,34 @@
+# controllermap manifest — which USB controller gets which Engine mapping.
+#
+# Format, whitespace separated:
+#   <vid:pid>   <mapping-dir>   [description]
+#
+# <vid:pid>      lowercase hex as it appears in sysfs, e.g. 154e:1000.
+#                Run `controllermap.sh --list` with the controller plugged in
+#                to print the ids actually present.
+# <mapping-dir>  a directory under mappings/ containing a single file,
+#                RMZ2_Controller_Assignments.qml, written against that
+#                controller's own notes/CCs.
+#
+# Authoring a mapping: copy the vendor RMZ2_Controller_Assignments.qml as a
+# starting point and change the note/CC numbers to what your controller emits
+# (`aseqdump`-style capture, or the controller's MIDI implementation chart).
+# The structure — which QML component provides which function — stays as-is;
+# only the numbers and the per-section midiChannel need to change. See
+# docs/ENGINEOS.md for the RMZ2 defaults (decks on MIDI channels 0x04/0x05,
+# mixer channels 0x00/0x01, global 0x0F).
+#
+# Nothing is listed by default: a mapping's note/CC numbers can be written from
+# a MIDI implementation chart, but the vid:pid can only be read off the unit,
+# so every line here has to be filled in with the hardware in hand. With no
+# match, the vendor RMZ2 mapping stays installed, which is what
+# midisurface_rmz2 drives on its own.
+#
+# mappings/denon-mc6000mk2 is written and ready to use — it only lacks the
+# product id below. See its README.md for what it maps and which of its
+# assumptions to verify first.
+#
+# Examples (commented — vendor ids are real, product ids are placeholders and
+# must be confirmed against your unit with --list before use):
+#
+154e:5021   denon-mc6000mk2      Denon DJ MC6000MK2

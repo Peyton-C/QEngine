@@ -8,8 +8,13 @@
 #   4. Build alsashim_rmz2.so (the only shim built here rather than committed
 #      prebuilt — see the build step below).
 #   5. Copy the dtshim/drmatomic/alsashim/touchbridge_rmz2 shims + fake-dt files into /root.
-#   6. Wire touchbridge_rmz2.service + an engine.service.d override so engine.service actually loads the shims and starts eglfs.
-#   7. Blank the root password for passwordless serial-console login.
+#   6. Wire touchbridge_rmz2.service, midisurface_rmz2.service (virtual control
+#      surface, auto motor-off), controllermap.service (USB controller ->
+#      assignment mapping), and an engine.service.d override so engine.service
+#      actually loads the shims and starts eglfs.
+#   7. Blank the root password for passwordless serial-console login, and
+#      disable the tty1 getty so stray keystrokes can't reach a hidden root
+#      shell behind Engine's fullscreen display.
 #   8. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
@@ -205,10 +210,18 @@ cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
 cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
 cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
-# Not preloaded into engine.service — a manually-run tool for driving the
-# emulated unit's transport, which has no on-screen equivalent. See
-# docs/BUILDING.md.
+# Started as a service (below) rather than preloaded into engine.service: it
+# is a MIDI device Engine binds, not a library Engine loads.
 cp -a /shims/midisurface_rmz2/midisurface_rmz2 /mnt/rootfs/root/midisurface_rmz2
+
+echo "--- installing controllermap (USB controller -> assignment mapping) ---"
+mkdir -p /mnt/rootfs/root/controllermap/mappings
+cp -a /shims/controllermap/controllermap.sh /mnt/rootfs/root/controllermap/controllermap.sh
+cp -a /shims/controllermap/manifest /mnt/rootfs/root/controllermap/manifest
+if [ -d /shims/controllermap/mappings ]; then
+    cp -a /shims/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
+fi
+chmod 755 /mnt/rootfs/root/controllermap/controllermap.sh
 cp -a "/shims/dtshim/fake-dt-rmz2/inmusic,product-code" /mnt/rootfs/root/fake-dt/
 cp -a /shims/dtshim/fake-dt-rmz2/serial-number /mnt/rootfs/root/fake-dt/
 cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
@@ -222,6 +235,33 @@ chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
 echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
 ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2.service
+
+# Control surface + mapping selection. Ordering matters and is declared in the
+# units themselves: controllermap picks the assignment file, then the surface
+# comes up, then Engine binds it. Both must precede engine.service because
+# Engine reads assignments and enumerates MIDI only during its own startup.
+cp -a /shims/midisurface_rmz2/midisurface_rmz2.service /mnt/rootfs/etc/systemd/system/midisurface_rmz2.service
+cp -a /shims/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
+ln -sf ../midisurface_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface_rmz2.service
+ln -sf ../controllermap.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/controllermap.service
+
+echo "--- disabling the tty1 getty (Engine's display) ---"
+# Engine renders fullscreen via eglfs/KMS on the same VT the console getty
+# lives on, and the getty keeps reading the keyboard underneath it. Every
+# keystroke therefore goes to *both* Engine and a root login shell you cannot
+# see — typing into Engine's search box also types into that shell, and it is
+# entirely possible to power the machine off by accident that way.
+#
+# Removing the enablement symlink disables it; masking getty@tty1 and
+# autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
+# allocation) stops anything bringing it back.
+#
+# The *serial* getty is deliberately left alone — serial-getty@ttyAMA0 is a
+# different template and remains the way in on -serial stdio. Engine's own
+# keyboard input is unaffected: eglfs reads evdev directly, not the VT.
+rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
@@ -237,6 +277,14 @@ Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # (-device hda-output, not hda-duplex) or Engine picks the capture device as
 # its default and never drives playback at all. See docs/ENGINEOS.md.
 Environment=ALSASHIM_CARD=0
+EOF
+
+# Engine must start after the control surface exists, or it will never bind it
+# (its MIDI enumerator only scans during startup).
+cat > /mnt/rootfs/etc/systemd/system/engine.service.d/midisurface.conf <<'EOF'
+[Unit]
+After=midisurface_rmz2.service controllermap.service
+Wants=midisurface_rmz2.service
 EOF
 
 umount /mnt/rootfs

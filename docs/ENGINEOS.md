@@ -203,7 +203,17 @@ then diffing `rmz2.user.settings/Engine.conf`: no key is written, and
 nothing platter-related appears anywhere under `/data`. So it must be
 re-sent once per Engine start. Because Engine therefore always starts
 motorized, a single toggle is deterministic rather than a gamble on unknown
-state; `midisurface_rmz2`'s `motor left|right` command does exactly this.
+state.
+
+This is automatic on an image built by
+[build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh):
+`midisurface_rmz2` runs as a service with `--motor-off`, which fires on
+Engine's identity inquiry — precisely when Engine has bound the surface, so it
+re-arms across Engine restarts without the surface restarting — and is
+debounced, since Engine sends the inquiry more than once per startup and the
+control is a *toggle* (acting on each would turn the motor back on). The
+`motor left|right` command does the same thing on demand. See
+[BUILDING.md](BUILDING.md#audio-playback-working--build-and-launch-requirements).
 
 Two mapping-level alternatives were tried and both failed (each reverted):
 

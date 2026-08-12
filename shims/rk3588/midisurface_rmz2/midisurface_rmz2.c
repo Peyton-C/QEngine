@@ -65,6 +65,7 @@
  */
 #include <alsa/asoundlib.h>
 #include <ctype.h>
+#include <time.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,6 +141,42 @@ static void init_id_response(void) {
 static snd_seq_t *seq = NULL;
 static int my_port = -1;
 static int verbose = 0;
+
+/* --forward: relay a real controller's MIDI into Engine.
+ *
+ * Engine will only bind a device that answers its inMusic identity inquiry,
+ * which no third-party controller does — so a generic controller cannot drive
+ * Engine directly, no matter how it is mapped. This program is already the
+ * thing Engine trusts, so it can carry the controller's events through: we
+ * subscribe to the controller's port and re-emit whatever arrives to our own
+ * subscribers (i.e. Engine). Events are relayed unchanged; translating a
+ * controller's notes/CCs to what Engine expects is done in the assignment
+ * QML instead (see controllermap.sh), which costs nothing at runtime and
+ * needs no per-controller code here. */
+static int forward_client = -1;
+static int forward_port = -1;
+
+/* Auto motor-off. SYSTEM ONE's decks wait on platter timecode that cannot
+ * exist under emulation, so play does nothing until motorized mode is toggled
+ * off, and Engine does not persist that setting — it starts motorized every
+ * time. Firing on Engine's identity inquiry is the right trigger because that
+ * is precisely when Engine has (re)bound us, so it re-arms naturally across
+ * Engine restarts without this process restarting.
+ *
+ * It must fire exactly once per binding, though: the control is a *toggle*,
+ * and Engine sends the inquiry more than once per startup (two is typical),
+ * so acting on each one would turn the motor straight back on. Hence a
+ * debounce — each inquiry re-arms a timer, and only the quiet period after
+ * the last one triggers the toggles. */
+static int motor_off_enabled = 0;
+static long long motor_off_due_ms = 0;   /* 0 = disarmed */
+#define MOTOR_OFF_DEBOUNCE_MS 4000
+
+static long long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 static void send_event(snd_seq_event_t *ev) {
     snd_seq_ev_set_source(ev, my_port);
@@ -249,6 +286,18 @@ static void list_ports(void) {
 static void handle_incoming(void) {
     snd_seq_event_t *ev;
     while (snd_seq_event_input(seq, &ev) >= 0) {
+        /* Anything from the forwarded controller goes straight out to Engine.
+         * Engine's own messages to us (LEDs, pad displays, the inquiry) come
+         * from a different client and must not be echoed back. */
+        if (forward_client >= 0 && ev->source.client == forward_client) {
+            snd_seq_event_t out = *ev;
+            if (verbose)
+                fprintf(stderr, "[surface] forwarding type %d from %d:%d\n",
+                        ev->type, ev->source.client, ev->source.port);
+            send_event(&out);
+            if (snd_seq_event_input_pending(seq, 0) <= 0) break;
+            continue;
+        }
         if (ev->type == SND_SEQ_EVENT_SYSEX) {
             const unsigned char *d = (const unsigned char *)ev->data.ext.ptr;
             unsigned int len = ev->data.ext.len;
@@ -268,6 +317,7 @@ static void handle_incoming(void) {
                 send_event(&out);
                 printf("answered device inquiry (identifying as inMusic 0x27)\n");
                 fflush(stdout);
+                if (motor_off_enabled) motor_off_due_ms = now_ms() + MOTOR_OFF_DEBOUNCE_MS;
             }
         }
         if (snd_seq_event_input_pending(seq, 0) <= 0) break;
@@ -283,10 +333,69 @@ static int deck_channel(const char *which) {
     return -1;
 }
 
-int main(int argc, char **argv) {
-    const char *client_name = (argc > 1) ? argv[1] : "RMZ2_Controller";
+/* Subscribe to the first sequencer port whose client name contains `match`
+ * and that can be read from, skipping our own client and Engine's. Matching on
+ * a substring rather than an exact name keeps this usable against whatever
+ * name a given controller's USB descriptor produces. */
+static int connect_forward_source(const char *match) {
+    snd_seq_client_info_t *cinfo;
+    snd_seq_port_info_t *pinfo;
+    snd_seq_client_info_alloca(&cinfo);
+    snd_seq_port_info_alloca(&pinfo);
+    int me = snd_seq_client_id(seq);
 
-    verbose = (argc > 2 && strcmp(argv[2], "-v") == 0);
+    snd_seq_client_info_set_client(cinfo, -1);
+    while (snd_seq_query_next_client(seq, cinfo) >= 0) {
+        int client = snd_seq_client_info_get_client(cinfo);
+        const char *cname = snd_seq_client_info_get_name(cinfo);
+        if (client == me || client == SND_SEQ_CLIENT_SYSTEM) continue;
+        if (!cname || !strstr(cname, match)) continue;
+
+        snd_seq_port_info_set_client(pinfo, client);
+        snd_seq_port_info_set_port(pinfo, -1);
+        while (snd_seq_query_next_port(seq, pinfo) >= 0) {
+            unsigned int caps = snd_seq_port_info_get_capability(pinfo);
+            if ((caps & SND_SEQ_PORT_CAP_READ) &&
+                (caps & SND_SEQ_PORT_CAP_SUBS_READ)) {
+                int port = snd_seq_port_info_get_port(pinfo);
+                if (snd_seq_connect_from(seq, my_port, client, port) < 0) {
+                    fprintf(stderr, "could not subscribe to %d:%d\n",
+                            client, port);
+                    continue;
+                }
+                forward_client = client;
+                forward_port = port;
+                printf("forwarding from \"%s\" (%d:%d)\n", cname, client, port);
+                fflush(stdout);
+                return 0;
+            }
+        }
+    }
+    fprintf(stderr, "no readable port found matching \"%s\"\n", match);
+    return -1;
+}
+
+int main(int argc, char **argv) {
+    const char *client_name = "RMZ2_Controller";
+    const char *forward_match = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) {
+            verbose = 1;
+        } else if (strcmp(argv[i], "--motor-off") == 0) {
+            motor_off_enabled = 1;
+        } else if (strcmp(argv[i], "--forward") == 0 && i + 1 < argc) {
+            forward_match = argv[++i];
+        } else if (argv[i][0] != '-') {
+            client_name = argv[i];
+        } else {
+            fprintf(stderr,
+                    "usage: %s [client-name] [-v] [--motor-off] "
+                    "[--forward <controller-name-substring>]\n", argv[0]);
+            return 1;
+        }
+    }
+
     init_id_response();
 
     int err = snd_seq_open(&seq, "default", SND_SEQ_OPEN_DUPLEX, 0);
@@ -316,6 +425,8 @@ int main(int argc, char **argv) {
            client_name, snd_seq_client_id(seq), my_port);
     fflush(stdout);
 
+    if (forward_match) connect_forward_source(forward_match);
+
     /* Poll stdin and the sequencer together: commands can arrive at any time,
      * but so can Engine's identity request, and missing that means the
      * surface is never bound. */
@@ -329,7 +440,15 @@ int main(int argc, char **argv) {
         pfds[0].events = POLLIN;
         snd_seq_poll_descriptors(seq, pfds + 1, seq_npfd, POLLIN);
 
-        if (poll(pfds, seq_npfd + 1, -1) < 0) break;
+        if (poll(pfds, seq_npfd + 1, motor_off_due_ms ? 250 : -1) < 0) break;
+
+        if (motor_off_due_ms && now_ms() >= motor_off_due_ms) {
+            motor_off_due_ms = 0;
+            toggle_motor(DECK_LEFT_CH);
+            toggle_motor(DECK_RIGHT_CH);
+            printf("auto motor-off: toggled both decks out of motorized mode\n");
+            fflush(stdout);
+        }
 
         for (int i = 1; i <= seq_npfd; i++) {
             if (pfds[i].revents & POLLIN) {

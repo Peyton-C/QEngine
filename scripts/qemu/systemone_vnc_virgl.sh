@@ -17,7 +17,7 @@ BUILD_DIR="$REPO_ROOT/build"
 # the ambiguity. Requires alsashim_rmz2.so preloaded into engine.service (see
 # build_arm64_rootfs.sh) — without it Engine rejects the card on name alone.
 exec qemu-system-aarch64 \
-  -machine virt,highmem=on -accel hvf \
+  -machine virt,highmem=on -accel kvm \
   -cpu host -m 4096 -smp 8 \
   -device virtio-gpu-gl-pci,edid=off,xres=1280,yres=800 \
   -display egl-headless,rendernode=/dev/dri/renderD128 \

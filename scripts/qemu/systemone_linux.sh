@@ -18,7 +18,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 
 exec qemu-system-aarch64 \
-  -machine virt,highmem=on -accel hvf \
+  -machine virt,highmem=on -accel kvm \
   -cpu host -m 4096 -smp 8 \
   -device virtio-gpu-pci,edid=off,xres=1280,yres=800 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
@@ -30,6 +30,6 @@ exec qemu-system-aarch64 \
   -drive if=none,file=$BUILD_DIR/data_disk.img,format=raw,id=data \
   -device virtio-blk-device,drive=data \
   -netdev user,id=net0,hostfwd=tcp::2225-:22 -device virtio-net-pci,netdev=net0 \
-  -display gtk,show-cursor=on \
+  -display sdl,show-cursor=on \
   -serial mon:stdio \
   -append "root=UUID=08f20450-f04c-437b-80a8-ee64034ca4b1 rw rootwait console=ttyAMA0"

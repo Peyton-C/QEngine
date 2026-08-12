@@ -311,6 +311,15 @@ Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # (-device hda-output, not hda-duplex) or Engine picks the capture device as
 # its default and never drives playback at all. See docs/ENGINEOS.md.
 Environment=ALSASHIM_CARD=0
+# It also deepens the PCM ring, which is what makes playback clean rather than
+# merely present: Engine asks for 256 frames (5.8ms) at 44100Hz, shorter than
+# the 10ms timer QEMU's audio subsystem services the emulated card on, so the
+# card reads ring content Engine hasn't refilled. ALSASHIM_BUFFER_SCALE
+# multiplies the ring depth only (the 128-frame period, i.e. Engine's callback
+# rate, is untouched); the built-in default is 8 -> 2048 frames / 46ms. Raise
+# it if playback still glitches, lower it to trade headroom back for latency,
+# or set 1 to leave Engine's own buffering alone entirely.
+#Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
 
 # Engine must start after the control surface exists, or it will never bind it

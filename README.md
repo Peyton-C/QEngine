@@ -1,5 +1,5 @@
 # QEngine - Engine OS Emulator
-Emulate Engine OS inside QEMU
+Emulate Engine OS and other InMusic OSes inside QEMU
 
 **NOTE:** Docs are currently **awful**, they will be better eventually. Basic docs for setting up arn64 emulation are [here.](scripts/build_scripts/BUILD_ARM64.md)
 

@@ -17,6 +17,18 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 
+# By default brew wont add e2fsprogs to the path
+if command -v dumpe2fs &>/dev/null; then
+    DUMPE2FS="dumpe2fs"
+else
+    DUMPE2FS="/opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs"
+fi
+
+# Read the UUID off the image rather than hardcoding it: it is a property of the
+# particular extraction, so it changes with every firmware version.
+ROOT_UUID="$($DUMPE2FS -h "$BUILD_DIR/rootfs_out.img" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
+[ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $BUILD_DIR/rootfs_out.img" >&2; exit 1; }
+
 exec qemu-system-aarch64 \
   -machine virt,highmem=on -accel hvf \
   -cpu host -m 4096 -smp 8 \
@@ -32,4 +44,4 @@ exec qemu-system-aarch64 \
   -netdev user,id=net0,hostfwd=tcp::2225-:22 -device virtio-net-pci,netdev=net0 \
   -display cocoa,show-cursor=on \
   -serial mon:stdio \
-  -append "root=UUID=08f20450-f04c-437b-80a8-ee64034ca4b1 rw rootwait console=ttyAMA0"
+  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"

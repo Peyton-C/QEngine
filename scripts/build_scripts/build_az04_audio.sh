@@ -92,6 +92,10 @@ for ko in /src/az04_codec.ko /src/az04_card.ko /out/snd-soc-core.ko /out/snd-pcm
 done
 DOCKER_SCRIPT
 
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm64 debian:trixie >/dev/null
 docker run --rm --platform linux/arm64 \
     -v "$SRC_DIR:/src" \
     -v "$OUT_DIR:/out" \

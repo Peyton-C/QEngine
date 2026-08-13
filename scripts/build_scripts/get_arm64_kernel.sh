@@ -51,6 +51,11 @@ trap 'rm -f "$INNER_SCRIPT"' EXIT
 # and executing a real file behaves normally.
 cat > "$INNER_SCRIPT" <<DOCKER_SCRIPT
 set -euo pipefail
+# A wrong-architecture container would silently produce an armhf kernel under an
+# arm64 name, which fails much later and confusingly at boot.
+case "\$(uname -m)" in aarch64|arm64) ;; *)
+    echo "ERROR: container is \$(uname -m), expected aarch64." >&2; exit 1 ;;
+esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq initramfs-tools linux-image-arm64 >/dev/null 2>&1
@@ -152,6 +157,10 @@ fi
 echo "--- done: kernel \$KVER ---"
 DOCKER_SCRIPT
 
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm64 debian:trixie >/dev/null
 docker run --rm --platform linux/arm64 \
     -v "$OUT_DIR:/out" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \

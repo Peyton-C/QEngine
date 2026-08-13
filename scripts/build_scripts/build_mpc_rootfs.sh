@@ -122,10 +122,20 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # unmodified. debian:bookworm for glibc 2.36, comfortably older than the guest's
 # — see docs/BUILDING.md's "Toolchain for cross-compiling shims".
 echo "--- building the touch bridge from source ---"
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
+        # touchbridge_mpc is copied straight into an armv7 rootfs, so a
+        # wrong-architecture container here would install a binary that cannot
+        # execute in the guest. Fail loudly instead.
+        case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
+            echo "ERROR: touchbridge container is $(uname -m), expected armv7l." >&2; exit 1 ;;
+        esac
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
@@ -174,6 +184,13 @@ resize2fs "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
+# losetup -f asks the kernel via /dev/loop-control for the next free number, but
+# the node itself only exists in this container's /dev if it already existed when
+# the container started. On a host with many loops already taken (snap mounts hold
+# dozens) the answer is a number above anything present, and losetup then fails
+# with "No such file or directory". Create the node ourselves — we are privileged,
+# loop is major 7, and the minor is the loop number.
+[ -e "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 "${LOOPDEV##*/loop}"
 losetup "$LOOPDEV" "$IMG"
 mkdir -p /mnt/rootfs
 # extents/64bit are ext4 features even though `file` labels this ext2
@@ -224,6 +241,7 @@ fi
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
+docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-slim >/dev/null
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \

@@ -88,12 +88,28 @@ echo ""
 ### rootfs ####################################################################
 ROOTFS_ARGS=(--firmware "$FIRMWARE" --out "$ROOTFS_IMG")
 [ -n "$SIZE" ] && ROOTFS_ARGS+=(--size "$SIZE")
-[ "$FORCE" -eq 1 ] && ROOTFS_ARGS+=(--force)
 
-if [ -e "$ROOTFS_IMG" ] && [ "$FORCE" -ne 1 ]; then
+# The builders create and resize the image before installing the shim stack, so a
+# build that aborts partway leaves a valid-looking but incomplete ext4 image.
+# Existence alone therefore does not mean "built" — this marker is written only
+# after the builder exits successfully, and an unmarked image is rebuilt rather
+# than trusted. Without this, a failed build yields an instance that boots to a
+# login prompt with none of the shims, which looks like a working instance.
+STAMP="$INSTANCE_DIR/.rootfs.complete"
+
+if [ -e "$ROOTFS_IMG" ] && [ -e "$STAMP" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- rootfs.img exists, keeping it (pass --force to rebuild) ---"
 else
+    if [ -e "$ROOTFS_IMG" ]; then
+        if [ ! -e "$STAMP" ]; then
+            echo "--- rootfs.img is present but incomplete (a previous build failed) — rebuilding ---"
+        fi
+        # The builders refuse to overwrite an existing --out without this.
+        ROOTFS_ARGS+=(--force)
+    fi
+    rm -f "$STAMP"
     "$SCRIPT_DIR/$ROOTFS_BUILDER" "${ROOTFS_ARGS[@]}"
+    touch "$STAMP"
 fi
 
 ### data disk #################################################################

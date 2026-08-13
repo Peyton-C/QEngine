@@ -130,11 +130,21 @@ STAGE_DIR="$(mktemp -d /tmp/build-arm64-rootfs-stage.XXXXXX)"
 trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"' EXIT
 
 echo "--- building shims from source ---"
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm64 \
     -v "$SHIMS_DIR:/shims" \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
+        # The shims and the staged DRI driver are copied straight into an arm64
+        # rootfs, so a wrong-architecture container here would graft foreign
+        # binaries in. Fail loudly instead.
+        case "$(uname -m)" in aarch64|arm64) ;; *)
+            echo "ERROR: shim container is $(uname -m), expected aarch64." >&2; exit 1 ;;
+        esac
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h.
@@ -213,6 +223,13 @@ resize2fs "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
+# losetup -f asks the kernel via /dev/loop-control for the next free number, but
+# the node itself only exists in this container's /dev if it already existed when
+# the container started. On a host with many loops already taken (snap mounts hold
+# dozens) the answer is a number above anything present, and losetup then fails
+# with "No such file or directory". Create the node ourselves — we are privileged,
+# loop is major 7, and the minor is the loop number.
+[ -e "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 "${LOOPDEV##*/loop}"
 losetup "$LOOPDEV" "$IMG"
 mkdir -p /mnt/rootfs
 # extents/64bit are ext4 features even though `file` labels this ext2
@@ -344,6 +361,7 @@ fi
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
+docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-slim >/dev/null
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \

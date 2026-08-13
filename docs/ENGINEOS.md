@@ -557,7 +557,7 @@ kprobe_events` — no rebuild needed) showing exactly one call, for
 are ever reached. Cross-referencing against the actual kernel source
 (`sound/soc/soc-utils.c`, matching Debian's `linux-image-arm64`
 6.12.101+deb13-arm64 build the project's kernel already comes from —
-[get_arm64_kernel.sh](../scripts/build_scripts/get_arm64_kernel.sh))
+[get_kernel.sh](../scripts/build_scripts/get_kernel.sh))
 found the exact cause: `snd-soc-dummy`'s own `dummy_dma_open()` has a
 guard —
 

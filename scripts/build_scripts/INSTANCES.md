@@ -32,9 +32,9 @@ existing rootfs, `--size` to change the image size.
 The families live in one table in `new_instance.sh`, a row each:
 
 ```
-<family>|<rootfs markers>|<rootfs builder>|<disk builder>|<data image>|<launcher prefix>
-engine|/usr/Engine|build_arm64_rootfs.sh|make_data_disk.sh|data_disk.img|systemone
-mpc|/usr/bin/MPC|build_mpc_rootfs.sh|make_emmc_disk.sh|emmc.img|mpc
+<family>|<rootfs markers>|<rootfs builder>|<data image name>
+engine|/usr/Engine|build_arm64_rootfs.sh|data_disk.img
+mpc|/usr/bin/MPC|build_mpc_rootfs.sh|emmc.img
 ```
 
 The markers are paths that must **all** exist in the built rootfs for the row to
@@ -102,12 +102,12 @@ since `virtio-gpu-gl` exists only as a PCI device.
 ```sh
 scripts/qemu/run_instance.sh --list
 scripts/qemu/run_instance.sh --name mpc-3.9.1
-scripts/qemu/run_instance.sh --name rmz2-5.0.4 --launcher systemone_vnc.sh
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display vnc
 ```
 
-`--launcher` overrides the launcher recorded in `instance.env`, which is how you
-pick a different display backend (`systemone_vnc.sh`, `systemone_linux_virgl.sh`,
-`mpc_macos.sh`, ...).
+`--display` overrides the `DISPLAY_MODE` recorded in `instance.env` for one run. The
+modes are `sdl`, `sdl-gl`, `cocoa`, `vnc`, `egl-vnc` and `none`; see
+[../qemu/display_modes.sh](../qemu/display_modes.sh).
 
 ## Layout
 
@@ -131,18 +131,22 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 
 | Key | Meaning |
 |---|---|
-| `LAUNCHER` | which `scripts/qemu/` script to exec |
+| `DEVICE` | the device family, detected from the rootfs (see above) |
+| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's (`cocoa` on macOS, `sdl` elsewhere) |
 | `ROOTFS_IMG`, `DATA_IMG` | this instance's disks |
 | `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
 | `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |
 | `KERNEL_IMG`, `INITRD_IMG` | the kernel that matches `ARCH`, shared by every instance of it |
 | `SSH_PORT`, `VNC_DISPLAY` | derived from the instance name so two instances cannot collide. Edit if a port is already taken on the host |
 
-`run_instance.sh` exports these and execs the launcher named in `instance.env`. Those
-launchers are wrappers around a single `run_qemu.sh`, which resolves the machine type,
-devices, kernel, accelerator and display from `ARCH`, `FAMILY` and `DISPLAY_MODE`, and
-falls back to the previously hardcoded paths and ports when the variables are unset --
-so running any of them directly still works exactly as before.
+`run_instance.sh` exports these and execs `run_qemu.sh`, which resolves the machine
+type, devices, kernel, accelerator, audio and display from `ARCH`, `DEVICE` and
+`DISPLAY_MODE`. There are no per-device or per-display launcher scripts: they were
+seven near-copies of one command line, and every value that distinguished them now
+lives in `instance.env` where it can be read and edited.
+
+`run_qemu.sh` falls back to the paths and ports those launchers used to hardcode, so it
+can also be run directly against a hand-built `build/rootfs_out.img`.
 
 ## Notes
 

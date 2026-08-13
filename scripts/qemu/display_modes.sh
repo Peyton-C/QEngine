@@ -5,10 +5,10 @@
 # copying a launcher.
 #
 # The audio backend is picked from the host OS rather than being part of the mode.
-# It had been part of the copy: systemone_vnc.sh asked for coreaudio and HVF while
-# systemone_vnc_virgl.sh asked for pipewire and KVM, so on Linux only one of the two
-# VNC scripts could ever have worked. That is drift between copies, not a real
-# difference between VNC modes.
+# It had been part of the per-launcher copies this replaced: the plain VNC launcher
+# asked for coreaudio and HVF while the virgl one asked for pipewire and KVM, so on
+# Linux only one of the two could ever have worked. That was drift between copies, not
+# a real difference between VNC modes.
 
 DISPLAY_MODE="${DISPLAY_MODE:-sdl}"
 

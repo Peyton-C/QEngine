@@ -3,9 +3,17 @@ Requires docker, qemu, binwalk 3.1.X, e2fsprogs.
 
 1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/) — the **Gen 1** `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37).
 2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`.
-3. Get the appropriate kernel and initrd with `get_armv7_kernel.sh`.
-4. Make a /data disk for MPC with `make_emmc_disk.sh`.
-5. Boot MPC with `scripts/qemu/mpc_linux.sh`.
+3. Get the kernel and initrd with `get_kernel.sh --arch armhf`.
+4. Make a /data disk for MPC with `make_disk.sh --family mpc`.
+5. Boot with `DEVICE=mpc ARCH=armhf scripts/qemu/run_qemu.sh`.
+
+Or let one command do all of it, with the device family and architecture identified from
+the firmware — see [INSTANCES.md](INSTANCES.md):
+
+```sh
+scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --firmware PATH_TO_MPC_UPDATE.img
+scripts/qemu/run_instance.sh --name mpc-3.9.1
+```
 
 Touch works out of the box: the rootfs build installs `touchbridge_mpc` and starts it
 before `acvs.service`. MPC only responds to a real touchscreen, and QEMU's virtio

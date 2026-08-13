@@ -22,8 +22,8 @@
 #   --force     rebuild the rootfs even if this instance already has one
 #
 # The kernel and initrd are deliberately *not* per-instance: they are generic
-# distro kernels, identical for every instance of the same architecture. Build
-# them once with get_arm64_kernel.sh / get_armv7_kernel.sh.
+# distro kernels, identical for every instance of the same architecture. This script
+# builds the one it needs (get_kernel.sh --arch) if it is missing.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -59,18 +59,18 @@ case "$NAME" in
     */*|"") echo "ERROR: --name must not be empty or contain a slash." >&2; exit 1 ;;
 esac
 
-# Which launcher to record depends on the host OS, not on the device: the
-# *_linux.sh scripts use KVM-or-TCG with GTK and PipeWire, the *_macos.sh ones HVF
-# with Cocoa and CoreAudio. Pinning the Linux one here would hand a Mac a command
-# line macOS rejects outright (`-accel kvm: invalid accelerator`).
+# The display backend depends on the host OS, not on the device. Recorded in
+# instance.env rather than resolved at boot so it stays visible and editable there:
+# switching an instance to VNC is a one-word edit, or --display for a single run.
+# The accelerator and audio backend follow the host at boot and need no key here.
 case "$(uname -s)" in
-    Darwin) HOST_OS="macos" ;;
-    *)      HOST_OS="linux" ;;
+    Darwin) DISPLAY_MODE="cocoa" ;;
+    *)      DISPLAY_MODE="sdl" ;;
 esac
 
 # Device family registry. One row per family:
 #
-#   <family>|<rootfs markers>|<rootfs builder>|<disk builder>|<data image>|<launcher prefix>
+#   <family>|<rootfs markers>|<rootfs builder>|<data image name>
 #
 # The markers are paths that must ALL exist in the built rootfs for the row to
 # match, space separated, so a family that needs more than one piece of evidence
@@ -81,9 +81,13 @@ esac
 # The markers are what the family actually is, not a guess from the filename or the
 # product code: /usr/Engine is the Engine install tree, /usr/bin/MPC is the MPC
 # application binary itself.
+# The disk builder and the QEMU command line are no longer per-family scripts:
+# make_disk.sh takes the family and run_qemu.sh takes it from instance.env, so the only
+# per-family things left here are the markers that identify it, the rootfs builder
+# (which differs in its whole shim stack) and the name of its writable disk.
 DEVICE_FAMILIES="\
-engine|/usr/Engine|build_arm64_rootfs.sh|make_data_disk.sh|data_disk.img|systemone
-mpc|/usr/bin/MPC|build_mpc_rootfs.sh|make_emmc_disk.sh|emmc.img|mpc"
+engine|/usr/Engine|build_arm64_rootfs.sh|data_disk.img
+mpc|/usr/bin/MPC|build_mpc_rootfs.sh|emmc.img"
 
 family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | tr '\n' ' '; }
 
@@ -156,10 +160,9 @@ DEVICE_ROW="$(family_row "$DEVICE")"
     echo "ERROR: --device must be one of: $(family_names)(got '$DEVICE')." >&2
     exit 1; }
 
-IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DISK_BUILDER DATA_NAME LAUNCHER_PREFIX <<EOF
+IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DATA_NAME <<EOF
 $DEVICE_ROW
 EOF
-LAUNCHER="${LAUNCHER_PREFIX}_${HOST_OS}.sh"
 
 INSTANCE_DIR="$INSTANCES_DIR/$NAME"
 ROOTFS_IMG="$INSTANCE_DIR/rootfs.img"
@@ -232,7 +235,7 @@ echo "--- rootfs is $DETECTED_FAMILY ---"
 if [ -e "$DATA_IMG" ]; then
     echo "--- $DATA_NAME exists, keeping it (delete it by hand for a clean /data) ---"
 else
-    "$SCRIPT_DIR/$DISK_BUILDER" "$DATA_IMG"
+    "$SCRIPT_DIR/make_disk.sh" --family "$DEVICE" "$DATA_IMG"
 fi
 
 ### kernel ####################################################################
@@ -254,10 +257,6 @@ else
     exit 1
 fi
 
-case "$ARCH" in
-    arm64) KERNEL_BUILDER="get_arm64_kernel.sh" ;;
-    armhf) KERNEL_BUILDER="get_armv7_kernel.sh" ;;
-esac
 KERNEL_IMG="$REPO_ROOT/build/vmlinuz-generic-$ARCH"
 INITRD_IMG="$REPO_ROOT/build/initrd-generic-$ARCH"
 
@@ -267,22 +266,22 @@ echo "--- rootfs is $ARCH ---"
 # every instance of this architecture, so this happens once and is a no-op after.
 if [ ! -s "$KERNEL_IMG" ] || [ ! -s "$INITRD_IMG" ]; then
     echo "--- no $ARCH kernel yet, building it (once per architecture) ---"
-    "$SCRIPT_DIR/$KERNEL_BUILDER"
+    "$SCRIPT_DIR/get_kernel.sh" --arch "$ARCH"
     [ -s "$KERNEL_IMG" ] && [ -s "$INITRD_IMG" ] || {
-        echo "ERROR: $KERNEL_BUILDER did not produce $KERNEL_IMG and $INITRD_IMG." >&2
+        echo "ERROR: get_kernel.sh --arch $ARCH did not produce $KERNEL_IMG and $INITRD_IMG." >&2
         exit 1; }
 else
     echo "--- reusing the existing $ARCH kernel ---"
 fi
 
-# The launchers take their machine type and device models from ARCH, so either
-# architecture boots. Only the combination is new: an armv7 Engine or an arm64 MPC
-# has never been run, and the audio path in particular differs (mmio virtio-sound
-# rather than PCI hda). Flag it as unproven rather than implying it is broken.
-case "$LAUNCHER:$ARCH" in
-    systemone_*:arm64|mpc_*:armhf) ;;
-    *) echo "NOTE: $DEVICE on $ARCH is an untried combination. $LAUNCHER will build a"
-       echo "      $ARCH command line for it, but nothing here has booted one yet." ;;
+# run_qemu.sh takes its machine type and device models from ARCH, so either
+# architecture boots. Only the combination is new: an armv7 Engine or an arm64 MPC has
+# never been run, and the audio path in particular differs (mmio virtio-sound rather
+# than PCI hda). Flag it as unproven rather than implying it is broken.
+case "$DEVICE:$ARCH" in
+    engine:arm64|mpc:armhf) ;;
+    *) echo "NOTE: $DEVICE on $ARCH is an untried combination. A command line will be"
+       echo "      built for it, but nothing here has booted one yet." ;;
 esac
 
 ### instance.env ##############################################################
@@ -303,7 +302,7 @@ cat > "$INSTANCE_DIR/instance.env" <<EOF
 INSTANCE_NAME=$NAME
 DEVICE=$DEVICE
 FIRMWARE_IMG=$FIRMWARE
-LAUNCHER=$LAUNCHER
+DISPLAY_MODE=$DISPLAY_MODE
 ROOTFS_IMG=$ROOTFS_IMG
 DATA_IMG=$DATA_IMG
 ROOT_UUID=$ROOT_UUID

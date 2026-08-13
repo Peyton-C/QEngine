@@ -2,18 +2,21 @@
 # Boot an emulated inMusic device in QEMU. One command line, with the parts that vary
 # resolved from the environment rather than by copying the file.
 #
-# The per-device and per-display scripts next to this one are thin wrappers that set
-# FAMILY and DISPLAY_MODE and exec this. They exist because BUILD_ARM64.md,
-# BUILD_MPC.md and INSTANCES.md name them, and because instance.env records a
-# launcher by filename.
+# Normally reached through scripts/qemu/run_instance.sh, which reads these values out
+# of an instance's instance.env. Run it directly by setting them yourself.
 #
-#   FAMILY        engine | mpc      whether the guest gets an audio card
+#   DEVICE        engine | mpc      which shim stack the guest has, and so whether it
+#                                   gets an audio card
 #   DISPLAY_MODE  see display_modes.sh
 #   ARCH          arm64 | armhf     machine type and device models, see arch_devices.sh
 #
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
 # ACCEL, CPU, MEM, SMP, RENDERNODE.
+#
+# This replaced seven near-identical launcher scripts. They differed only in the two
+# values above and in whether the display backend needed GL, and the copies had
+# already drifted: two of them disagreed about which audio backend a VNC session uses.
 #
 # Audio, for the engine family: hda-output (playback-only), NOT hda-duplex. Engine
 # marks the first device of each enumeration pass as its default, and the capture
@@ -28,7 +31,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 
-FAMILY="${FAMILY:-engine}"
+DEVICE="${DEVICE:-engine}"
 
 # Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
 # devices from ARCH. Kept in one file so the PCI-vs-mmio reasoning does not get
@@ -47,10 +50,10 @@ case "$ARCH" in
     arm64) _kern="vmlinuz-generic-arm64"; _init="initrd-generic-arm64" ;;
     armhf) _kern="vmlinuz-generic-armhf"; _init="initrd-generic-armhf" ;;
 esac
-case "$FAMILY" in
+case "$DEVICE" in
     engine) _data="data_disk.img" ;;
     mpc)    _data="emmc.img" ;;
-    *) echo "ERROR: unknown FAMILY '$FAMILY' (expected engine or mpc)." >&2; exit 1 ;;
+    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine or mpc)." >&2; exit 1 ;;
 esac
 
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
@@ -94,7 +97,7 @@ esac
 
 # Only the engine family gets a card; MPC never had one and does not want one.
 AUDIO_ARGS=""
-if [ "$FAMILY" = engine ]; then
+if [ "$DEVICE" = engine ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
 fi
 

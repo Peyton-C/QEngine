@@ -1,16 +1,14 @@
 #!/bin/bash
 # run_instance.sh — boot one instance created by new_instance.sh.
 #
-# This is a thin wrapper, deliberately: it reads the instance's instance.env,
-# exports those values, and execs the ordinary per-device launcher. The QEMU
-# command lines stay in exactly one place each (systemone_*.sh, mpc_*.sh), which
-# is why those scripts take their paths and ports from the environment with the
-# old hardcoded values as defaults.
+# This is a thin wrapper, deliberately: it reads the instance's instance.env, exports
+# those values, and execs run_qemu.sh. The QEMU command line stays in exactly one
+# place, which is why run_qemu.sh takes everything that varies from the environment.
 #
-# Usage: run_instance.sh --name <name> [--launcher <script>] [--list]
+# Usage: run_instance.sh --name <name> [--display <mode>] [--list]
 #   --name      instance under build/instances/ to boot
-#   --launcher  override the launcher recorded in instance.env, e.g. to pick a
-#               different display backend (systemone_vnc.sh, mpc_macos.sh, ...)
+#   --display   override the display backend recorded in instance.env for this run
+#               (sdl, sdl-gl, cocoa, vnc, egl-vnc, none — see display_modes.sh)
 #   --list      list the instances that exist and exit
 set -euo pipefail
 
@@ -19,12 +17,12 @@ INSTANCES_DIR="$REPO_ROOT/build/instances"
 QEMU_DIR="$REPO_ROOT/scripts/qemu"
 
 NAME=""
-LAUNCHER_OVERRIDE=""
+DISPLAY_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --name) NAME="$2"; shift 2 ;;
-        --launcher) LAUNCHER_OVERRIDE="$2"; shift 2 ;;
+        --display) DISPLAY_OVERRIDE="$2"; shift 2 ;;
         --list)
             if [ -d "$INSTANCES_DIR" ]; then
                 for d in "$INSTANCES_DIR"/*/; do
@@ -57,8 +55,21 @@ fi
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 
-[ -n "${LAUNCHER_OVERRIDE}" ] && LAUNCHER="$LAUNCHER_OVERRIDE"
-[ -x "$QEMU_DIR/$LAUNCHER" ] || { echo "ERROR: launcher not found: $QEMU_DIR/$LAUNCHER" >&2; exit 1; }
+[ -n "$DISPLAY_OVERRIDE" ] && DISPLAY_MODE="$DISPLAY_OVERRIDE"
+
+# instance.env used to record a launcher filename instead of a display mode. Map the
+# old key rather than failing, so an instance created before that change still boots.
+if [ -z "${DISPLAY_MODE:-}" ] && [ -n "${LAUNCHER:-}" ]; then
+    case "$LAUNCHER" in
+        *_virgl.sh)  DISPLAY_MODE="sdl-gl" ;;
+        *_vnc.sh)    DISPLAY_MODE="vnc" ;;
+        *_macos.sh)  DISPLAY_MODE="cocoa" ;;
+        *)           DISPLAY_MODE="sdl" ;;
+    esac
+    echo "NOTE: instance.env records LAUNCHER=$LAUNCHER, which predates DISPLAY_MODE."
+    echo "      Using DISPLAY_MODE=$DISPLAY_MODE. Replace the key to silence this."
+fi
+DISPLAY_MODE="${DISPLAY_MODE:-sdl}"
 
 for f in "$ROOTFS_IMG" "$DATA_IMG"; do
     [ -s "$f" ] || { echo "ERROR: required image missing or empty: $f" >&2; exit 1; }
@@ -78,7 +89,7 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 echo "=== instance : $NAME (${DEVICE:-?}, from $(basename "${FIRMWARE_IMG:-unknown}"))"
-echo "=== launcher : $LAUNCHER"
+echo "=== display  : $DISPLAY_MODE"
 echo "=== rootfs   : $ROOTFS_IMG (${ARCH:-arch unrecorded})"
 echo "=== kernel   : ${KERNEL_IMG:-<launcher default>}"
 echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
@@ -86,4 +97,5 @@ echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
 echo ""
 
 export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
-exec "$QEMU_DIR/$LAUNCHER"
+export DEVICE DISPLAY_MODE
+exec "$QEMU_DIR/run_qemu.sh"

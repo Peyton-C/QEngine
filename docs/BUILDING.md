@@ -876,7 +876,7 @@ into the image, regardless of which Engine version or host it's paired
 with. Worth fixing in the initrd itself at some point rather than
 repeating by hand each time.
 
-> **Since done.** `get_arm64_kernel.sh` builds the initrd with its own curated
+> **Since done.** `get_kernel.sh` builds the initrd with its own curated
 > `MODULES` list plus a `copymods` `init-bottom` hook that relocates the initrd's
 > modules onto a tmpfs on the real root, so a current build needs no per-boot
 > manual step. The rest of this entry describes the older hand-run setup.
@@ -1242,7 +1242,7 @@ live in [shims/rk3588/az04-audio/](../shims/rk3588/az04-audio/)
 
 The project's kernel/initrd are pulled from Debian trixie's
 `linux-image-arm64` package
-([get_arm64_kernel.sh](../scripts/build_scripts/get_arm64_kernel.sh)),
+([get_kernel.sh](../scripts/build_scripts/get_kernel.sh)),
 currently `6.12.101+deb13-arm64`. Building an out-of-tree module that
 actually loads needs an *exact* vermagic match (`CONFIG_MODVERSIONS` is
 on — even a matching kernel version with different symbol CRCs fails to
@@ -1263,7 +1263,7 @@ docker exec az04dev bash -c "
 building) is where the *pool* of real Debian-built `.ko`s lives —
 needed here for `snd-soc-core.ko` and its own dependencies
 (`snd-pcm-dmaengine.ko`, `snd-compress.ko`), none of which are in this
-project's trimmed initrd (see `MODULES=` in `get_arm64_kernel.sh` — audio
+project's trimmed initrd (see `MODULES=` in `get_kernel.sh` — audio
 support there is deliberately curated down to USB-class/HDA only, no
 ASoC at all). Grab them with `docker cp` and `xz -d`, same as any other
 module in this project's build recipe.

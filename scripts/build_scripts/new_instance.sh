@@ -60,23 +60,57 @@ case "$(uname -s)" in
     *)      HOST_OS="linux" ;;
 esac
 
-case "$DEVICE" in
-    engine)
-        ROOTFS_BUILDER="build_arm64_rootfs.sh"
-        DISK_BUILDER="make_data_disk.sh"
-        DATA_NAME="data_disk.img"
-        LAUNCHER="systemone_${HOST_OS}.sh"
-        ;;
-    mpc)
-        ROOTFS_BUILDER="build_mpc_rootfs.sh"
-        DISK_BUILDER="make_emmc_disk.sh"
-        DATA_NAME="emmc.img"
-        LAUNCHER="mpc_${HOST_OS}.sh"
-        ;;
-    *)
-        echo "ERROR: --device must be 'engine' or 'mpc' (got '${DEVICE:-}')." >&2
-        exit 1 ;;
-esac
+# Device family registry. One row per family:
+#
+#   <family>|<rootfs markers>|<rootfs builder>|<disk builder>|<data image>|<launcher prefix>
+#
+# The markers are paths that must ALL exist in the built rootfs for the row to
+# match, space separated, so a family that needs more than one piece of evidence
+# just lists more. Rows are tried in order, which lets a future family whose
+# markers are a superset of another's be listed first and win. Adding a device
+# family means adding a row; none of the logic below changes.
+#
+# The markers are what the family actually is, not a guess from the filename or the
+# product code: /usr/Engine is the Engine install tree, /usr/bin/MPC is the MPC
+# application binary itself.
+DEVICE_FAMILIES="\
+engine|/usr/Engine|build_arm64_rootfs.sh|make_data_disk.sh|data_disk.img|systemone
+mpc|/usr/bin/MPC|build_mpc_rootfs.sh|make_emmc_disk.sh|emmc.img|mpc"
+
+family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | tr '\n' ' '; }
+
+# Look a family up by name, printing its row. Empty output means it is not known.
+family_row() {
+    # An `if` rather than `cond && cmd`: the loop's exit status is its last
+    # iteration's, so a non-matching final row would fail the pipeline and, under
+    # `set -e` with pipefail, abort the script silently.
+    printf '%s\n' "$DEVICE_FAMILIES" | while IFS='|' read -r fam rest; do
+        if [ "$fam" = "$1" ]; then printf '%s|%s\n' "$fam" "$rest"; fi
+    done
+}
+
+# Identify a built rootfs by its markers, printing the family name. Empty output
+# means nothing matched, i.e. a device family with no row yet.
+detect_family() {
+    printf '%s\n' "$DEVICE_FAMILIES" | while IFS='|' read -r fam markers _; do
+        [ -n "$fam" ] || continue
+        matched=1
+        for marker in $markers; do
+            "$DEBUGFS" -R "stat $marker" "$1" 2>/dev/null | grep -q 'Inode:' || { matched=0; break; }
+        done
+        if [ "$matched" -eq 1 ]; then printf '%s\n' "$fam"; break; fi
+    done
+}
+
+DEVICE_ROW="$(family_row "${DEVICE:-}")"
+[ -n "$DEVICE_ROW" ] || {
+    echo "ERROR: --device must be one of: $(family_names)(got '${DEVICE:-}')." >&2
+    exit 1; }
+
+IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DISK_BUILDER DATA_NAME LAUNCHER_PREFIX <<EOF
+$DEVICE_ROW
+EOF
+LAUNCHER="${LAUNCHER_PREFIX}_${HOST_OS}.sh"
 
 # brew keeps e2fsprogs keg-only, so dumpe2fs is off PATH on a stock macOS setup.
 # Same fallback the macOS launchers already use, so this does not become the one
@@ -129,6 +163,32 @@ else
     "$SCRIPT_DIR/$ROOTFS_BUILDER" "${ROOTFS_ARGS[@]}"
     touch "$STAMP"
 fi
+
+### device family #############################################################
+# Confirm the firmware really is the family that was asked for, now that there is a
+# filesystem to look at. --device still has to be given up front, because it selects
+# the builder that performs the extraction, but it no longer has to be trusted after
+# the fact.
+#
+# This catches a mismatch the architecture guards cannot. Those compare the rootfs
+# against their own builder's architecture, so engine-vs-mpc confusion is only caught
+# while the two families happen to differ in architecture. An arm64 MPC image built
+# as --device engine passes them and gets the entire Engine shim stack installed into
+# an MPC rootfs, producing an instance that boots and can never work.
+DETECTED_FAMILY="$(detect_family "$ROOTFS_IMG")"
+if [ -z "$DETECTED_FAMILY" ]; then
+    echo "ERROR: $ROOTFS_IMG matches no known device family." >&2
+    echo "       Looked for the markers of: $(family_names)" >&2
+    echo "       If this is a new family, add a row to DEVICE_FAMILIES in this script." >&2
+    exit 1
+elif [ "$DETECTED_FAMILY" != "$DEVICE" ]; then
+    echo "ERROR: --device $DEVICE was asked for, but this rootfs identifies as $DETECTED_FAMILY" >&2
+    echo "       (looked for $DEVICE_MARKERS and did not find it)." >&2
+    echo "       It has been built with the wrong shim stack; rebuild with" >&2
+    echo "       --device $DETECTED_FAMILY --force." >&2
+    exit 1
+fi
+echo "--- rootfs is $DETECTED_FAMILY ---"
 
 ### data disk #################################################################
 # Never rebuilt by --force: this is where the guest's own state lives, and its

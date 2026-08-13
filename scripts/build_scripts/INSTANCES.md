@@ -26,6 +26,32 @@ reused by every later instance that needs it.
 layout: `engine` (Engine OS) or `mpc` (Akai MPC). Add `--force` to rebuild an
 existing rootfs, `--size` to change the image size.
 
+### Device families are a registry, and the choice is checked
+
+The families live in one table in `new_instance.sh`, a row each:
+
+```
+<family>|<rootfs markers>|<rootfs builder>|<disk builder>|<data image>|<launcher prefix>
+engine|/usr/Engine|build_arm64_rootfs.sh|make_data_disk.sh|data_disk.img|systemone
+mpc|/usr/bin/MPC|build_mpc_rootfs.sh|make_emmc_disk.sh|emmc.img|mpc
+```
+
+The markers are paths that must **all** exist in the built rootfs for the row to
+match, so a family needing more than one piece of evidence lists more. Rows are
+tried in order, letting a family whose markers are a superset of another's be listed
+first. Adding a device family is adding a row.
+
+`--device` still has to be given, because it selects the builder that performs the
+extraction, but it is no longer trusted afterwards: once the rootfs exists it is
+identified from its markers, and a disagreement is a hard error before the data disk
+is created.
+
+That check earns its keep on a mismatch the architecture guards cannot see. Those
+compare a rootfs against their own builder's architecture, so engine-versus-mpc
+confusion is only caught while the two families differ in architecture. An arm64 MPC
+image built as `--device engine` passes them and gets the entire Engine shim stack
+installed into an MPC rootfs — an instance that boots and can never work.
+
 ### Architecture is detected, not assumed
 
 `--device` deliberately does **not** imply the architecture. Engine OS ships on both

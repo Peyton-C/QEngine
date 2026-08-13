@@ -12,7 +12,8 @@ same disk, which corrupts it without an error.
 ## Create
 
 ```sh
-scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 --device engine \
+# --device is optional; the family is identified from the firmware when omitted
+scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 \
     --firmware ~/firmware/SYSTEMONE-5.0.4-Update.img
 
 scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
@@ -41,10 +42,15 @@ match, so a family needing more than one piece of evidence lists more. Rows are
 tried in order, letting a family whose markers are a superset of another's be listed
 first. Adding a device family is adding a row.
 
-`--device` still has to be given, because it selects the builder that performs the
-extraction, but it is no longer trusted afterwards: once the rootfs exists it is
-identified from its markers, and a disagreement is a hard error before the data disk
-is created.
+`--device` is optional. It is only needed to choose the rootfs builder, and that can
+be decided from the firmware instead, so when it is omitted the family is resolved in
+order of cost: what was asked for, then what this instance was built as before (free,
+its rootfs is already on disk), then the firmware itself, which costs one extra
+extraction of a few seconds. Passing it skips that and states the intent in
+`instance.env` and in shell history.
+
+Either way it is verified rather than trusted: once the rootfs exists it is identified
+from its markers, and a disagreement is a hard error before the data disk is created.
 
 That check earns its keep on a mismatch the architecture guards cannot see. Those
 compare a rootfs against their own builder's architecture, so engine-versus-mpc

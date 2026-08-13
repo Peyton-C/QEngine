@@ -8,12 +8,15 @@
 # that same path on port 2225, so a second device silently clobbers the first and
 # a second VM fails to bind (or worse, two QEMUs write one disk).
 #
-# Usage: new_instance.sh --name <name> --device <engine|mpc> --firmware <image>
-#                        [--size <bytes>] [--force]
+# Usage: new_instance.sh --name <name> --firmware <image>
+#                        [--device <engine|mpc>] [--size <bytes>] [--force]
 #   --name      instance name, e.g. rmz2-5.0.4 or mpc-3.9.1
-#   --device    which device family the firmware is for:
-#                 engine = arm64 / RK3588 Engine OS (RANE SYSTEM ONE)
-#                 mpc    = armv7 / RK3288 Akai MPC
+#   --device    which device family the firmware is for. Optional: when omitted it
+#               is identified from the firmware itself, which costs one extra
+#               extraction (a few seconds). Pass it to skip that, or to state the
+#               intent explicitly — a wrong value is still caught either way.
+#                 engine = Engine OS (RANE SYSTEM ONE and relatives)
+#                 mpc    = Akai MPC
 #   --firmware  path to the firmware .img to extract
 #   --size      rootfs image size in bytes, passed through to the builder
 #   --force     rebuild the rootfs even if this instance already has one
@@ -25,6 +28,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$REPO_ROOT/scripts/build_scripts"
+
+# The same extraction the rootfs builders use, so identifying a firmware's family
+# before choosing between them does not mean a third copy of the logic.
+# shellcheck source=extract_rootfs.sh
+. "$SCRIPT_DIR/extract_rootfs.sh"
 INSTANCES_DIR="$REPO_ROOT/build/instances"
 
 NAME=""
@@ -102,16 +110,6 @@ detect_family() {
     done
 }
 
-DEVICE_ROW="$(family_row "${DEVICE:-}")"
-[ -n "$DEVICE_ROW" ] || {
-    echo "ERROR: --device must be one of: $(family_names)(got '${DEVICE:-}')." >&2
-    exit 1; }
-
-IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DISK_BUILDER DATA_NAME LAUNCHER_PREFIX <<EOF
-$DEVICE_ROW
-EOF
-LAUNCHER="${LAUNCHER_PREFIX}_${HOST_OS}.sh"
-
 # brew keeps e2fsprogs keg-only, so dumpe2fs is off PATH on a stock macOS setup.
 # Same fallback the macOS launchers already use, so this does not become the one
 # step that needs PATH surgery first.
@@ -125,6 +123,43 @@ else
     echo "On macOS: brew install e2fsprogs, then add its keg-only sbin to PATH." >&2
     exit 1
 fi
+
+# --device is optional. It is needed only to choose the rootfs builder, and that
+# choice can be made from the firmware instead — the builders are what perform the
+# extraction, so identifying the family first means extracting once up front.
+#
+# Order of preference: what was asked for, then what this instance was built as
+# before (free — its rootfs is already on disk), then the firmware itself.
+if [ -z "$DEVICE" ] && [ -f "$INSTANCES_DIR/$NAME/instance.env" ]; then
+    DEVICE="$(grep '^DEVICE=' "$INSTANCES_DIR/$NAME/instance.env" | cut -d= -f2)"
+    [ -n "$DEVICE" ] && echo "--- reusing this instance's recorded device family: $DEVICE ---"
+fi
+
+if [ -z "$DEVICE" ]; then
+    echo "--- no --device given, identifying $FIRMWARE ---"
+    PROBE_IMG="$(mktemp /tmp/qengine-probe.XXXXXX.img)"
+    trap 'rm -f "$PROBE_IMG"' EXIT
+    extract_rootfs "$FIRMWARE" "$PROBE_IMG" >/dev/null
+    DEVICE="$(detect_family "$PROBE_IMG")"
+    rm -f "$PROBE_IMG"
+    trap - EXIT
+    [ -n "$DEVICE" ] || {
+        echo "ERROR: $FIRMWARE matches no known device family." >&2
+        echo "       Looked for the markers of: $(family_names)" >&2
+        echo "       If this is a new family, add a row to DEVICE_FAMILIES in this script." >&2
+        exit 1; }
+    echo "--- identified as $DEVICE ---"
+fi
+
+DEVICE_ROW="$(family_row "$DEVICE")"
+[ -n "$DEVICE_ROW" ] || {
+    echo "ERROR: --device must be one of: $(family_names)(got '$DEVICE')." >&2
+    exit 1; }
+
+IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DISK_BUILDER DATA_NAME LAUNCHER_PREFIX <<EOF
+$DEVICE_ROW
+EOF
+LAUNCHER="${LAUNCHER_PREFIX}_${HOST_OS}.sh"
 
 INSTANCE_DIR="$INSTANCES_DIR/$NAME"
 ROOTFS_IMG="$INSTANCE_DIR/rootfs.img"

@@ -28,6 +28,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims/rk3588"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -79,36 +80,13 @@ esac
 
 ### 1. Extract the rootfs partition with binwalk ############################
 
-EXTRACT_DIR="$(mktemp -d /tmp/build-arm64-rootfs-extract.XXXXXX)"
-trap 'rm -rf "$EXTRACT_DIR"' EXIT
+# Shared with the other rootfs builder and with new_instance.sh, which needs the
+# same extraction to identify a firmware's device family before it can choose
+# between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
+# shellcheck source=extract_rootfs.sh
+. "$SCRIPT_DIR_SELF/extract_rootfs.sh"
 
-echo "--- extracting $FIRMWARE_IMG with binwalk (this scans the whole image, ~10s+) ---"
-binwalk -e -C "$EXTRACT_DIR" "$FIRMWARE_IMG"
-
-# binwalk 3 signature-scans rather than parsing the firmware container
-# format, so it finds every embedded ext2/3/4 filesystem — the real rootfs
-# (~830MB) plus two much smaller redundant boot-slot partitions. Identify
-# the rootfs by picking the largest ext2/3/4 image found, rather than
-# hardcoding an offset that's specific to this one firmware build.
-BEST_CANDIDATE=""
-BEST_SIZE=0
-while IFS= read -r -d '' f; do
-    if file "$f" | grep -q 'ext[234] filesystem'; then
-        f_size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
-        if [ "$f_size" -gt "$BEST_SIZE" ]; then
-            BEST_CANDIDATE="$f"
-            BEST_SIZE="$f_size"
-        fi
-    fi
-done < <(find "$EXTRACT_DIR" -type f -print0)
-
-if [ -z "$BEST_CANDIDATE" ]; then
-    echo "ERROR: no ext2/3/4 filesystem image found in binwalk's extraction output." >&2
-    exit 1
-fi
-
-echo "--- found rootfs candidate: $BEST_CANDIDATE ($((BEST_SIZE / 1024 / 1024)) MiB) ---"
-cp "$BEST_CANDIDATE" "$OUT_PATH"
+extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -127,7 +105,7 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
 STAGE_DIR="$(mktemp -d /tmp/build-arm64-rootfs-stage.XXXXXX)"
-trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"' EXIT
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
@@ -191,7 +169,7 @@ done
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-arm64-rootfs-inner.XXXXXX.sh)"
-trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail

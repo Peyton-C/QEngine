@@ -85,5 +85,5 @@ echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
 echo ""
 
-export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG
+export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 exec "$QEMU_DIR/$LAUNCHER"

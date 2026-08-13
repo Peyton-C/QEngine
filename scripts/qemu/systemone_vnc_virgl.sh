@@ -29,6 +29,19 @@ SSH_PORT="${SSH_PORT:-2225}"
 # (armv7) and RK3588 (arm64). Defaults to the value this script used to hardcode.
 KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/vmlinuz-generic-arm64}"
 INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/initrd-generic-arm64}"
+
+# Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
+# devices from ARCH (exported by run_instance.sh). Kept in one file so the
+# PCI-vs-mmio reasoning does not get copied into every launcher and drift.
+# shellcheck source=arch_devices.sh
+. "$(dirname "${BASH_SOURCE[0]}")/arch_devices.sh"
+
+# virtio-gpu-gl exists only as a PCI device, and the 32-bit virt machine has no
+# reachable PCI, so there is no GL path for an armhf guest at all.
+[ -n "$GPU_GL_DEV" ] || {
+    echo "ERROR: this launcher needs virgl, which is PCI-only, and ARCH=$ARCH has no" >&2
+    echo "       usable PCI. Use the non-virgl launcher for this instance." >&2
+    exit 1; }
 VNC_DISPLAY="${VNC_DISPLAY:-1}"
 
 # Read the UUID off the image rather than hardcoding it: it is a property of the
@@ -42,23 +55,23 @@ ROOT_UUID="$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UU
 # arm64 Linux host these resolve to the previous hardcoded values, unchanged.
 case "$(uname -m)" in
     aarch64|arm64) ACCEL="${ACCEL:-kvm}"; CPU="${CPU:-host}" ;;
-    *)             ACCEL="${ACCEL:-tcg}"; CPU="${CPU:-max}" ;;
+    *)             ACCEL="${ACCEL:-tcg}"; CPU="${CPU:-$ARCH_CPU_DEFAULT}" ;;
 esac
 
-exec qemu-system-aarch64 \
-  -machine virt,highmem=on -accel "$ACCEL" \
+exec "$QEMU_BIN" \
+  -machine "$MACHINE" $MMIO_GLOBAL -accel "$ACCEL" \
   -cpu "$CPU" -m 4096 -smp 8 \
-  -device virtio-gpu-gl-pci,edid=off,xres=1280,yres=800 \
+  -device "$GPU_GL_DEV" \
   -display egl-headless,rendernode=/dev/dri/renderD128 \
-  -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
-  -device ich9-intel-hda -device hda-output,audiodev=host -audiodev pipewire,id=host \
+  $INPUT_DEVS \
+  $(arch_audio_devices host) -audiodev pipewire,id=host \
   -kernel "$KERNEL_IMG" \
   -initrd "$INITRD_IMG" \
   -drive if=none,file="$ROOTFS_IMG",format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
-  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
   -vnc :${VNC_DISPLAY} \
   -serial mon:stdio \
   -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"

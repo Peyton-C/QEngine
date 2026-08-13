@@ -39,10 +39,31 @@ This works because the kernel is not needed until boot: by the time one has to b
 chosen, the filesystem that decides it has already been built. The result is recorded
 as `ARCH` in `instance.env` along with the kernel paths it selected.
 
-Today the launchers still pair one QEMU binary and machine type with one family, so
-only `engine`+arm64 and `mpc`+armv7 can actually boot. A rootfs that probes the other
-way is reported as needing a launcher that does not exist yet, rather than being
-booted against the wrong kernel.
+The launchers follow that result rather than their own name. `arch_devices.sh`,
+sourced by each of them, resolves the QEMU binary and the architecture-dependent
+devices from `ARCH`:
+
+| | arm64 | armhf |
+|---|---|---|
+| machine | `virt,highmem=on` | `virt` + `virtio-mmio.force-legacy=false` |
+| GPU | `virtio-gpu-pci` | `virtio-gpu-device` |
+| input | `usb-ehci`/`qemu-xhci` + `usb-kbd`/`usb-tablet` | `virtio-keyboard-device`/`virtio-tablet-device` |
+| net | `virtio-net-pci` | `virtio-net-device` |
+| audio | `ich9-intel-hda` + `hda-output` | `virtio-sound-device` |
+
+The 32-bit split is forced: the Debian armmp kernel cannot probe that machine's PCI
+host bridge (`pci-host-generic ... failed with error -75`), so every `-pci` device is
+invisible there, USB controllers included.
+
+One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
+boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is
+used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
+overrides the choice.
+
+What is still untried is the *combination*: no builder produces an armv7 Engine or an
+arm64 MPC rootfs, so those command lines have never been booted. `new_instance.sh`
+says so when it sees one. The virgl launchers additionally refuse armhf outright,
+since `virtio-gpu-gl` exists only as a PCI device.
 
 ## Run
 

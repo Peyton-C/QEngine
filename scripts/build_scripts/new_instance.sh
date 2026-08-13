@@ -180,14 +180,14 @@ else
     echo "--- reusing the existing $ARCH kernel ---"
 fi
 
-# The launcher pairs a QEMU binary and machine type with a device family, so a
-# mismatch here means the rootfs needs a launcher that does not exist yet (an
-# armv7 Engine or an arm64 MPC). Say so plainly rather than booting the wrong one.
+# The launchers take their machine type and device models from ARCH, so either
+# architecture boots. Only the combination is new: an armv7 Engine or an arm64 MPC
+# has never been run, and the audio path in particular differs (mmio virtio-sound
+# rather than PCI hda). Flag it as unproven rather than implying it is broken.
 case "$LAUNCHER:$ARCH" in
     systemone_*:arm64|mpc_*:armhf) ;;
-    *) echo "WARNING: $LAUNCHER expects the other architecture; this $ARCH rootfs"
-       echo "         needs a launcher for $ARCH $DEVICE, which does not exist yet."
-       echo "         Set LAUNCHER in instance.env by hand once one does." ;;
+    *) echo "NOTE: $DEVICE on $ARCH is an untried combination. $LAUNCHER will build a"
+       echo "      $ARCH command line for it, but nothing here has booted one yet." ;;
 esac
 
 ### instance.env ##############################################################

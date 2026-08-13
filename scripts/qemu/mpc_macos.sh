@@ -31,6 +31,12 @@ SSH_PORT="${SSH_PORT:-2225}"
 KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/vmlinuz-generic-armhf}"
 INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/initrd-generic-armhf}"
 
+# Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
+# devices from ARCH (exported by run_instance.sh). Kept in one file so the
+# PCI-vs-mmio reasoning does not get copied into every launcher and drift.
+# shellcheck source=arch_devices.sh
+. "$(dirname "${BASH_SOURCE[0]}")/arch_devices.sh"
+
 # By default brew wont add e2fsprogs to the path
 if command -v dumpe2fs &>/dev/null; then
     DUMPE2FS="dumpe2fs"
@@ -43,18 +49,17 @@ fi
 ROOT_UUID="$($DUMPE2FS -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
 [ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $ROOTFS_IMG" >&2; exit 1; }
 
-exec qemu-system-arm \
-  -machine virt -cpu cortex-a15 -m 4096 -smp 8 \
-  -global virtio-mmio.force-legacy=false \
-  -device virtio-gpu-device \
-  -device virtio-keyboard-device -device virtio-tablet-device \
+exec "$QEMU_BIN" \
+  -machine "$MACHINE" $MMIO_GLOBAL -cpu "${CPU:-$ARCH_CPU_DEFAULT}" -m 4096 -smp 8 \
+  -device "$GPU_DEV" \
+  $INPUT_DEVS \
   -kernel "$KERNEL_IMG" \
   -initrd "$INITRD_IMG" \
   -drive if=none,file="$ROOTFS_IMG",format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
-  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
   -display cocoa,show-cursor=on \
   -serial mon:stdio \
   -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"

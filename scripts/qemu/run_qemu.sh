@@ -64,6 +64,14 @@ SSH_PORT="${SSH_PORT:-2225}"
 MEM="${MEM:-4096}"
 SMP="${SMP:-8}"
 
+# The console. Default multiplexes the QEMU monitor onto stdio, which is what you
+# want interactively. Point it at a socket instead (SERIAL=unix:/path,server,nowait)
+# to drive the guest console from a script while QEMU runs detached.
+SERIAL="${SERIAL:-mon:stdio}"
+# Anything else to hand QEMU, word-split. For one-off debugging (a second -serial, a
+# -monitor socket, -snapshot) without editing this file.
+QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+
 if [ "$NEEDS_GL" -eq 1 ]; then
     [ -n "$GPU_GL_DEV" ] || {
         echo "ERROR: DISPLAY_MODE=$DISPLAY_MODE needs virgl, which is PCI-only, and" >&2
@@ -117,5 +125,6 @@ exec "$QEMU_BIN" \
   -device virtio-blk-device,drive=data \
   -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
   $DISPLAY_ARGS \
-  -serial mon:stdio \
+  -serial "$SERIAL" \
+  $QEMU_EXTRA_ARGS \
   -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"

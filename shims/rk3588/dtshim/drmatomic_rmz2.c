@@ -41,8 +41,18 @@ static ioctl_t real_ioctl = NULL;
 #define FOURCC_ARGB8888 0x34325241u /* 'AR24' */
 #define FOURCC_XRGB8888 0x34325258u /* 'XR24' */
 
-static int rioctl(int fd, unsigned long request, void *arg) {
+/* Prefer __ioctl_time64 where it exists, so passthrough keeps exactly the
+ * semantics the caller asked for — glibc's time64 entry point converts the
+ * timeval-carrying ioctls, and plain ioctl() does not. See the alias at the
+ * bottom of this file for why both names matter. */
+static void resolve_real_ioctl(void) {
+    if (real_ioctl) return;
+    real_ioctl = (ioctl_t)dlsym(RTLD_NEXT, "__ioctl_time64");
     if (!real_ioctl) real_ioctl = (ioctl_t)dlsym(RTLD_NEXT, "ioctl");
+}
+
+static int rioctl(int fd, unsigned long request, void *arg) {
+    resolve_real_ioctl();
     return real_ioctl(fd, request, arg);
 }
 
@@ -268,7 +278,7 @@ static int do_atomic_commit(int fd, uint32_t fb_id, const struct drm_mode_modein
 }
 
 int ioctl(int fd, unsigned long request, ...) {
-    if (!real_ioctl) real_ioctl = (ioctl_t)dlsym(RTLD_NEXT, "ioctl");
+    resolve_real_ioctl();
     va_list ap;
     va_start(ap, request);
     void *arg = va_arg(ap, void *);
@@ -313,3 +323,17 @@ int ioctl(int fd, unsigned long request, ...) {
 
     return ret;
 }
+
+/* The name 32-bit callers actually import. glibc >= 2.34 on a 32-bit port built
+ * with 64-bit time_t redirects ioctl() to __ioctl_time64() in <sys/ioctl.h>, so
+ * that is the symbol that lands in the caller's relocations: the armv7 Engine OS
+ * rootfs's libdrm has an undefined __ioctl_time64@GLIBC_2.34 and no reference to
+ * plain `ioctl` at all. Exporting only `ioctl` therefore interposes nothing there
+ * — silently, since the shim loads fine and simply never runs, which presents as
+ * Qt's "Could not queue DRM page flip ... (Invalid argument)" and a black screen,
+ * exactly the failure this file exists to fix.
+ *
+ * The arm64 rootfs's libdrm imports ioctl@GLIBC_2.17, which is why this never
+ * came up there. aarch64 glibc has no __ioctl_time64 and nothing looks the name
+ * up, so defining it is inert on that side. */
+int __ioctl_time64(int fd, unsigned long request, ...) __attribute__((alias("ioctl")));

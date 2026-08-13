@@ -29,25 +29,39 @@ existing rootfs, `--size` to change the image size.
 
 ### Device families are a registry, and the choice is checked
 
-The families live in one table in `new_instance.sh`, a row each:
+The families live in one table in `new_instance.sh`, a row per family/architecture
+combination:
 
 ```
-<family>|<rootfs markers>|<rootfs builder>|<data image name>
-engine|/usr/Engine|build_arm64_rootfs.sh|data_disk.img
-mpc|/usr/bin/MPC|build_mpc_rootfs.sh|emmc.img
+<family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>
+engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img
+engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img
+mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img
 ```
 
 The markers are paths that must **all** exist in the built rootfs for the row to
 match, so a family needing more than one piece of evidence lists more. Rows are
 tried in order, letting a family whose markers are a superset of another's be listed
-first. Adding a device family is adding a row.
+first. Adding a device family, or a new architecture for one, is adding a row.
 
-`--device` is optional. It is only needed to choose the rootfs builder, and that can
-be decided from the firmware instead, so when it is omitted the family is resolved in
+Architecture is part of the key because two things differ along it rather than along
+the family. Engine OS on armv7 needs its own rootfs builder — a different shim stack,
+and RK3288 devicetree paths — and it wants the single-partition `mpc` disk layout
+rather than the RK3588 `data`+`factory` pair, because its `data.mount` asks for the
+`az01-internal` PARTUUID. Disk layout tracks the platform generation, not the
+application. The markers themselves say nothing about architecture (the same
+`/usr/Engine` tree ships on both), so that comes from the dynamic loader's name.
+
+`--device` is optional. It narrows the builder down to a family, and that much can be
+decided from the firmware instead, so when it is omitted the family is resolved in
 order of cost: what was asked for, then what this instance was built as before (free,
-its rootfs is already on disk), then the firmware itself, which costs one extra
-extraction of a few seconds. Passing it skips that and states the intent in
-`instance.env` and in shell history.
+its rootfs is already on disk), then the firmware itself, which costs one extraction
+of a few seconds.
+
+Passing `--device` skips that extraction only when the family pins a single row —
+`mpc` today. `--device engine` still has to look inside the firmware, because Engine
+OS ships on both architectures and they take different builders. Either way, stating
+the family records the intent in `instance.env` and in shell history.
 
 Either way it is verified rather than trusted: once the rootfs exists it is identified
 from its markers, and a disagreement is a hard error before the data disk is created.
@@ -92,10 +106,12 @@ boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` 
 used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
 overrides the choice.
 
-What is still untried is the *combination*: no builder produces an armv7 Engine or an
-arm64 MPC rootfs, so those command lines have never been booted. `new_instance.sh`
-says so when it sees one. The virgl launchers additionally refuse armhf outright,
-since `virtio-gpu-gl` exists only as a PCI device.
+armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one
+and it boots to a rendered UI, though without audio or a control surface yet. arm64
+MPC remains untried — no builder produces that rootfs, so the command line has never
+been booted, and `new_instance.sh` says so when it sees one. The virgl display modes
+additionally refuse armhf outright, since `virtio-gpu-gl` exists only as a PCI device,
+which is also why armv7 Engine renders in software (`kms_swrast`).
 
 ## Run
 

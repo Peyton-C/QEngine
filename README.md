@@ -20,20 +20,17 @@ falling back to TCG.
 3.1.x, `e2fsprogs` (for `dumpe2fs`, `debugfs`, `resize2fs`), `file`.
 
 ```sh
-# 1. Kernels. Once per architecture — these are generic Debian kernels, shared by
-#    every instance of that architecture, so this step is not repeated per device.
-scripts/build_scripts/get_arm64_kernel.sh     # ~7 min   Engine OS  / RK3588
-scripts/build_scripts/get_armv7_kernel.sh     # ~2 min   Akai MPC   / RK3288
-
-# 2. One instance per device + firmware version. Point --firmware straight at an
-#    update image; there is no firmware directory to populate.
+# 1. One instance per device + firmware version. Point --firmware straight at an
+#    update image; there is no firmware directory to populate. The matching kernel
+#    is detected from the rootfs and built on demand -- once per architecture,
+#    then reused (~7 min arm64, ~2 min armv7, ~1 min per rootfs).
 scripts/build_scripts/new_instance.sh --name rmz2-4.6.0 --device engine \
-    --firmware /path/to/SYSTEMONE-4.6.0-Update.img                    # ~1 min
+    --firmware /path/to/SYSTEMONE-4.6.0-Update.img
 
 scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
-    --firmware /path/to/MPC-3.9.1-Gen1-update.img                     # ~1 min
+    --firmware /path/to/MPC-3.9.1-Gen1-update.img
 
-# 3. Boot. Each instance owns its disks and its host ports, so these run at the
+# 2. Boot. Each instance owns its disks and its host ports, so these run at the
 #    same time without interfering.
 scripts/qemu/run_instance.sh --name rmz2-4.6.0
 scripts/qemu/run_instance.sh --name mpc-3.9.1

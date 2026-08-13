@@ -12,10 +12,6 @@ same disk, which corrupts it without an error.
 ## Create
 
 ```sh
-# once per architecture — the kernel is generic and shared by every instance
-scripts/build_scripts/get_arm64_kernel.sh      # for engine instances
-scripts/build_scripts/get_armv7_kernel.sh      # for mpc instances
-
 scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 --device engine \
     --firmware ~/firmware/SYSTEMONE-5.0.4-Update.img
 
@@ -23,9 +19,30 @@ scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
     --firmware ~/firmware/MPC-3.9.1-Gen1-update.img
 ```
 
-`--device` selects the family: `engine` (arm64 / RK3588 Engine OS) or `mpc`
-(armv7 / RK3288 Akai MPC). Add `--force` to rebuild an existing rootfs, `--size`
-to change the image size.
+That is the whole setup — the kernel is built on demand, once per architecture, and
+reused by every later instance that needs it.
+
+`--device` selects the device family, which decides the shim stack and the disk
+layout: `engine` (Engine OS) or `mpc` (Akai MPC). Add `--force` to rebuild an
+existing rootfs, `--size` to change the image size.
+
+### Architecture is detected, not assumed
+
+`--device` deliberately does **not** imply the architecture. Engine OS ships on both
+RK3288 (armv7) and RK3588 (arm64), and so does MPC, and the container format does not
+settle it either — the `AZ0x` images span both. So the architecture is read off the
+built rootfs by looking for its dynamic loader (`ld-linux-aarch64.so.1` vs
+`ld-linux-armhf.so.3`), which is unambiguous and needs no product-code table to keep
+up to date.
+
+This works because the kernel is not needed until boot: by the time one has to be
+chosen, the filesystem that decides it has already been built. The result is recorded
+as `ARCH` in `instance.env` along with the kernel paths it selected.
+
+Today the launchers still pair one QEMU binary and machine type with one family, so
+only `engine`+arm64 and `mpc`+armv7 can actually boot. A rootfs that probes the other
+way is reported as needing a launcher that does not exist yet, rather than being
+booted against the wrong kernel.
 
 ## Run
 
@@ -51,7 +68,9 @@ build/
 ```
 
 The kernel and initrd are deliberately **not** per-instance: they are generic
-distro kernels, byte-identical for every instance of the same architecture.
+distro kernels, byte-identical for every instance of the same architecture. Building
+one is a no-op once it exists, so creating a second instance of the same
+architecture skips straight to the rootfs.
 
 ## instance.env
 
@@ -62,6 +81,8 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 | `LAUNCHER` | which `scripts/qemu/` script to exec |
 | `ROOTFS_IMG`, `DATA_IMG` | this instance's disks |
 | `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
+| `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |
+| `KERNEL_IMG`, `INITRD_IMG` | the kernel that matches `ARCH`, shared by every instance of it |
 | `SSH_PORT`, `VNC_DISPLAY` | derived from the instance name so two instances cannot collide. Edit if a port is already taken on the host |
 
 `run_instance.sh` exports these and execs the ordinary launcher, so the QEMU

@@ -79,10 +79,11 @@ fi
 
 echo "=== instance : $NAME (${DEVICE:-?}, from $(basename "${FIRMWARE_IMG:-unknown}"))"
 echo "=== launcher : $LAUNCHER"
-echo "=== rootfs   : $ROOTFS_IMG"
+echo "=== rootfs   : $ROOTFS_IMG (${ARCH:-arch unrecorded})"
+echo "=== kernel   : ${KERNEL_IMG:-<launcher default>}"
 echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
 echo ""
 
-export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY
+export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG
 exec "$QEMU_DIR/$LAUNCHER"

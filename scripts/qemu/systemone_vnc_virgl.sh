@@ -24,6 +24,11 @@ BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
 DATA_IMG="${DATA_IMG:-$BUILD_DIR/data_disk.img}"
 SSH_PORT="${SSH_PORT:-2225}"
+# Overridable so an instance can supply a kernel matching its rootfs: --device does
+# not imply the architecture, since Engine OS and MPC each ship on both RK3288
+# (armv7) and RK3588 (arm64). Defaults to the value this script used to hardcode.
+KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/vmlinuz-generic-arm64}"
+INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/initrd-generic-arm64}"
 VNC_DISPLAY="${VNC_DISPLAY:-1}"
 
 # Read the UUID off the image rather than hardcoding it: it is a property of the
@@ -47,8 +52,8 @@ exec qemu-system-aarch64 \
   -display egl-headless,rendernode=/dev/dri/renderD128 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \
   -device ich9-intel-hda -device hda-output,audiodev=host -audiodev pipewire,id=host \
-  -kernel "$BUILD_DIR/vmlinuz-generic-arm64" \
-  -initrd "$BUILD_DIR/initrd-generic-arm64" \
+  -kernel "$KERNEL_IMG" \
+  -initrd "$INITRD_IMG" \
   -drive if=none,file="$ROOTFS_IMG",format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \

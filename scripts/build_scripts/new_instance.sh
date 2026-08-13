@@ -82,9 +82,10 @@ esac
 # Same fallback the macOS launchers already use, so this does not become the one
 # step that needs PATH surgery first.
 if command -v dumpe2fs >/dev/null 2>&1; then
-    DUMPE2FS="dumpe2fs"
+    DUMPE2FS="dumpe2fs"; DEBUGFS="debugfs"
 elif [ -x /opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs ]; then
     DUMPE2FS="/opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs"
+    DEBUGFS="/opt/homebrew/opt/e2fsprogs/sbin/debugfs"
 else
     echo "ERROR: 'dumpe2fs' is required (package e2fsprogs) but not found on PATH." >&2
     echo "On macOS: brew install e2fsprogs, then add its keg-only sbin to PATH." >&2
@@ -139,6 +140,56 @@ else
     "$SCRIPT_DIR/$DISK_BUILDER" "$DATA_IMG"
 fi
 
+### kernel ####################################################################
+# The kernel has to match the rootfs's architecture, and that is not implied by
+# --device: Engine OS ships on both RK3288 (armv7) and RK3588 (arm64), and so does
+# MPC. Nor is it implied by the container format -- the AZ0x set spans both. So it
+# is read off the built filesystem instead of guessed from a product-code table:
+# the dynamic loader's name is architecture-specific and unambiguous.
+#
+# Probing after the rootfs build rather than before is what makes this work at all:
+# the kernel is not needed until boot, so by the time it is chosen the filesystem
+# that decides it already exists.
+if "$DEBUGFS" -R "stat /lib/ld-linux-aarch64.so.1" "$ROOTFS_IMG" 2>/dev/null | grep -q 'Inode:'; then
+    ARCH="arm64"
+elif "$DEBUGFS" -R "stat /lib/ld-linux-armhf.so.3" "$ROOTFS_IMG" 2>/dev/null | grep -q 'Inode:'; then
+    ARCH="armhf"
+else
+    echo "ERROR: could not tell the architecture of $ROOTFS_IMG -- no known dynamic loader." >&2
+    exit 1
+fi
+
+case "$ARCH" in
+    arm64) KERNEL_BUILDER="get_arm64_kernel.sh" ;;
+    armhf) KERNEL_BUILDER="get_armv7_kernel.sh" ;;
+esac
+KERNEL_IMG="$REPO_ROOT/build/vmlinuz-generic-$ARCH"
+INITRD_IMG="$REPO_ROOT/build/initrd-generic-$ARCH"
+
+echo "--- rootfs is $ARCH ---"
+
+# Built on demand rather than left as an instruction to follow: it is shared by
+# every instance of this architecture, so this happens once and is a no-op after.
+if [ ! -s "$KERNEL_IMG" ] || [ ! -s "$INITRD_IMG" ]; then
+    echo "--- no $ARCH kernel yet, building it (once per architecture) ---"
+    "$SCRIPT_DIR/$KERNEL_BUILDER"
+    [ -s "$KERNEL_IMG" ] && [ -s "$INITRD_IMG" ] || {
+        echo "ERROR: $KERNEL_BUILDER did not produce $KERNEL_IMG and $INITRD_IMG." >&2
+        exit 1; }
+else
+    echo "--- reusing the existing $ARCH kernel ---"
+fi
+
+# The launcher pairs a QEMU binary and machine type with a device family, so a
+# mismatch here means the rootfs needs a launcher that does not exist yet (an
+# armv7 Engine or an arm64 MPC). Say so plainly rather than booting the wrong one.
+case "$LAUNCHER:$ARCH" in
+    systemone_*:arm64|mpc_*:armhf) ;;
+    *) echo "WARNING: $LAUNCHER expects the other architecture; this $ARCH rootfs"
+       echo "         needs a launcher for $ARCH $DEVICE, which does not exist yet."
+       echo "         Set LAUNCHER in instance.env by hand once one does." ;;
+esac
+
 ### instance.env ##############################################################
 # The root filesystem UUID is a property of this particular extraction, so it is
 # read off the built image rather than hardcoded — it differs between firmware
@@ -161,6 +212,9 @@ LAUNCHER=$LAUNCHER
 ROOTFS_IMG=$ROOTFS_IMG
 DATA_IMG=$DATA_IMG
 ROOT_UUID=$ROOT_UUID
+ARCH=$ARCH
+KERNEL_IMG=$KERNEL_IMG
+INITRD_IMG=$INITRD_IMG
 SSH_PORT=$(( 2200 + OFFSET ))
 VNC_DISPLAY=$OFFSET
 EOF
@@ -169,12 +223,5 @@ echo ""
 echo "Created instance $NAME"
 sed 's/^/  /' "$INSTANCE_DIR/instance.env" | grep -v '^  #'
 echo ""
-KERNEL_HINT="get_arm64_kernel.sh"
-[ "$DEVICE" = mpc ] && KERNEL_HINT="get_armv7_kernel.sh"
-if [ ! -s "$REPO_ROOT/build/vmlinuz-generic-arm64" ] && [ "$DEVICE" = engine ]; then
-    echo "NOTE: no shared kernel yet — run scripts/build_scripts/$KERNEL_HINT first."
-elif [ ! -s "$REPO_ROOT/build/vmlinuz-generic-armhf" ] && [ "$DEVICE" = mpc ]; then
-    echo "NOTE: no shared kernel yet — run scripts/build_scripts/$KERNEL_HINT first."
-fi
 echo "Boot it with:"
 echo "  scripts/qemu/run_instance.sh --name $NAME"

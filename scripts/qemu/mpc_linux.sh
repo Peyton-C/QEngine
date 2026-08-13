@@ -25,6 +25,11 @@ BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
 DATA_IMG="${DATA_IMG:-$BUILD_DIR/emmc.img}"
 SSH_PORT="${SSH_PORT:-2225}"
+# Overridable so an instance can supply a kernel matching its rootfs: --device does
+# not imply the architecture, since Engine OS and MPC each ship on both RK3288
+# (armv7) and RK3588 (arm64). Defaults to the value this script used to hardcode.
+KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/vmlinuz-generic-armhf}"
+INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/initrd-generic-armhf}"
 
 # Read the UUID off the image rather than hardcoding it: it is a property of the
 # particular extraction, so it changes with every firmware version.
@@ -36,8 +41,8 @@ exec qemu-system-arm \
   -global virtio-mmio.force-legacy=false \
   -device virtio-gpu-device \
   -device virtio-keyboard-device -device virtio-tablet-device \
-  -kernel "$BUILD_DIR/vmlinuz-generic-armhf" \
-  -initrd "$BUILD_DIR/initrd-generic-armhf" \
+  -kernel "$KERNEL_IMG" \
+  -initrd "$INITRD_IMG" \
   -drive if=none,file="$ROOTFS_IMG",format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \

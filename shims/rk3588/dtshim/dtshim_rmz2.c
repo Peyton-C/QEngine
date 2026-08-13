@@ -446,7 +446,7 @@ static const char *remap(const char *path) {
         return "/root/fake-dt/serial-number";
     if (strcmp(path, "/dev/mem") == 0)
         return "/root/fake-dev-mem";
-    if (strcmp(path, "/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation") == 0)
+    if (strcmp(path, "/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/edp-panel/rotation") == 0)
         return "/root/fake-dt/rotation";
     /* Static fallback only — see get_fake_interrupts_fd() above, which is
      * tried first and covers the normal case dynamically. */

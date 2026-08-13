@@ -51,28 +51,45 @@ case "$NAME" in
     */*|"") echo "ERROR: --name must not be empty or contain a slash." >&2; exit 1 ;;
 esac
 
+# Which launcher to record depends on the host OS, not on the device: the
+# *_linux.sh scripts use KVM-or-TCG with GTK and PipeWire, the *_macos.sh ones HVF
+# with Cocoa and CoreAudio. Pinning the Linux one here would hand a Mac a command
+# line macOS rejects outright (`-accel kvm: invalid accelerator`).
+case "$(uname -s)" in
+    Darwin) HOST_OS="macos" ;;
+    *)      HOST_OS="linux" ;;
+esac
+
 case "$DEVICE" in
     engine)
         ROOTFS_BUILDER="build_arm64_rootfs.sh"
         DISK_BUILDER="make_data_disk.sh"
         DATA_NAME="data_disk.img"
-        LAUNCHER="systemone_linux.sh"
+        LAUNCHER="systemone_${HOST_OS}.sh"
         ;;
     mpc)
         ROOTFS_BUILDER="build_mpc_rootfs.sh"
         DISK_BUILDER="make_emmc_disk.sh"
         DATA_NAME="emmc.img"
-        LAUNCHER="mpc_linux.sh"
+        LAUNCHER="mpc_${HOST_OS}.sh"
         ;;
     *)
         echo "ERROR: --device must be 'engine' or 'mpc' (got '${DEVICE:-}')." >&2
         exit 1 ;;
 esac
 
-command -v dumpe2fs >/dev/null 2>&1 || {
+# brew keeps e2fsprogs keg-only, so dumpe2fs is off PATH on a stock macOS setup.
+# Same fallback the macOS launchers already use, so this does not become the one
+# step that needs PATH surgery first.
+if command -v dumpe2fs >/dev/null 2>&1; then
+    DUMPE2FS="dumpe2fs"
+elif [ -x /opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs ]; then
+    DUMPE2FS="/opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs"
+else
     echo "ERROR: 'dumpe2fs' is required (package e2fsprogs) but not found on PATH." >&2
     echo "On macOS: brew install e2fsprogs, then add its keg-only sbin to PATH." >&2
-    exit 1; }
+    exit 1
+fi
 
 INSTANCE_DIR="$INSTANCES_DIR/$NAME"
 ROOTFS_IMG="$INSTANCE_DIR/rootfs.img"
@@ -126,7 +143,7 @@ fi
 # The root filesystem UUID is a property of this particular extraction, so it is
 # read off the built image rather than hardcoded — it differs between firmware
 # versions, which is why a hardcoded one only ever booted a single build.
-ROOT_UUID="$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
+ROOT_UUID="$("$DUMPE2FS" -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
 [ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $ROOTFS_IMG" >&2; exit 1; }
 
 # Host ports are derived from the instance name so two instances never collide,

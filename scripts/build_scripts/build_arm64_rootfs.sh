@@ -305,9 +305,11 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
-[Service]
+[Unit]
 After=touchbridge_rmz2.service
 Requires=touchbridge_rmz2.service
+
+[Service]
 Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0

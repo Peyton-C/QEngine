@@ -8,7 +8,7 @@ and bringing the guest up.
 
 | Arch | SoC | Controllers | Status |
 |------|-----|-------------|--------|
-| armv7 (armhf) | RK3288 | Prime 2/4/4+/GO/GO+, SC5000(M), SC6000(M), SC Live 2/4, Mixstream Pro/Pro+/Pro GO | Documented below (Engine 4.3.0 and earlier); Engine 5.0.4 blocked — see [Engine 5.0.4 on armv7](#engine-504-on-armv7-rk3288--in-progress-blocked) |
+| armv7 (armhf) | RK3288 | Prime 2/4/4+/GO/GO+, SC5000(M), SC6000(M), SC Live 2/4, Mixstream Pro/Pro+/Pro GO | Documented below (Engine 4.3.0 and earlier); Engine 5.0.4 boots to a rendered UI — see [Engine 5.0.4 on armv7](#engine-504-on-armv7-rk3288) |
 | arm64 (aarch64) | RK3588 | RANE SYSTEM ONE | Boots Engine with working display, touch, and external media — see [arm64 / RK3588](#arm64--rk3588-rane-system-one) |
 
 Everything below (Docker `--platform linux/arm/v7`, `debian:bullseye` armhf
@@ -242,7 +242,7 @@ VNC port. This lets a normal mouse drive Engine's touch-only UI interactively.
 
 RANE SYSTEM ONE ships Engine OS 4.6.0 on RK3588 — the first **arm64**
 Engine OS device found; every other supported controller is armv7/RK3288
-(see the [Emulated Controllers](README.md#emulated-controllers) table).
+(see the [Emulated Controllers](../README.md#emulated-controllers) table).
 Its firmware is also signed (rsa2048-signed U-Boot FIT images), which
 isn't itself new — several armv7/RK3288 controllers already ship signed
 firmware per that same table (Prime 4+, Prime GO+, SC Live 2/4, Mixstream
@@ -1426,7 +1426,14 @@ line** as its command — `shell cmd1; shell cmd2` fails (the second
 then fails with `sh: shell: not found`); chain with plain `;`/`&&` inside
 a *single* `shell` invocation instead.
 
-## Engine 5.0.4 on armv7 (RK3288) — in progress, blocked
+## Engine 5.0.4 on armv7 (RK3288)
+
+Boots to a rendered, animating Engine UI. Build it with
+`scripts/build_scripts/build_armv7_engine_rootfs.sh`, pair it with
+`get_kernel.sh --arch armhf` and `make_disk.sh --family mpc`, and boot it
+with `run_instance.sh`. The rest of this section is how it got there, since
+two of the findings generalize well beyond this device.
+
 
 Hypothesis going in: since RANE SYSTEM ONE's 4.6.0 firmware already shipped
 a `5.0.14 (scarthgap)` base OS, and InMusic was unlikely to maintain Engine
@@ -1448,10 +1455,13 @@ fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 **New shims** (`shims/rk3288/dtshim/dtshim_jc11s.c`,
 `shims/rk3288/drmatomic_jc11s/`, `shims/rk3288/touchbridge_jc11s/`):
 `drmatomic_rmz2.c` and `touchbridge_rmz2.c` from the arm64/RMZ2 work
-recompile for armhf **completely unmodified** and work identically —
-neither depends on CPU architecture at all, only on the Linux DRM/uinput
-kernel UAPIs, which use fixed-width types specifically so 32- and 64-bit
-callers are both safe. Only `dtshim_jc11s.c` needed real changes: a fresh
+build for armhf from the same sources and work identically — neither
+depends on CPU architecture at all, only on the Linux DRM/uinput kernel
+UAPIs, which use fixed-width types specifically so 32- and 64-bit callers
+are both safe. (`drmatomic_rmz2.c` did need one addition to *interpose* on
+a 32-bit guest, which is a property of the guest's libc rather than of the
+architecture — see the `__ioctl_time64` finding below.) Only
+`dtshim_jc11s.c` needed real changes: a fresh
 file (not a port of the old `shims/rk3288/dtshim/dtshim.c`, which carries
 Qt5-era EGL/GBM interception hacks already known to break Qt6's own
 GBM handling — see the arm64 section above) that keeps RK3288's real
@@ -1489,7 +1499,8 @@ would've set — the poweroff logic lives in the wrapper script, not
 `engine.service` itself, so this sidesteps it entirely for interactive
 debugging.
 
-**Root cause, found via a cross-compiled `strace` (Debian bullseye ships
+**First blocker — Engine exited silently at startup.** Diagnosed via a
+cross-compiled `strace` (Debian bullseye ships
 one for armhf directly — `apt-get install strace`, no static-build dance
 needed unlike the earlier aarch64 case) tracing the manually-launched
 binary**: `Engine` exits via a clean `exit_group(0)` immediately after
@@ -1517,18 +1528,66 @@ separate things happen in that window:
    (driver binding, `modalias`, etc.) at runtime rather than checking a
    fixed name, which `strings` can't reveal.
 
-**Not yet resolved.** Unlike every fix earlier in this doc, this one isn't
-a plain file `dtshim` can redirect via `open`/`fopen` — `/sys/devices/platform`
-is a real, kernel-populated directory (not a regular file), so faking an
-entry in it means intercepting `getdents64()` itself and fabricating a
-directory entry in the returned buffer, then potentially building out a
-fake sysfs subtree underneath it if `Engine` drills further into whatever
-device it's trying to find. Meaningfully more invasive than anything else
-in this project so far. Deliberately stopped here rather than build that
-out speculatively — worth attempting if this device/version combination
-becomes a priority, but the diagnosis above (masked `engine.service` +
-manual launch + cross-compiled `strace`) is the reusable part regardless
-of who picks it up next.
+Both of those turned out to be red herrings. The `/sys/devices/platform`
+walk is something `Engine` does on every startup, including the ones that
+now render fine, and the Mali `access()` is a check whose result it
+ignores — the rootfs the UI renders from has an *empty*
+`/usr/lib/qt6/plugins/egldeviceintegrations`, so neither the file nor a
+`getdents64()` shim is needed. What actually made `Engine` quit was Qt
+choosing no EGL device integration at all: it enumerates `eglfs_kms` and
+`eglfs_emu`, logs `Using base device integration`, and the base
+integration has no native window to hand EGL, so config selection fails
+`EGL_BAD_CONFIG` and `eglCreateWindowSurface` fails `EGL_BAD_NATIVE_WINDOW`
+(`Could not create the egl surface: error = 0x300b`, then `Crash with:
+ABRT` and a restart loop). Three environment variables in
+`engine.service.d/override.conf` settle it, and the builder writes them:
+`QT_QPA_EGLFS_INTEGRATION=eglfs_kms` names the integration outright,
+`EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with
+`surfaceless` as its compiled-in default), and
+`MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` names a driver that is actually
+present. Software rendering is not a preference here: virgl needs
+`virtio-gpu-gl`, which is PCI-only, and the 32-bit `virt` machine has no
+usable PCI (see `scripts/qemu/arch_devices.sh`).
+
+**Second blocker — a black screen with `Engine` running normally.** With
+the integration pinned, `Engine` starts, registers the touchscreen,
+migrates its database and reaches its MIDI device inquiry — and the
+display stays black while the journal fills with `[W] Could not queue DRM
+page flip on screen Virtual1 (Invalid argument)`, once per frame. That is
+the exact symptom `drmatomic_rmz2.c` exists to fix (see its header
+comment: virtio-gpu's primary plane rejects Qt's `ARGB8888` framebuffer),
+and `drmatomic_jc11s.so` *was* built, *was* listed in `LD_PRELOAD`, and
+*was* mapped into the process per `/proc/<pid>/maps` — while printing not
+one of its `=== DRMATOMIC:` lines, which it emits on every modeset and on
+every failure. A loaded interposer that never interposes.
+
+**Root cause: the symbol name.** This rootfs is a 64-bit-`time_t` build,
+and on a 32-bit port glibc ≥ 2.34 redirects `ioctl()` to
+`__ioctl_time64()` in `<sys/ioctl.h>` — so that is the name that lands in
+callers' relocations. `readelf -sW --dyn-syms` on the guest's own
+`/usr/lib/libdrm.so.2.4.0` shows `UND __ioctl_time64@GLIBC_2.34` and no
+reference to plain `ioctl` at all. A shim exporting only `ioctl` therefore
+interposes nothing, silently, because it loads perfectly well and simply
+never runs. The same file on the arm64 rootfs imports `ioctl@GLIBC_2.17`,
+which is why this never came up on RK3588. `drmatomic_rmz2.c` now exports
+`__ioctl_time64` as an alias of its `ioctl`, and resolves the real
+function preferring the `time64` entry point (which converts the
+timeval-carrying ioctls; plain `ioctl` does not). aarch64 glibc has no
+such symbol and nothing looks it up, so the addition is inert there.
+
+With that in place the shim reports the expected sequence — `ADDFB2
+rewriting pixel_format ARGB8888 -> XRGB8888`, then `MODESET commit ... ->
+ret=0` — the page-flip warnings stop entirely, and the UI renders.
+
+**The generalizable part:** when an `LD_PRELOAD` shim is definitely loaded
+and definitely not working, check what symbol the *caller* actually
+imports before doubting the logic — `readelf -sW --dyn-syms <lib> | grep
+UND` against the library inside the guest rootfs, not against a host copy.
+A 32-bit guest with 64-bit `time_t` renames more than `ioctl`
+(`__fcntl_time64`, `__fstat64_time64`, `__clock_gettime64` and friends all
+appear in that same listing), so any future shim here that interposes one
+of those needs the same two-name treatment. `dtshim`'s `open`/`fopen`
+interception is unaffected — none of those carry a `time_t`.
 
 ## See also
 - [ENGINEOS.md](ENGINEOS.md) — Engine OS internals, product spoofing, known limitations

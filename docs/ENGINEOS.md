@@ -182,6 +182,54 @@ Each one hid the next, which is why this took so long to unpick:
 With 1–3 fixed, the stream runs continuously, the hardware pointer advances,
 and the frozen-probe warnings stop entirely.
 
+#### Audio quality: ring depth vs. the emulated card's service interval
+
+Getting past 1–3 makes audio *play*; it doesn't yet make it play *cleanly*.
+Playback came out continuously glitchy and distorted, and the cause is a
+straightforward mismatch rather than emulation being too slow (it reproduces
+under `-accel hvf` at near-native speed).
+
+`ConfigureHwParams` asks for a 256-frame buffer of 128-frame periods at
+44100Hz — a **5.8ms** ring, refilled every 2.9ms. That is a fine ask of a real
+codec on a real DMA engine. But QEMU's audio subsystem moves samples on a
+timer whose default period is **10ms** (`-audiodev ...,timer-period`), i.e.
+*longer than the guest's entire ring buffer*. The emulated HDA controller
+therefore drains past what Engine has written and re-reads stale ring
+content — which is why it sounds like distortion rather than clean dropouts —
+while the guest logs a continuous stream of playback XRUNs.
+
+Fixed in the same shim, by deepening the ring without changing its
+granularity: `buffer_size`, `buffer_time` and the period *count* are
+multiplied by `ALSASHIM_BUFFER_SCALE` (default 8 → 2048 frames / 46ms in 16
+periods), while `period_size` and `period_time` pass through untouched, so
+Engine's audio callback keeps firing every 128 frames exactly as before. Only
+the amount of audio queued ahead of the emulated card changes.
+
+Two details that are easy to get wrong, both of which make the change useless
+or actively worse if skipped:
+
+- **`stop_threshold` has to grow with the buffer.** Engine sizes it to the
+  ring it asked for; left at 256 against a 2048-frame ring it means "declare
+  an XRUN once 256 frames are free", which is true almost continuously.
+- **`start_threshold` has to grow too.** A period-driven write loop holds the
+  ring at roughly whatever depth it started at, so starting one period deep
+  hands all the new headroom straight back. It's raised to the buffer size
+  (ALSA's own default) for playback only — on capture that threshold gates
+  the first read, not a fill level.
+
+Both are raised toward the buffer the card *actually granted*, read back via
+`snd_pcm_hw_params_current`, so they stay correct when the ring didn't grow.
+
+Every scaled quantity moves by the same factor deliberately: `buffer =
+periods × period_size` has to keep holding, so there is no per-quantity
+latency ceiling. A ceiling binds at a different ratio for each quantity and
+gets the *combination* rejected even though each value looks reasonable alone
+— which showed up in testing as `set_buffer_size` failing outright at high
+scale factors. On a card with less headroom than the scale asks for, the
+`_near` setters clamp (the ring grows as far as the card allows) and the exact
+setters retry with Engine's original value, so the worst case is the
+configuration we already had.
+
 #### The transport: motorized platters
 
 SYSTEM ONE has motorized platters, and its deck assignment ends in

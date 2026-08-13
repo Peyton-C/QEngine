@@ -34,8 +34,11 @@ MODULES=(
     virtio_input
     # Required for touchbridge_rmz2 to provide the source device
     evdev uinput
-    # FAT32 mount
-    nls_iso8859-1
+    # FAT32/exFAT mount (USB flash drive with a real Engine Library).
+    # fat is the shared core, vfat the long-filename driver; nls_cp437 is
+    # the codepage vfat asks for by default at mount time, and its absence
+    # fails the mount even when the driver itself is loaded.
+    fat vfat exfat nls_cp437 nls_iso8859-1 nls_ascii
     # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio

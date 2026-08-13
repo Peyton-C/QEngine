@@ -31,9 +31,18 @@ VNC_DISPLAY="${VNC_DISPLAY:-1}"
 ROOT_UUID="$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
 [ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $ROOTFS_IMG" >&2; exit 1; }
 
+# -accel kvm needs a host of the guest's own architecture, and `-cpu host` is
+# accelerator-only: an x86_64 host can neither KVM-accelerate an aarch64 guest nor
+# use that CPU model, so QEMU rejects both outright. Fall back to TCG there. On an
+# arm64 Linux host these resolve to the previous hardcoded values, unchanged.
+case "$(uname -m)" in
+    aarch64|arm64) ACCEL="${ACCEL:-kvm}"; CPU="${CPU:-host}" ;;
+    *)             ACCEL="${ACCEL:-tcg}"; CPU="${CPU:-max}" ;;
+esac
+
 exec qemu-system-aarch64 \
-  -machine virt,highmem=on -accel kvm \
-  -cpu host -m 4096 -smp 8 \
+  -machine virt,highmem=on -accel "$ACCEL" \
+  -cpu "$CPU" -m 4096 -smp 8 \
   -device virtio-gpu-gl-pci,edid=off,xres=1280,yres=800 \
   -display egl-headless,rendernode=/dev/dri/renderD128 \
   -device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet \

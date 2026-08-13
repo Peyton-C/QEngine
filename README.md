@@ -68,7 +68,7 @@ logging and XMOS USB audio firmware are expected: none of that hardware exists h
 | SoundSwitch             | Y             | ?             | Y     | N     |
 | Native Display          | Y             | Y             | Y     | N     |
 | QT VNC Display          | N             | N             | N     | Y     |
-| Fake Touch              | Y             | ?             | Y     | Y     |
+| Fake Touch              | Y             | Y             | Y     | Y     |
 | Keyboard Navigation     | Y             | ?             | Y     | Y     |
 | Audio Playback          | Y             | N             | Y     | N     |
 | MIDI                    | Y             | ?             | Y     | ~     |
@@ -78,9 +78,9 @@ For 5.0.4 (armv7): Engine boots to a rendered, animating UI on `eglfs`/KMS, in
 software (`kms_swrast` — virgl needs PCI, which the 32-bit `virt` machine lacks).
 `QT VNC Display` is N for the same reason as arm64: Qt 6.7.2 ships no `libqvnc.so`.
 Audio is N because the shim stack it needs was left out, not because it was tried
-and failed. The `?` rows are wired but unconfirmed — `touchbridge_jc11s` runs and
-its synthetic touchscreen is present in the guest, it just has not been driven
-end-to-end yet. See
+and failed. Touch is confirmed end-to-end against the SDL display —
+`touchbridge_jc11s` re-emits QEMU's absolute tablet as a uinput multitouch device and
+Engine responds to it. The remaining `?` rows are untried, not known-broken. See
 [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
 
 ## Emulated Controllers

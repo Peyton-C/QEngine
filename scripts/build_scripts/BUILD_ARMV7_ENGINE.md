@@ -62,6 +62,12 @@ The steps individually, if you want them:
   path the arm64 and MPC builds use, so building one target overwrites the other.
   Use an instance (see [INSTANCES.md](INSTANCES.md)) to keep several side by side.
 
+- **Touch works out of the box**, same mechanism as the MPC build: the rootfs build
+  installs `touchbridge_jc11s` and starts it before `engine.service`. Engine only
+  responds to a real touchscreen, and QEMU's virtio tablet presents as an absolute
+  pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
+  the `sdl` display.
+
 - **What is not done yet:** audio and the control surface. The arm64 build's
   `alsashim`, `midisurface` and `controllermap` are RMZ2-specific and were
   deliberately left out here, so the guest boots and renders but has no sound card

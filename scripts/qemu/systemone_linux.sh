@@ -15,12 +15,20 @@
 # build_arm64_rootfs.sh) — without it Engine rejects the card on name alone.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build"
+BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
+
+# Overridable so scripts/qemu/run_instance.sh can point this at one instance
+# directory. The defaults are the previous hardcoded values, so running this
+# script directly behaves exactly as before. The kernel and initrd stay under
+# BUILD_DIR: they are target-independent and shared by every instance.
+ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
+DATA_IMG="${DATA_IMG:-$BUILD_DIR/data_disk.img}"
+SSH_PORT="${SSH_PORT:-2225}"
 
 # Read the UUID off the image rather than hardcoding it: it is a property of the
 # particular extraction, so it changes with every firmware version.
-ROOT_UUID="$(dumpe2fs -h "$BUILD_DIR/rootfs_out.img" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
-[ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $BUILD_DIR/rootfs_out.img" >&2; exit 1; }
+ROOT_UUID="$(dumpe2fs -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem UUID/{print $2}')"
+[ -n "$ROOT_UUID" ] || { echo "ERROR: could not read a filesystem UUID from $ROOTFS_IMG" >&2; exit 1; }
 
 exec qemu-system-aarch64 \
   -machine virt,highmem=on -accel kvm \
@@ -30,11 +38,11 @@ exec qemu-system-aarch64 \
   -device ich9-intel-hda -device hda-output,audiodev=host -audiodev pipewire,id=host \
   -kernel "$BUILD_DIR/vmlinuz-generic-arm64" \
   -initrd "$BUILD_DIR/initrd-generic-arm64" \
-  -drive if=none,file=$BUILD_DIR/rootfs_out.img,format=raw,id=hd \
+  -drive if=none,file="$ROOTFS_IMG",format=raw,id=hd \
   -device virtio-blk-device,drive=hd \
-  -drive if=none,file=$BUILD_DIR/data_disk.img,format=raw,id=data \
+  -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
-  -netdev user,id=net0,hostfwd=tcp::2225-:22 -device virtio-net-pci,netdev=net0 \
+  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device virtio-net-pci,netdev=net0 \
   -display sdl,show-cursor=on \
   -serial mon:stdio \
   -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"

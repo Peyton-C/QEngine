@@ -12,10 +12,14 @@ before `acvs.service`. MPC only responds to a real touchscreen, and QEMU's virti
 tablet presents as an absolute mouse, so the bridge re-emits it as a uinput
 multitouch device.
 
+To build and run several devices or firmware versions side by side, see
+[INSTANCES.md](INSTANCES.md).
+
 ## Notes
 
-- The rootfs is written to `build/rootfs_out.img`, the same path the arm64 build
-  uses, so building one target overwrites the other. Rebuild when switching.
+- Used directly as above, the rootfs is written to `build/rootfs_out.img` — the
+  same path the arm64 build uses, so building one target overwrites the other.
+  Use an instance (see INSTANCES.md) to keep several targets side by side.
 - Only the **signed** firmware images extract with `binwalk` alone. Unsigned ones
   (Prime 4, most HeadRush) come out as a single bogus "DTB" and need `mpcimg`
   first — see [../../docs/BUILDING.md](../../docs/BUILDING.md).

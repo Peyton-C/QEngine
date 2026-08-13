@@ -28,6 +28,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims/rk3588"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -79,36 +80,13 @@ esac
 
 ### 1. Extract the rootfs partition with binwalk ############################
 
-EXTRACT_DIR="$(mktemp -d /tmp/build-arm64-rootfs-extract.XXXXXX)"
-trap 'rm -rf "$EXTRACT_DIR"' EXIT
+# Shared with the other rootfs builder and with new_instance.sh, which needs the
+# same extraction to identify a firmware's device family before it can choose
+# between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
+# shellcheck source=extract_rootfs.sh
+. "$SCRIPT_DIR_SELF/extract_rootfs.sh"
 
-echo "--- extracting $FIRMWARE_IMG with binwalk (this scans the whole image, ~10s+) ---"
-binwalk -e -C "$EXTRACT_DIR" "$FIRMWARE_IMG"
-
-# binwalk 3 signature-scans rather than parsing the firmware container
-# format, so it finds every embedded ext2/3/4 filesystem — the real rootfs
-# (~830MB) plus two much smaller redundant boot-slot partitions. Identify
-# the rootfs by picking the largest ext2/3/4 image found, rather than
-# hardcoding an offset that's specific to this one firmware build.
-BEST_CANDIDATE=""
-BEST_SIZE=0
-while IFS= read -r -d '' f; do
-    if file "$f" | grep -q 'ext[234] filesystem'; then
-        f_size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
-        if [ "$f_size" -gt "$BEST_SIZE" ]; then
-            BEST_CANDIDATE="$f"
-            BEST_SIZE="$f_size"
-        fi
-    fi
-done < <(find "$EXTRACT_DIR" -type f -print0)
-
-if [ -z "$BEST_CANDIDATE" ]; then
-    echo "ERROR: no ext2/3/4 filesystem image found in binwalk's extraction output." >&2
-    exit 1
-fi
-
-echo "--- found rootfs candidate: $BEST_CANDIDATE ($((BEST_SIZE / 1024 / 1024)) MiB) ---"
-cp "$BEST_CANDIDATE" "$OUT_PATH"
+extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -127,14 +105,24 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
 STAGE_DIR="$(mktemp -d /tmp/build-arm64-rootfs-stage.XXXXXX)"
-trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"' EXIT
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
 echo "--- building shims from source ---"
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm64 \
     -v "$SHIMS_DIR:/shims" \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
+        # The shims and the staged DRI driver are copied straight into an arm64
+        # rootfs, so a wrong-architecture container here would graft foreign
+        # binaries in. Fail loudly instead.
+        case "$(uname -m)" in aarch64|arm64) ;; *)
+            echo "ERROR: shim container is $(uname -m), expected aarch64." >&2; exit 1 ;;
+        esac
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h.
@@ -181,7 +169,7 @@ done
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-arm64-rootfs-inner.XXXXXX.sh)"
-trap 'rm -rf "$EXTRACT_DIR" "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail
@@ -213,6 +201,13 @@ resize2fs "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
+# losetup -f asks the kernel via /dev/loop-control for the next free number, but
+# the node itself only exists in this container's /dev if it already existed when
+# the container started. On a host with many loops already taken (snap mounts hold
+# dozens) the answer is a number above anything present, and losetup then fails
+# with "No such file or directory". Create the node ourselves — we are privileged,
+# loop is major 7, and the minor is the loop number.
+[ -e "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 "${LOOPDEV##*/loop}"
 losetup "$LOOPDEV" "$IMG"
 mkdir -p /mnt/rootfs
 # extents/64bit are ext4 features even though `file` labels this ext2
@@ -220,6 +215,17 @@ mkdir -p /mnt/rootfs
 mount -t ext4 "$LOOPDEV" /mnt/rootfs
 cleanup() { umount /mnt/rootfs || true; losetup -d "$LOOPDEV" || true; }
 trap cleanup EXIT
+
+# Guard against firmware from the wrong device family. Otherwise this build
+# completes happily and the guest panics ~45s into boot with an opaque
+# "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
+# the wrong architecture. The dynamic loader's filename is architecture-specific,
+# so its presence is an unambiguous check.
+if [ ! -e /mnt/rootfs/lib/ld-linux-aarch64.so.1 ]; then
+    echo "ERROR: this firmware's rootfs is not arm64 (no /lib/ld-linux-aarch64.so.1)." >&2
+    echo "       This builds arm64/RK3588 Engine OS firmware only." >&2
+    exit 1
+fi
 
 echo "--- blocking Sentry telemetry (docs/BLOCKING_TELEMETRY.md) ---"
 TELEMETRY_LINE="127.0.0.1 o230257.ingest.sentry.io"
@@ -344,6 +350,7 @@ fi
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
+docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-slim >/dev/null
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
@@ -363,5 +370,5 @@ echo "Built: $OUT_PATH"
 echo ""
 file "$OUT_PATH"
 echo ""
-echo "Still needed to boot: kernel+initrd (get_arm64_kernel.sh) and a"
-echo "/data+/factory disk (make_data_disk.sh) — see docs/BUILDING.md's"
+echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch arm64) and a"
+echo "/data+/factory disk (make_disk.sh --family engine) — see docs/BUILDING.md's"

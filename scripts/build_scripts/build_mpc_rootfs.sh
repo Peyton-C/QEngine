@@ -25,6 +25,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -76,36 +77,13 @@ esac
 
 ### 1. Extract the rootfs partition with binwalk ############################
 
-EXTRACT_DIR="$(mktemp -d /tmp/build-mpc-rootfs-extract.XXXXXX)"
-trap 'rm -rf "$EXTRACT_DIR"' EXIT
+# Shared with the other rootfs builder and with new_instance.sh, which needs the
+# same extraction to identify a firmware's device family before it can choose
+# between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
+# shellcheck source=extract_rootfs.sh
+. "$SCRIPT_DIR_SELF/extract_rootfs.sh"
 
-echo "--- extracting $FIRMWARE_IMG with binwalk (this scans the whole image, ~10s+) ---"
-binwalk -e -C "$EXTRACT_DIR" "$FIRMWARE_IMG"
-
-# binwalk 3 signature-scans rather than parsing the firmware container
-# format, so it finds every embedded ext2/3/4 filesystem — the real rootfs
-# (~830MB) plus two much smaller redundant boot-slot partitions. Identify
-# the rootfs by picking the largest ext2/3/4 image found, rather than
-# hardcoding an offset that's specific to this one firmware build.
-BEST_CANDIDATE=""
-BEST_SIZE=0
-while IFS= read -r -d '' f; do
-    if file "$f" | grep -q 'ext[234] filesystem'; then
-        f_size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
-        if [ "$f_size" -gt "$BEST_SIZE" ]; then
-            BEST_CANDIDATE="$f"
-            BEST_SIZE="$f_size"
-        fi
-    fi
-done < <(find "$EXTRACT_DIR" -type f -print0)
-
-if [ -z "$BEST_CANDIDATE" ]; then
-    echo "ERROR: no ext2/3/4 filesystem image found in binwalk's extraction output." >&2
-    exit 1
-fi
-
-echo "--- found rootfs candidate: $BEST_CANDIDATE ($((BEST_SIZE / 1024 / 1024)) MiB) ---"
-cp "$BEST_CANDIDATE" "$OUT_PATH"
+extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -122,10 +100,20 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # unmodified. debian:bookworm for glibc 2.36, comfortably older than the guest's
 # — see docs/BUILDING.md's "Toolchain for cross-compiling shims".
 echo "--- building the touch bridge from source ---"
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
+        # touchbridge_mpc is copied straight into an armv7 rootfs, so a
+        # wrong-architecture container here would install a binary that cannot
+        # execute in the guest. Fail loudly instead.
+        case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
+            echo "ERROR: touchbridge container is $(uname -m), expected armv7l." >&2; exit 1 ;;
+        esac
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
@@ -142,7 +130,7 @@ docker run --rm --platform linux/arm/v7 \
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX.sh)"
-trap 'rm -rf "$EXTRACT_DIR"; rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail
@@ -174,6 +162,13 @@ resize2fs "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
+# losetup -f asks the kernel via /dev/loop-control for the next free number, but
+# the node itself only exists in this container's /dev if it already existed when
+# the container started. On a host with many loops already taken (snap mounts hold
+# dozens) the answer is a number above anything present, and losetup then fails
+# with "No such file or directory". Create the node ourselves — we are privileged,
+# loop is major 7, and the minor is the loop number.
+[ -e "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 "${LOOPDEV##*/loop}"
 losetup "$LOOPDEV" "$IMG"
 mkdir -p /mnt/rootfs
 # extents/64bit are ext4 features even though `file` labels this ext2
@@ -181,6 +176,18 @@ mkdir -p /mnt/rootfs
 mount -t ext4 "$LOOPDEV" /mnt/rootfs
 cleanup() { umount /mnt/rootfs || true; losetup -d "$LOOPDEV" || true; }
 trap cleanup EXIT
+
+# Guard against firmware from the wrong device family. Otherwise this build
+# completes happily and the guest panics ~45s into boot with an opaque
+# "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
+# the wrong architecture. The dynamic loader's filename is architecture-specific,
+# so its presence is an unambiguous check.
+if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
+    echo "ERROR: this firmware's rootfs is not 32-bit ARM (no /lib/ld-linux-armhf.so.3)." >&2
+    echo "       This builds armv7/RK3288 MPC firmware (product codes ACV*) only;" >&2
+    echo "       the Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
+    exit 1
+fi
 
 echo "--- blanking root password for serial-console login ---"
 sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
@@ -224,6 +231,7 @@ fi
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
+docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-slim >/dev/null
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
@@ -242,5 +250,5 @@ echo "Built: $OUT_PATH"
 echo ""
 file "$OUT_PATH"
 echo ""
-echo "Still needed to boot: kernel+initrd (get_armv7_kernel.sh) and an"
-echo "/data disk (make_emmc_disk.sh) — see BUILD_MPC.md."
+echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch armhf) and an"
+echo "/data disk (make_disk.sh --family mpc) — see BUILD_MPC.md."

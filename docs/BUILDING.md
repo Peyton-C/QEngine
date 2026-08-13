@@ -144,7 +144,10 @@ This maps to `scripts/build_images.sh`/`scripts/boot_engine.sh`.
 **Never run two QEMU instances against the same `emmc.img` or rootfs image
 concurrently** — both are plain ext4 images with no coordination between
 writers, and concurrent access (including a host loop-mount alongside a live
-QEMU instance) will corrupt the filesystem.
+QEMU instance) will corrupt the filesystem. Per-instance directories give each
+VM its own disks and refuse a second boot of the same instance, which is the
+supported way to run more than one at a time — see
+[INSTANCES.md](../scripts/build_scripts/INSTANCES.md).
 
 ## 6. Populating shim files into the rootfs
 Copy the following into a new rootfs image, matching the running kernel
@@ -871,10 +874,18 @@ unmodified), still zstd-compressed, every single boot. So the
 has to be re-run after *every* fresh VM boot — not a one-time fix baked
 into the image, regardless of which Engine version or host it's paired
 with. Worth fixing in the initrd itself at some point rather than
-repeating by hand each time; not yet done.
+repeating by hand each time.
 
-New files: [build/run-system1-504.sh](../build/run-system1-504.sh) (host
-launch script, identical to `run-system1.sh` apart from paths/UUID/ports).
+> **Since done.** `get_kernel.sh` builds the initrd with its own curated
+> `MODULES` list plus a `copymods` `init-bottom` hook that relocates the initrd's
+> modules onto a tmpfs on the real root, so a current build needs no per-boot
+> manual step. The rest of this entry describes the older hand-run setup.
+
+New files: `build/run-system1-504.sh` (host launch script, identical to
+`run-system1.sh` apart from paths/UUID/ports). That per-version copying is
+superseded by [INSTANCES.md](../scripts/build_scripts/INSTANCES.md): the
+launchers now take their paths, ports and root UUID from the environment, so one
+script serves every version.
 The 5.0.4 rootfs/data-disk images themselves aren't committed (same reason
 `rootfs_out.img` isn't — large, regeneratable from the recipe above).
 
@@ -1231,7 +1242,7 @@ live in [shims/rk3588/az04-audio/](../shims/rk3588/az04-audio/)
 
 The project's kernel/initrd are pulled from Debian trixie's
 `linux-image-arm64` package
-([get_arm64_kernel.sh](../scripts/build_scripts/get_arm64_kernel.sh)),
+([get_kernel.sh](../scripts/build_scripts/get_kernel.sh)),
 currently `6.12.101+deb13-arm64`. Building an out-of-tree module that
 actually loads needs an *exact* vermagic match (`CONFIG_MODVERSIONS` is
 on — even a matching kernel version with different symbol CRCs fails to
@@ -1252,7 +1263,7 @@ docker exec az04dev bash -c "
 building) is where the *pool* of real Debian-built `.ko`s lives —
 needed here for `snd-soc-core.ko` and its own dependencies
 (`snd-pcm-dmaengine.ko`, `snd-compress.ko`), none of which are in this
-project's trimmed initrd (see `MODULES=` in `get_arm64_kernel.sh` — audio
+project's trimmed initrd (see `MODULES=` in `get_kernel.sh` — audio
 support there is deliberately curated down to USB-class/HDA only, no
 ASoC at all). Grab them with `docker cp` and `xz -d`, same as any other
 module in this project's build recipe.

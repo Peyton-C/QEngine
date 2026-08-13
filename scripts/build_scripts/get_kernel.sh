@@ -1,16 +1,66 @@
 #!/bin/bash
-# get_arm64_kernel.sh — builds a Debian trixie (13) arm64 kernel 
-# initrd for booting the RANE SYSTEM ONE / RMZ2 target under QEMU, with the
-# modules this project actually needs pre-decompressed and bundled in.
+# get_kernel.sh — builds a Debian trixie (13) kernel and initrd for booting this
+# project's targets under QEMU, with the modules it actually needs bundled in.
 #
-# Usage: get_debian_trixie_kernel.sh
-#   Writes vmlinuz-generic-arm64 and initrd-generic-arm64 to /build
-#   (the repo's build/ directory). Requires Docker.
+# Usage: get_kernel.sh --arch <arm64|armhf>
+#   arm64 boots the RK3588 targets (RANE SYSTEM ONE / RMZ2), armhf the RK3288 ones
+#   (Akai MPC, and the armv7 Engine OS devices).
+#   Writes vmlinuz-generic-<arch> and initrd-generic-<arch> to the repo's build/.
+#   Requires Docker.
+#
+# This was two scripts, get_arm64_kernel.sh and get_armv7_kernel.sh, differing in 48
+# lines of 360: the package name, the Docker platform, the output names, the container
+# architecture assertion, and three extra modules the armhf kernel needs. Those are
+# the six values below; everything else was the same text twice. The old names remain
+# as wrappers, since BUILD_ARM64.md and BUILD_MPC.md tell readers to run them.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
+
+ARCH=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) ARCH="$2"; shift 2 ;;
+        *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+case "$ARCH" in
+    arm64)
+        KERNEL_PKG="linux-image-arm64"
+        DOCKER_PLATFORM="linux/arm64"
+        # Guest architectures QEMU/binfmt may report for this platform.
+        EXPECTED_UNAME="aarch64|arm64"
+        EXPECTED_NAME="aarch64"
+        EXTRA_MODULES=()
+        ;;
+    armhf)
+        KERNEL_PKG="linux-image-armmp"
+        DOCKER_PLATFORM="linux/arm/v7"
+        EXPECTED_UNAME="armv7l|armv8l|armhf"
+        EXPECTED_NAME="armv7l"
+        EXTRA_MODULES=(
+            # /etc and /var are overlayfs mounts on these images; without this the
+            # etc.mount/var.mount units fail and the boot cascades into failures.
+            overlay
+            # Built into the arm64 kernel but modules on armhf, so they have to be
+            # named here: without virtio_blk the root device never appears and the
+            # initramfs gives up with "ALERT! UUID=... does not exist".
+            virtio_blk virtio_net
+            # The 32-bit virt machine has no PCI, so the USB controllers are
+            # unreachable and virtio input devices are the only way to get a pointer in.
+            virtio_input
+        )
+        ;;
+    *)
+        echo "ERROR: --arch must be 'arm64' or 'armhf' (got '${ARCH:-}')." >&2
+        exit 1 ;;
+esac
+
+VMLINUZ="vmlinuz-generic-$ARCH"
+INITRD="initrd-generic-$ARCH"
 
 echo Getting Kernel...
 
@@ -40,6 +90,7 @@ MODULES=(
     # Display (virtio-gpu-pci under QEMU)
     virtio_gpu drm drm_kms_helper
 )
+MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
 
 INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX.sh)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
@@ -51,9 +102,14 @@ trap 'rm -f "$INNER_SCRIPT"' EXIT
 # and executing a real file behaves normally.
 cat > "$INNER_SCRIPT" <<DOCKER_SCRIPT
 set -euo pipefail
+# A wrong-architecture container would silently produce a kernel of the other
+# architecture under this one's name, which fails much later and confusingly at boot.
+case "\$(uname -m)" in $EXPECTED_UNAME) ;; *)
+    echo "ERROR: container is \$(uname -m), expected $EXPECTED_NAME." >&2; exit 1 ;;
+esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq initramfs-tools linux-image-arm64 >/dev/null 2>&1
+apt-get install -y -qq initramfs-tools $KERNEL_PKG >/dev/null 2>&1
 
 KVER=\$(ls /lib/modules/)
 echo "Kernel version: \$KVER"
@@ -118,11 +174,11 @@ sed -i 's/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf
 printf '%s\n' ${MODULES[@]} >> /etc/initramfs-tools/modules
 
 echo "--- building initrd ---"
-mkinitramfs -o /tmp/initrd-generic-arm64 "\$KVER"
+mkinitramfs -o /tmp/$INITRD "\$KVER"
 
 echo "--- verifying target modules made it in ---"
 mkdir -p /tmp/verify
-unmkinitramfs /tmp/initrd-generic-arm64 /tmp/verify >/dev/null 2>&1
+unmkinitramfs /tmp/$INITRD /tmp/verify >/dev/null 2>&1
 MISSING=""
 for name in ${MODULES[@]}; do
     # ecc: compiled directly into this kernel (modules.builtin), not a
@@ -143,25 +199,29 @@ if [ -n "\$MISSING" ]; then
     echo "WARNING: these modules didn't make it into the built initrd:\$MISSING" >&2
 fi
 
-cp /tmp/initrd-generic-arm64 /out/initrd-generic-arm64
-cp /boot/vmlinuz-"\$KVER" /out/vmlinuz-generic-arm64
-if [ ! -s /out/initrd-generic-arm64 ] || [ ! -s /out/vmlinuz-generic-arm64 ]; then
+cp /tmp/$INITRD /out/$INITRD
+cp /boot/vmlinuz-"\$KVER" /out/$VMLINUZ
+if [ ! -s /out/$INITRD ] || [ ! -s /out/$VMLINUZ ]; then
     echo "ERROR: output file(s) missing or empty" >&2
     exit 1
 fi
 echo "--- done: kernel \$KVER ---"
 DOCKER_SCRIPT
 
-docker run --rm --platform linux/arm64 \
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform "$DOCKER_PLATFORM" debian:trixie >/dev/null
+docker run --rm --platform "$DOCKER_PLATFORM" \
     -v "$OUT_DIR:/out" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:trixie bash /inner.sh
 
-if [ ! -s "$OUT_DIR/initrd-generic-arm64" ] || [ ! -s "$OUT_DIR/vmlinuz-generic-arm64" ]; then
+if [ ! -s "$OUT_DIR/$INITRD" ] || [ ! -s "$OUT_DIR/$VMLINUZ" ]; then
     echo "FAILED: expected output files are missing from $OUT_DIR" >&2
     exit 1
 fi
 
 echo ""
-echo "Built: $OUT_DIR/vmlinuz-generic-arm64"
-echo "       $OUT_DIR/initrd-generic-arm64"
+echo "Built: $OUT_DIR/$VMLINUZ"
+echo "       $OUT_DIR/$INITRD"

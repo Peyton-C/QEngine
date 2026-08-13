@@ -4,7 +4,7 @@
 # card, reached and opened" and docs/BUILDING.md's "Reimplementing
 # az04-codec as a loadable kernel module"), plus the three snd-soc-core
 # dependency modules this project's trimmed initrd doesn't ship
-# (get_arm64_kernel.sh's MODULES= list has no ASoC support at all).
+# (get_kernel.sh's MODULES= list has no ASoC support at all).
 #
 # Sources live in shims/rk3588/az04-audio/ (az04_codec.c, az04_card.c,
 # Makefile) and are built in place there, matching this project's
@@ -14,9 +14,9 @@
 # separate, under build/az04-audio/.
 #
 # Requires an *exact* kernel-version match against whatever
-# get_arm64_kernel.sh most recently produced (CONFIG_MODVERSIONS means
+# get_kernel.sh most recently produced (CONFIG_MODVERSIONS means
 # even a matching kernel release with different symbol CRCs won't load)
-# — run this script around the same time as get_arm64_kernel.sh, from
+# — run this script around the same time as get_kernel.sh, from
 # the same apt snapshot, to keep them in sync. Both pull from Debian
 # trixie's linux-image-arm64/linux-headers-arm64 packages.
 #
@@ -92,6 +92,10 @@ for ko in /src/az04_codec.ko /src/az04_card.ko /out/snd-soc-core.ko /out/snd-pcm
 done
 DOCKER_SCRIPT
 
+# `docker run --platform` does not re-pull: if the tag is already cached for a
+# different architecture Docker reuses that image, so the platform actually used
+# depends on pull order. The comment above pins intent; this pull makes it true.
+docker pull -q --platform linux/arm64 debian:trixie >/dev/null
 docker run --rm --platform linux/arm64 \
     -v "$SRC_DIR:/src" \
     -v "$OUT_DIR:/out" \

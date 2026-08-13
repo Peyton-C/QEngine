@@ -238,6 +238,17 @@ mount -t ext4 "$LOOPDEV" /mnt/rootfs
 cleanup() { umount /mnt/rootfs || true; losetup -d "$LOOPDEV" || true; }
 trap cleanup EXIT
 
+# Guard against firmware from the wrong device family. Otherwise this build
+# completes happily and the guest panics ~45s into boot with an opaque
+# "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
+# the wrong architecture. The dynamic loader's filename is architecture-specific,
+# so its presence is an unambiguous check.
+if [ ! -e /mnt/rootfs/lib/ld-linux-aarch64.so.1 ]; then
+    echo "ERROR: this firmware's rootfs is not arm64 (no /lib/ld-linux-aarch64.so.1)." >&2
+    echo "       This builds arm64/RK3588 Engine OS firmware only." >&2
+    exit 1
+fi
+
 echo "--- blocking Sentry telemetry (docs/BLOCKING_TELEMETRY.md) ---"
 TELEMETRY_LINE="127.0.0.1 o230257.ingest.sentry.io"
 grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /mnt/rootfs/etc/hosts

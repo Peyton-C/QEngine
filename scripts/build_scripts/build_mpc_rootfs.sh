@@ -199,6 +199,18 @@ mount -t ext4 "$LOOPDEV" /mnt/rootfs
 cleanup() { umount /mnt/rootfs || true; losetup -d "$LOOPDEV" || true; }
 trap cleanup EXIT
 
+# Guard against firmware from the wrong device family. Otherwise this build
+# completes happily and the guest panics ~45s into boot with an opaque
+# "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
+# the wrong architecture. The dynamic loader's filename is architecture-specific,
+# so its presence is an unambiguous check.
+if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
+    echo "ERROR: this firmware's rootfs is not 32-bit ARM (no /lib/ld-linux-armhf.so.3)." >&2
+    echo "       This builds armv7/RK3288 MPC firmware (product codes ACV*) only;" >&2
+    echo "       the Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
+    exit 1
+fi
+
 echo "--- blanking root password for serial-console login ---"
 sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
 

@@ -138,10 +138,11 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 | `KERNEL_IMG`, `INITRD_IMG` | the kernel that matches `ARCH`, shared by every instance of it |
 | `SSH_PORT`, `VNC_DISPLAY` | derived from the instance name so two instances cannot collide. Edit if a port is already taken on the host |
 
-`run_instance.sh` exports these and execs the ordinary launcher, so the QEMU
-command lines live in one place each. Those launchers fall back to the old
-hardcoded paths and ports when the variables are unset, so running them directly
-still works exactly as before.
+`run_instance.sh` exports these and execs the launcher named in `instance.env`. Those
+launchers are wrappers around a single `run_qemu.sh`, which resolves the machine type,
+devices, kernel, accelerator and display from `ARCH`, `FAMILY` and `DISPLAY_MODE`, and
+falls back to the previously hardcoded paths and ports when the variables are unset --
+so running any of them directly still works exactly as before.
 
 ## Notes
 

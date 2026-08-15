@@ -98,4 +98,10 @@ echo ""
 
 export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 export DEVICE DISPLAY_MODE
+# Optional, and absent from most instance.envs. Exported only when the file set
+# it, so arch_devices.sh's own default applies otherwise. An `if` rather than a
+# `&&` list because this is the penultimate statement under `set -e`.
+if [ -n "${GPU_MAX_OUTPUTS:-}" ]; then
+    export GPU_MAX_OUTPUTS
+fi
 exec "$QEMU_DIR/run_qemu.sh"

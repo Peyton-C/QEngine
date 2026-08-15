@@ -818,7 +818,7 @@ generic to "moved to a different QEMU build/host," not new bugs.
 
 Also worth noting for whoever picks this back up: the shim files above
 were pushed into the *running* guest live (`wget` from an HTTP server on
-the host, per [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md)'s workflow)
+the host, per [REMOTE_ACCESS.md](/docs/REMOTE_ACCESS.md)'s workflow)
 for fast iteration, not baked into `rootfs_out.img` on disk — and
 separately, `debugfs -w` was used at one point to inject files into that
 same image file *while QEMU still had it open* for the live boot test.
@@ -1047,14 +1047,134 @@ unaffected, since eglfs reads evdev directly rather than through the VT.
 Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
 so a fresh clone has sources only.
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
-all five — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
-`touchbridge_rmz2`, `midisurface_rmz2` — in one `debian:bookworm` arm64
-container before installing them. Previously it copied artifacts that nothing
-produced, which worked only if a previous session had left them in the tree.
+all six — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
+`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface_rmz2` — in one
+`debian:bookworm` arm64 container before installing them. Previously it copied
+artifacts that nothing produced, which worked only if a previous session had
+left them in the tree.
 
 `libdrm-dev` (for `drmatomic`) and `libasound2-dev` (for `midisurface`) are
-installed in that container; `alsashim` needs neither, since it declares the
-two libasound types it touches and resolves the real symbols via `dlsym`.
+installed in that container; `alsashim` and `teeshim` need neither, since they
+declare the types they touch rather than including vendor headers.
+
+#### Engine 5.1.0 attests against OP-TEE before it will start
+
+Engine 5.0.4 makes no TEE calls at all — its binary imports no `TEEC_*`
+symbols. 5.1.0-beta.8 links `libteec.so.1` and, in `main()` before the GUI,
+opens a session to a trusted application and asks it whether this is genuine
+hardware. QEMU's `virt` machine boots no OP-TEE secure firmware, so `/dev/tee0`
+never appears and `TEEC_InitializeContext` fails outright.
+
+Engine reads that failure as "not genuine" and takes an early-exit path that
+writes `TestApp` into `/tmp/engine-quit-reason` and returns 0.
+`/usr/Engine/Scripts/engine` — byte-identical between 5.0.4 and beta8 — then
+execs `/usr/bin/test-app-launcher`. The guest boots straight into the factory
+test application and Engine is never seen.
+
+[teeshim_rmz2.so](../shims/rk3588/teeshim/teeshim_rmz2.c) is preloaded ahead of
+`libteec.so.1` and answers the five `TEEC_*` entry points with success, writing
+the non-zero verdict Engine reads back out of the operation's output parameter.
+The shim's header comment carries the full reconstruction of the check, the
+call-site offsets it was derived from, and the parameter layout that pins the
+verdict's shape. `TEESHIM_DEBUG` turns on per-call logging.
+
+#### JP22 declares three displays, and one connector cannot serve them
+
+`JP22` is the only product in the 5.1.0 firmware whose
+`usr/Engine/ScreenConfiguration/<code>/ScreenConfiguration.json` lists more than
+one output — `eDP1`, `DSI2` (primary) and `DSI1`, each with its own touch device
+and rotation node. Every other product, `RMZ2` included, declares exactly one.
+
+QEMU's virtio-gpu defaults to a single connector, so all three collapse onto one
+eglfs screen. Engine still opens three windows, and the second window onto a
+screen that already holds an EGL surface hits a `qFatal` inside
+`libQt6EglFSDeviceIntegration`:
+
+```
+[F] EGLFS: OpenGL windows cannot be mixed with others.
+```
+
+`qFatal` calls `abort()`, so the guest SIGABRTs a few seconds into every boot and
+`engine.service` restart-loops on `Restart=on-failure`. The give-away in the
+journal is a successful modeset immediately followed by a second framebuffer:
+
+```
+DRMATOMIC: MODESET commit -> ret=0 errno=0 (ok)      <- screen 1 is fine
+DRMATOMIC: ADDFB2 rewriting pixel_format ...          <- second framebuffer
+[F] EGLFS: OpenGL windows cannot be mixed with others.
+```
+
+**The fix is to give it three connectors, not to edit that file.** Set
+`GPU_MAX_OUTPUTS=3` in the instance's `instance.env`; `arch_devices.sh` turns that
+into `max_outputs=3` on the virtio-gpu device, and the guest comes up with three
+connectors that all report `connected`:
+
+```
+card0-Virtual-1 connected
+card0-Virtual-2 connected
+card0-Virtual-3 connected
+```
+
+Three screens for three windows, no `qFatal`, and Engine runs.
+
+Rewriting `ScreenConfiguration.json` down to a single output was tried first and
+**changed nothing** — the crash was identical. That is worth recording, because it
+says where the window count comes from: not that file, but Engine's compiled-in
+per-product configuration. The JSON supplies each output's rotation node, touch
+device and primary flag; it does not decide how many windows exist. Nothing in the
+rootfs needs patching for JP22, and the build no longer touches it.
+
+Booting three screens then exposed a second bug, in our own shim.
+[drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c) kept a *single* global
+`kms_state`, which was correct for as long as every product had one display. With
+three, `ensure_kms_state()` returned early after the first CRTC, so the second and
+third modesets reused the first CRTC's ids — and the `PAGE_FLIP` handler ignored
+`p->crtc_id` entirely, sending every screen's flip to that same CRTC. Three flips
+per frame onto one CRTC exhausts the DRM file's event allocation:
+
+```
+[W] Could not queue DRM page flip on screen Virtual3 (No space left on device)
+=== DRMATOMIC: FLIP commit (objs=2 props=2 flags=0x201) -> ret=-1 errno=28
+```
+
+The shim now keeps one state per CRTC, looks flips up by `p->crtc_id`, and picks
+each CRTC's primary plane by testing `possible_crtcs` (a bitmask of CRTC *indices*,
+so it maps ids through `GETRESOURCES` first) while skipping planes another CRTC has
+claimed. An unknown CRTC falls through to the legacy ioctl rather than guessing.
+
+With that fixed all three screens render. Two further things were needed to make
+them usable, both driven by the same fact — QEMU's defaults assume one display:
+
+**Resolution.** `xres`/`yres` on the virtio-gpu device apply to scanout 0 only, so
+heads 1 and 2 come up at an 800x600 default. The rootfs build asks for the mode
+explicitly per output instead.
+
+**Touch.** One `usb-tablet` cannot serve three windows: they all drive the same
+absolute device and the guest cannot tell which screen a click came from. QEMU can
+bind an input device to a scanout (`display=`/`head=`), so `GPU_MAX_OUTPUTS>1` now
+emits one tablet per head, and one `touchbridge_rmz2` instance per head turns each
+into its own touchscreen — `touchbridge_rmz2@N.service`, with head 0 still served by
+the plain unit. Each publishes `/dev/input/qengine-touchN`, and the build points the
+matching output's `touchDevice` at it. That path must be a *symlink*: Engine resolves
+it and substitutes the target, and logs "Could not resolve symlink for:" otherwise —
+which is why the stock `platform-*.i2c-event` paths bound nothing and every touch
+went to the primary screen.
+
+The output names matter for the same reason. Qt names virtio-gpu connectors
+`Virtual1`..`VirtualN` (its own scheme — no dash, unlike sysfs's `card0-Virtual-1`),
+and it falls back to defaults for any output whose name it cannot match, silently
+discarding that output's `mode` and `touchDevice`. Stock `eDP1`/`DSI2`/`DSI1` match
+nothing here. Only the names, the mode and the touch devices are rewritten; the
+`rotation` paths are left exactly as shipped, since dtshim already serves all three.
+
+Instances for heads 1 and 2 are enabled unconditionally, because the head count is a
+runtime property of the launcher that the build cannot see. Each one's
+`ExecCondition=` probes for its tablet and exits non-zero when it is absent, so on a
+single-screen guest they are skipped rather than restart-looping.
+
+Still open: the stock JP22 config disables `hwcursor` to dodge a
+`destroyGlobalCursor` use-after-free on shutdown that its own comment attributes to
+Qt's multi-screen path — kept, and now genuinely in play.
 
 #### Diagnostic logging is off by default
 
@@ -1591,4 +1711,4 @@ interception is unaffected — none of those carry a `time_t`.
 
 ## See also
 - [ENGINEOS.md](ENGINEOS.md) — Engine OS internals, product spoofing, known limitations
-- [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md) — driving a VM on a remote build host
+- [docs/REMOTE_ACCESS.md](/docs/REMOTE_ACCESS.md) — driving a VM on a remote build host

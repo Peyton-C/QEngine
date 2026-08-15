@@ -78,6 +78,63 @@ case "$ARCH" in
         exit 1 ;;
 esac
 
+# Extra scanouts, for the one product that needs them.
+#
+# Every Engine device ships a single display except JP22, which declares three in
+# its ScreenConfiguration.json. virtio-gpu advertises one connector per scanout,
+# so a one-output GPU gives Qt one screen no matter what that file asks for, and
+# Engine's second window onto it aborts the process (docs/BUILDING.md).
+#
+# Left at 1 by default rather than raised for everyone: each scanout is another
+# QemuConsole, and how a display backend surfaces the extra ones varies (cocoa
+# has no multi-head window management to speak of), so a device that only ever
+# had one screen should not grow two dormant ones. Set GPU_MAX_OUTPUTS=3 in an
+# instance.env to opt that instance in.
+
+# Referenced by the per-head tablets' display= property below.
+GPU_ID="qengine-gpu"
+GPU_MAX_OUTPUTS="${GPU_MAX_OUTPUTS:-1}"
+case "$GPU_MAX_OUTPUTS" in
+    ''|*[!0-9]*)
+        echo "ERROR: GPU_MAX_OUTPUTS must be a positive integer, got '$GPU_MAX_OUTPUTS'." >&2
+        exit 1 ;;
+esac
+if [ "$GPU_MAX_OUTPUTS" -gt 1 ]; then
+    if [ "$ARCH" != arm64 ]; then
+        echo "ERROR: GPU_MAX_OUTPUTS>1 is arm64-only (armhf uses the mmio virtio-gpu)." >&2
+        exit 1
+    fi
+    # The GPU needs an id so the tablets below can name it as their display.
+    GPU_DEV="$GPU_DEV,id=$GPU_ID,max_outputs=$GPU_MAX_OUTPUTS"
+    [ -n "$GPU_GL_DEV" ] && GPU_GL_DEV="$GPU_GL_DEV,id=$GPU_ID,max_outputs=$GPU_MAX_OUTPUTS"
+
+    # One absolute pointing device per head, each bound to its own scanout.
+    #
+    # A single usb-tablet cannot serve several windows: whichever window is
+    # clicked, the guest sees one device reporting coordinates in one space, with
+    # nothing to say which screen they belong to. QEMU's display=/head= properties
+    # bind an input device to a specific scanout, so N tablets give the guest N
+    # distinguishable evdev sources — which is what lets one touchbridge instance
+    # per head map clicks onto the right screen.
+    _tablets=""
+    _head=0
+    while [ "$_head" -lt "$GPU_MAX_OUTPUTS" ]; do
+        _tablets="$_tablets -device usb-tablet,display=$GPU_ID,head=$_head"
+        _head=$((_head + 1))
+    done
+
+    # Replace the single default tablet rather than adding to it, so head 0 does
+    # not end up with two. Checked rather than assumed: a silent no-op here would
+    # leave an unbound tablet that quietly steals events from head 0.
+    _input_base="${INPUT_DEVS% -device usb-tablet}"
+    if [ "$_input_base" = "$INPUT_DEVS" ]; then
+        echo "ERROR: expected INPUT_DEVS to end with '-device usb-tablet' so it could" >&2
+        echo "       be replaced by per-head tablets; it is: $INPUT_DEVS" >&2
+        exit 1
+    fi
+    INPUT_DEVS="$_input_base$_tablets"
+fi
+
 # Engine wants a playback-only card: a capture PCM makes it assign capture as the
 # default and leave playback null, which presents as a stuck XRUN rather than an
 # error (see the note in each engine launcher). hda is PCI, so a 32-bit guest has

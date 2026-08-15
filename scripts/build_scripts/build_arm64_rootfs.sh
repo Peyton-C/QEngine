@@ -7,7 +7,8 @@
 #   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build alsashim_rmz2.so (the only shim built here rather than committed
 #      prebuilt — see the build step below).
-#   5. Copy the dtshim/drmatomic/alsashim/touchbridge_rmz2 shims + fake-dt files into /root.
+#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge_rmz2 shims +
+#      fake-dt files into /root.
 #   6. Wire touchbridge_rmz2.service, midisurface_rmz2.service (virtual control
 #      surface, auto motor-off), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
@@ -137,6 +138,8 @@ docker run --rm --platform linux/arm64 \
             -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/teeshim/teeshim_rmz2.so /shims/teeshim/teeshim_rmz2.c
         gcc -O2 -Wall \
             -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
         gcc -O2 -Wall \
@@ -159,7 +162,8 @@ docker run --rm --platform linux/arm64 \
 }
 
 for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
-                alsashim/alsashim_rmz2.so touchbridge_rmz2/touchbridge_rmz2 \
+                alsashim/alsashim_rmz2.so teeshim/teeshim_rmz2.so \
+                touchbridge_rmz2/touchbridge_rmz2 \
                 midisurface_rmz2/midisurface_rmz2; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
@@ -249,6 +253,7 @@ mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
 cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
 cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
+cp -a /shims/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
@@ -269,12 +274,81 @@ cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 # value confirmed working against RMZ2's real panel orientation.
 printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
 chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
-          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/touchbridge_rmz2 \
+          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so \
+          /mnt/rootfs/root/touchbridge_rmz2 \
           /mnt/rootfs/root/midisurface_rmz2
 
 echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
 ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2.service
+
+# Per-head touch, for the multi-display product.
+#
+# One bridge per head: QEMU gives each head its own usb-tablet (GPU_MAX_OUTPUTS
+# on the launcher), and each instance turns its own tablet into a touchscreen and
+# publishes /dev/input/qengine-touchN for that output's touchDevice to resolve.
+# Head 0 is the non-templated unit above; 1 and 2 are instantiated here.
+#
+# Enabled unconditionally because the head count is a runtime property the build
+# cannot see. An instance whose head does not exist waits for its tablet, reports
+# that this guest has fewer displays, and exits 0 — so on a single-screen guest
+# they settle inactive instead of restart-looping.
+cp -a /shims/touchbridge_rmz2/touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2@.service
+ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@1.service
+ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@2.service
+
+echo "--- pointing JP22's screen configuration at what the guest actually has ---"
+# Only the output *names* and the touch devices are wrong for emulation; the
+# three-display layout itself is real and now genuinely served (GPU_MAX_OUTPUTS=3).
+#
+#   name        stock eDP1/DSI2/DSI1 match no connector here, and Qt falls back to
+#               defaults for an unmatched output — which is why touch went nowhere
+#               and why the stock file could not bind anything. Qt names virtio-gpu
+#               connectors Virtual1..VirtualN (its own naming, note: no dash, unlike
+#               sysfs's card0-Virtual-1).
+#   mode        QEMU applies xres/yres to scanout 0 only, leaving heads 1 and 2 at
+#               an 800x600 default; asking for the mode explicitly squares them up.
+#   touchDevice the stock platform-*.i2c-event paths do not exist. Engine resolves
+#               each of these as a symlink and substitutes the target, so they must
+#               be symlinks — which is what touchbridge publishes.
+#
+# rotation is left exactly as shipped: dtshim already serves all three of those
+# devicetree paths.
+JP22_SCREEN_CFG=/mnt/rootfs/usr/Engine/ScreenConfiguration/JP22/ScreenConfiguration.json
+if [ -f "$JP22_SCREEN_CFG" ]; then
+    [ -f "$JP22_SCREEN_CFG.stock" ] || cp -a "$JP22_SCREEN_CFG" "$JP22_SCREEN_CFG.stock"
+    cat > "$JP22_SCREEN_CFG" <<'EOF'
+{
+    "hwcursor": false,
+    "outputs": [
+        {
+            "name": "Virtual1",
+            "mode": "1280x800",
+            "touchDevice": "/dev/input/qengine-touch0",
+            "rotation": "/sys/firmware/devicetree/base/edp-panel/rotation",
+            "virtualIndex": 0
+        },
+        {
+            "name": "Virtual2",
+            "mode": "1280x800",
+            "touchDevice": "/dev/input/qengine-touch1",
+            "rotation": "/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation",
+            "primary": true,
+            "virtualIndex": 1
+        },
+        {
+            "name": "Virtual3",
+            "mode": "1280x800",
+            "touchDevice": "/dev/input/qengine-touch2",
+            "rotation": "/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation",
+            "virtualIndex": 2
+        }
+    ]
+}
+EOF
+else
+    echo "    (this firmware ships no JP22 screen configuration — skipping)"
+fi
 
 # Control surface + mapping selection. Ordering matters and is declared in the
 # units themselves: controllermap picks the assignment file, then the surface
@@ -310,9 +384,14 @@ After=touchbridge_rmz2.service
 Requires=touchbridge_rmz2.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so:/root/teeshim_rmz2.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
+# teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
+# GUI. QEMU has no TrustZone secure world, so the real call fails and Engine
+# quits into /usr/bin/test-app-launcher instead of ever showing Engine. Harmless
+# on 5.0.4, which makes no TEE calls at all. See the shim source for the full
+# check and TEESHIM_DEBUG for per-call logging.
 # alsashim: gets an emulated sound card past Engine's compiled-in card-name
 # allowlist and routes its PCM opens through ALSA's format-converting plug
 # layer. Card 0 is QEMU's emulated HDA controller; attach it playback-only

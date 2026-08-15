@@ -17,6 +17,9 @@
 #               intent explicitly — a wrong value is still caught either way.
 #                 engine = Engine OS (RANE SYSTEM ONE and relatives)
 #                 mpc    = Akai MPC
+#               Passing --device engine does not skip the extraction: Engine OS
+#               ships on both architectures and they need different builders, so
+#               the firmware still has to be looked at to tell which.
 #   --firmware  path to the firmware .img to extract
 #   --size      rootfs image size in bytes, passed through to the builder
 #   --force     rebuild the rootfs even if this instance already has one
@@ -68,31 +71,44 @@ case "$(uname -s)" in
     *)      DISPLAY_MODE="sdl" ;;
 esac
 
-# Device family registry. One row per family:
+# Device family registry. One row per family/architecture combination:
 #
-#   <family>|<rootfs markers>|<rootfs builder>|<data image name>
+#   <family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>
 #
 # The markers are paths that must ALL exist in the built rootfs for the row to
 # match, space separated, so a family that needs more than one piece of evidence
 # just lists more. Rows are tried in order, which lets a future family whose
 # markers are a superset of another's be listed first and win. Adding a device
-# family means adding a row; none of the logic below changes.
+# family or a new architecture for one means adding a row; none of the logic below
+# changes.
 #
 # The markers are what the family actually is, not a guess from the filename or the
 # product code: /usr/Engine is the Engine install tree, /usr/bin/MPC is the MPC
-# application binary itself.
-# The disk builder and the QEMU command line are no longer per-family scripts:
-# make_disk.sh takes the family and run_qemu.sh takes it from instance.env, so the only
-# per-family things left here are the markers that identify it, the rootfs builder
-# (which differs in its whole shim stack) and the name of its writable disk.
+# application binary itself. They do not distinguish the architecture — the same
+# Engine tree ships on both — so arch comes from the dynamic loader instead
+# (detect_arch below).
+#
+# Architecture is part of the key because two things genuinely differ along it and
+# not along the family. Engine OS on armv7 needs its own rootfs builder (a different
+# shim stack: no alsashim/midisurface/controllermap, and RK3288 devicetree paths),
+# and it wants the single-partition 'mpc' disk layout rather than the RK3588
+# data+factory pair, because its data.mount asks for PARTUUID
+# 931ad49d-ad59-0849-833a-9bf00af5b60e. Disk layout tracks the platform generation,
+# not the application.
+#
+# The QEMU command line is not per-row: run_qemu.sh takes the family and the arch
+# from instance.env.
 DEVICE_FAMILIES="\
-engine|/usr/Engine|build_arm64_rootfs.sh|data_disk.img
-mpc|/usr/bin/MPC|build_mpc_rootfs.sh|emmc.img"
+engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img
+engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img
+mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img"
 
-family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | tr '\n' ' '; }
+family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | sort -u | tr '\n' ' '; }
 
-# Look a family up by name, printing its row. Empty output means it is not known.
-family_row() {
+# Every row for a family, one per line. Empty output means the family is not known.
+# One row means its architecture is implied and no probe extraction is needed to
+# pick a builder; more than one means the firmware has to be looked at.
+family_rows() {
     # An `if` rather than `cond && cmd`: the loop's exit status is its last
     # iteration's, so a non-matching final row would fail the pipeline and, under
     # `set -e` with pipefail, abort the script silently.
@@ -101,10 +117,17 @@ family_row() {
     done
 }
 
+# The one row for a family/arch pair. Empty output means the combination has no row.
+family_row() {
+    family_rows "$1" | while IFS='|' read -r fam arch rest; do
+        if [ "$arch" = "$2" ]; then printf '%s|%s|%s\n' "$fam" "$arch" "$rest"; fi
+    done
+}
+
 # Identify a built rootfs by its markers, printing the family name. Empty output
 # means nothing matched, i.e. a device family with no row yet.
 detect_family() {
-    printf '%s\n' "$DEVICE_FAMILIES" | while IFS='|' read -r fam markers _; do
+    printf '%s\n' "$DEVICE_FAMILIES" | while IFS='|' read -r fam _ markers _; do
         [ -n "$fam" ] || continue
         matched=1
         for marker in $markers; do
@@ -112,6 +135,17 @@ detect_family() {
         done
         if [ "$matched" -eq 1 ]; then printf '%s\n' "$fam"; break; fi
     done
+}
+
+# The architecture of a rootfs image, from the dynamic loader's name — which is
+# architecture-specific and unambiguous, unlike the product code or the container
+# format (the AZ0x set spans both). Empty output means neither loader is there.
+detect_arch() {
+    if "$DEBUGFS" -R "stat /lib/ld-linux-aarch64.so.1" "$1" 2>/dev/null | grep -q 'Inode:'; then
+        printf 'arm64\n'
+    elif "$DEBUGFS" -R "stat /lib/ld-linux-armhf.so.3" "$1" 2>/dev/null | grep -q 'Inode:'; then
+        printf 'armhf\n'
+    fi
 }
 
 # brew keeps e2fsprogs keg-only, so dumpe2fs is off PATH on a stock macOS setup.
@@ -128,8 +162,8 @@ else
     exit 1
 fi
 
-# --device is optional. It is needed only to choose the rootfs builder, and that
-# choice can be made from the firmware instead — the builders are what perform the
+# --device is optional. It narrows the rootfs builder down to a family, and that
+# much can be read from the firmware instead — the builders are what perform the
 # extraction, so identifying the family first means extracting once up front.
 #
 # Order of preference: what was asked for, then what this instance was built as
@@ -139,14 +173,22 @@ if [ -z "$DEVICE" ] && [ -f "$INSTANCES_DIR/$NAME/instance.env" ]; then
     [ -n "$DEVICE" ] && echo "--- reusing this instance's recorded device family: $DEVICE ---"
 fi
 
-if [ -z "$DEVICE" ]; then
-    echo "--- no --device given, identifying $FIRMWARE ---"
+# A probe extraction of the firmware, made at most once and only if something below
+# actually has to look inside it. Two things might: identifying the family when
+# --device was not given, and picking between a family's architectures. Either can
+# come first, and neither should pay for the other.
+PROBE_IMG=""
+ensure_probe() {
+    [ -n "$PROBE_IMG" ] && return 0
+    echo "--- extracting $FIRMWARE to identify it ---"
     PROBE_IMG="$(mktemp /tmp/qengine-probe.XXXXXX.img)"
     trap 'rm -f "$PROBE_IMG"' EXIT
     extract_rootfs "$FIRMWARE" "$PROBE_IMG" >/dev/null
+}
+
+if [ -z "$DEVICE" ]; then
+    ensure_probe
     DEVICE="$(detect_family "$PROBE_IMG")"
-    rm -f "$PROBE_IMG"
-    trap - EXIT
     [ -n "$DEVICE" ] || {
         echo "ERROR: $FIRMWARE matches no known device family." >&2
         echo "       Looked for the markers of: $(family_names)" >&2
@@ -155,12 +197,34 @@ if [ -z "$DEVICE" ]; then
     echo "--- identified as $DEVICE ---"
 fi
 
-DEVICE_ROW="$(family_row "$DEVICE")"
-[ -n "$DEVICE_ROW" ] || {
+DEVICE_ROWS="$(family_rows "$DEVICE")"
+[ -n "$DEVICE_ROWS" ] || {
     echo "ERROR: --device must be one of: $(family_names)(got '$DEVICE')." >&2
     exit 1; }
 
-IFS='|' read -r _ DEVICE_MARKERS ROOTFS_BUILDER DATA_NAME <<EOF
+# Which row, when a family has more than one architecture. A family with a single
+# row needs no extraction to answer this, which is what keeps --device's promise of
+# skipping one: only an ambiguous family pays.
+if [ "$(printf '%s\n' "$DEVICE_ROWS" | wc -l)" -eq 1 ]; then
+    DEVICE_ROW="$DEVICE_ROWS"
+else
+    ensure_probe
+    FIRMWARE_ARCH="$(detect_arch "$PROBE_IMG")"
+    [ -n "$FIRMWARE_ARCH" ] || {
+        echo "ERROR: could not tell the architecture of $FIRMWARE -- no known dynamic loader." >&2
+        exit 1; }
+    echo "--- firmware is $FIRMWARE_ARCH ---"
+    DEVICE_ROW="$(family_row "$DEVICE" "$FIRMWARE_ARCH")"
+    [ -n "$DEVICE_ROW" ] || {
+        echo "ERROR: $DEVICE on $FIRMWARE_ARCH has no row in DEVICE_FAMILIES, so there is no" >&2
+        echo "       rootfs builder for it. Add one if this combination is now supported." >&2
+        exit 1; }
+fi
+
+rm -f "$PROBE_IMG"
+trap - EXIT
+
+IFS='|' read -r _ ROW_ARCH DEVICE_MARKERS ROOTFS_BUILDER DISK_LAYOUT DATA_NAME <<EOF
 $DEVICE_ROW
 EOF
 
@@ -235,7 +299,7 @@ echo "--- rootfs is $DETECTED_FAMILY ---"
 if [ -e "$DATA_IMG" ]; then
     echo "--- $DATA_NAME exists, keeping it (delete it by hand for a clean /data) ---"
 else
-    "$SCRIPT_DIR/make_disk.sh" --family "$DEVICE" "$DATA_IMG"
+    "$SCRIPT_DIR/make_disk.sh" --family "$DISK_LAYOUT" "$DATA_IMG"
 fi
 
 ### kernel ####################################################################
@@ -248,12 +312,15 @@ fi
 # Probing after the rootfs build rather than before is what makes this work at all:
 # the kernel is not needed until boot, so by the time it is chosen the filesystem
 # that decides it already exists.
-if "$DEBUGFS" -R "stat /lib/ld-linux-aarch64.so.1" "$ROOTFS_IMG" 2>/dev/null | grep -q 'Inode:'; then
-    ARCH="arm64"
-elif "$DEBUGFS" -R "stat /lib/ld-linux-armhf.so.3" "$ROOTFS_IMG" 2>/dev/null | grep -q 'Inode:'; then
-    ARCH="armhf"
-else
+ARCH="$(detect_arch "$ROOTFS_IMG")"
+if [ -z "$ARCH" ]; then
     echo "ERROR: could not tell the architecture of $ROOTFS_IMG -- no known dynamic loader." >&2
+    exit 1
+elif [ "$ARCH" != "$ROW_ARCH" ]; then
+    # The builders each guard their own architecture, so reaching here means one of
+    # them accepted a rootfs it should have rejected, or a registry row names the
+    # wrong builder. Either way the shim stack is now wrong for this rootfs.
+    echo "ERROR: built with the $ROW_ARCH row ($ROOTFS_BUILDER) but $ROOTFS_IMG is $ARCH." >&2
     exit 1
 fi
 
@@ -275,11 +342,13 @@ else
 fi
 
 # run_qemu.sh takes its machine type and device models from ARCH, so either
-# architecture boots. Only the combination is new: an armv7 Engine or an arm64 MPC has
+# architecture boots. Only an untried combination is worth a word: an arm64 MPC has
 # never been run, and the audio path in particular differs (mmio virtio-sound rather
-# than PCI hda). Flag it as unproven rather than implying it is broken.
+# than PCI hda). Flag it as unproven rather than implying it is broken. armv7 Engine
+# reaches a rendered UI but has no audio or control surface yet — see the note at the
+# top of build_armv7_engine_rootfs.sh.
 case "$DEVICE:$ARCH" in
-    engine:arm64|mpc:armhf) ;;
+    engine:arm64|engine:armhf|mpc:armhf) ;;
     *) echo "NOTE: $DEVICE on $ARCH is an untried combination. A command line will be"
        echo "      built for it, but nothing here has booted one yet." ;;
 esac

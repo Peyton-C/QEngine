@@ -1047,14 +1047,36 @@ unaffected, since eglfs reads evdev directly rather than through the VT.
 Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
 so a fresh clone has sources only.
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
-all five — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
-`touchbridge_rmz2`, `midisurface_rmz2` — in one `debian:bookworm` arm64
-container before installing them. Previously it copied artifacts that nothing
-produced, which worked only if a previous session had left them in the tree.
+all six — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
+`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface_rmz2` — in one
+`debian:bookworm` arm64 container before installing them. Previously it copied
+artifacts that nothing produced, which worked only if a previous session had
+left them in the tree.
 
 `libdrm-dev` (for `drmatomic`) and `libasound2-dev` (for `midisurface`) are
-installed in that container; `alsashim` needs neither, since it declares the
-two libasound types it touches and resolves the real symbols via `dlsym`.
+installed in that container; `alsashim` and `teeshim` need neither, since they
+declare the types they touch rather than including vendor headers.
+
+#### Engine 5.1.0 attests against OP-TEE before it will start
+
+Engine 5.0.4 makes no TEE calls at all — its binary imports no `TEEC_*`
+symbols. 5.1.0-beta.8 links `libteec.so.1` and, in `main()` before the GUI,
+opens a session to a trusted application and asks it whether this is genuine
+hardware. QEMU's `virt` machine boots no OP-TEE secure firmware, so `/dev/tee0`
+never appears and `TEEC_InitializeContext` fails outright.
+
+Engine reads that failure as "not genuine" and takes an early-exit path that
+writes `TestApp` into `/tmp/engine-quit-reason` and returns 0.
+`/usr/Engine/Scripts/engine` — byte-identical between 5.0.4 and beta8 — then
+execs `/usr/bin/test-app-launcher`. The guest boots straight into the factory
+test application and Engine is never seen.
+
+[teeshim_rmz2.so](../shims/rk3588/teeshim/teeshim_rmz2.c) is preloaded ahead of
+`libteec.so.1` and answers the five `TEEC_*` entry points with success, writing
+the non-zero verdict Engine reads back out of the operation's output parameter.
+The shim's header comment carries the full reconstruction of the check, the
+call-site offsets it was derived from, and the parameter layout that pins the
+verdict's shape. `TEESHIM_DEBUG` turns on per-call logging.
 
 #### Diagnostic logging is off by default
 

@@ -7,7 +7,8 @@
 #   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build alsashim_rmz2.so (the only shim built here rather than committed
 #      prebuilt — see the build step below).
-#   5. Copy the dtshim/drmatomic/alsashim/touchbridge_rmz2 shims + fake-dt files into /root.
+#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge_rmz2 shims +
+#      fake-dt files into /root.
 #   6. Wire touchbridge_rmz2.service, midisurface_rmz2.service (virtual control
 #      surface, auto motor-off), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
@@ -137,6 +138,8 @@ docker run --rm --platform linux/arm64 \
             -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/teeshim/teeshim_rmz2.so /shims/teeshim/teeshim_rmz2.c
         gcc -O2 -Wall \
             -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
         gcc -O2 -Wall \
@@ -159,7 +162,8 @@ docker run --rm --platform linux/arm64 \
 }
 
 for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
-                alsashim/alsashim_rmz2.so touchbridge_rmz2/touchbridge_rmz2 \
+                alsashim/alsashim_rmz2.so teeshim/teeshim_rmz2.so \
+                touchbridge_rmz2/touchbridge_rmz2 \
                 midisurface_rmz2/midisurface_rmz2; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
@@ -249,6 +253,7 @@ mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
 cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
 cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
+cp -a /shims/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
@@ -269,7 +274,8 @@ cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 # value confirmed working against RMZ2's real panel orientation.
 printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
 chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
-          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/touchbridge_rmz2 \
+          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so \
+          /mnt/rootfs/root/touchbridge_rmz2 \
           /mnt/rootfs/root/midisurface_rmz2
 
 echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
@@ -308,9 +314,14 @@ cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Service]
 After=touchbridge_rmz2.service
 Requires=touchbridge_rmz2.service
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so:/root/teeshim_rmz2.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
+# teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
+# GUI. QEMU has no TrustZone secure world, so the real call fails and Engine
+# quits into /usr/bin/test-app-launcher instead of ever showing Engine. Harmless
+# on 5.0.4, which makes no TEE calls at all. See the shim source for the full
+# check and TEESHIM_DEBUG for per-call logging.
 # alsashim: gets an emulated sound card past Engine's compiled-in card-name
 # allowlist and routes its PCM opens through ALSA's format-converting plug
 # layer. Card 0 is QEMU's emulated HDA controller; attach it playback-only

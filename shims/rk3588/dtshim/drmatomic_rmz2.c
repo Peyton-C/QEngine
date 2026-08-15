@@ -23,6 +23,11 @@
  * intercepted here to rewrite the format fourcc before it reaches the
  * kernel, and the ATOMIC commit logic is kept regardless since it's a more
  * robust primitive than chasing Qt's legacy call shape further.
+ *
+ * State is tracked per CRTC. It was a single global for as long as every
+ * emulated product had exactly one display; JP22 has three, and one shared
+ * state sent all three screens' page flips to the first CRTC — see the comment
+ * on the kms[] array below.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -66,7 +71,38 @@ struct kms_state {
     uint32_t plane_crtc_x_prop, plane_crtc_y_prop, plane_crtc_w_prop, plane_crtc_h_prop;
     uint32_t width, height;
 };
-static struct kms_state kms;
+
+/* One state per CRTC, not one globally.
+ *
+ * JP22 declares three displays and is the only product that does; with
+ * GPU_MAX_OUTPUTS=3 the guest gets three connectors, Qt builds three screens and
+ * modesets each one. A single shared state meant the second and third modeset
+ * silently reused the first CRTC's ids, and — worse — every page flip from every
+ * screen was submitted against that one CRTC and plane. Three flips per frame
+ * onto one CRTC exhausts the DRM file's event allocation, which surfaces as
+ * atomic commits failing with ENOSPC ("No space left on device") and Qt logging
+ * "Could not queue DRM page flip on screen VirtualN".
+ *
+ * Sized for the largest max_outputs worth supporting; virtio-gpu permits 16 but
+ * no Engine product has more than three displays. */
+#define MAX_KMS_OUTPUTS 8
+static struct kms_state kms[MAX_KMS_OUTPUTS];
+static int kms_count;
+
+static struct kms_state *kms_find(uint32_t crtc_id) {
+    for (int i = 0; i < kms_count; i++)
+        if (kms[i].crtc_id == crtc_id) return &kms[i];
+    return NULL;
+}
+
+/* True if any already-initialized CRTC has claimed this plane. Planes can be
+ * shared between CRTCs in their possible_crtcs mask, so the first match is not
+ * automatically free. */
+static int plane_is_claimed(uint32_t plane_id) {
+    for (int i = 0; i < kms_count; i++)
+        if (kms[i].plane_id == plane_id) return 1;
+    return 0;
+}
 
 /* Two-pass DRM_IOCTL_MODE_OBJ_GETPROPERTIES + per-prop GETPROPERTY name
  * lookup. Returns 0 and fills *out_id (and *out_val if non-NULL) on match. */
@@ -104,13 +140,49 @@ static int get_obj_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
     return found;
 }
 
-static int find_primary_plane(int fd, uint32_t *out_plane_id) {
+/* A plane's possible_crtcs is a bitmask of CRTC *indices* — positions in
+ * GETRESOURCES' crtc id array — not of CRTC ids. Translate one to the other. */
+static int crtc_index_for_id(int fd, uint32_t crtc_id, uint32_t *out_index) {
+    struct drm_mode_card_res res;
+    memset(&res, 0, sizeof(res));
+    if (rioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0) return -1;
+    if (res.count_crtcs == 0) return -1;
+
+    uint32_t *crtc_ids = calloc(res.count_crtcs, sizeof(uint32_t));
+    if (!crtc_ids) return -1;
+    /* Only the CRTC array is wanted; leaving the other pointers NULL makes the
+     * kernel skip them but still refill the counts, so pin the counts we do not
+     * want back to zero rather than letting it write through null pointers. */
+    res.crtc_id_ptr = (uint64_t)(uintptr_t)crtc_ids;
+    res.count_fbs = res.count_connectors = res.count_encoders = 0;
+    int found = -1;
+    if (rioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0) {
+        for (uint32_t i = 0; i < res.count_crtcs; i++) {
+            if (crtc_ids[i] == crtc_id) { *out_index = i; found = 0; break; }
+        }
+    }
+    free(crtc_ids);
+    return found;
+}
+
+/* Primary plane usable by this specific CRTC, skipping any plane another CRTC
+ * has already taken. The previous version returned the first primary plane on
+ * the device regardless of CRTC, which is correct only while there is exactly
+ * one CRTC. */
+static int find_primary_plane(int fd, uint32_t crtc_id, uint32_t *out_plane_id) {
+    uint32_t crtc_index;
+    if (crtc_index_for_id(fd, crtc_id, &crtc_index) != 0) {
+        fprintf(stderr, "=== DRMATOMIC: no index for crtc=%u\n", crtc_id);
+        return -1;
+    }
+
     struct drm_mode_get_plane_res pres;
     memset(&pres, 0, sizeof(pres));
     if (rioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres) < 0) return -1;
     if (pres.count_planes == 0) return -1;
 
     uint32_t *plane_ids = calloc(pres.count_planes, sizeof(uint32_t));
+    if (!plane_ids) return -1;
     pres.plane_id_ptr = (uint64_t)(uintptr_t)plane_ids;
     if (rioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres) < 0) {
         free(plane_ids);
@@ -118,7 +190,18 @@ static int find_primary_plane(int fd, uint32_t *out_plane_id) {
     }
 
     int found = -1;
+    int fallback = -1;
     for (uint32_t i = 0; i < pres.count_planes; i++) {
+        if (plane_is_claimed(plane_ids[i])) continue;
+
+        struct drm_mode_get_plane gp;
+        memset(&gp, 0, sizeof(gp));
+        gp.plane_id = plane_ids[i];
+        if (rioctl(fd, DRM_IOCTL_MODE_GETPLANE, &gp) < 0) continue;
+        if (!(gp.possible_crtcs & (1u << crtc_index))) continue;
+
+        if (fallback < 0) fallback = (int)plane_ids[i];
+
         uint32_t type_prop_id;
         uint64_t type_val;
         if (get_obj_prop_id(fd, plane_ids[i], DRM_MODE_OBJECT_PLANE, "type", &type_prop_id, &type_val) == 0 &&
@@ -128,8 +211,11 @@ static int find_primary_plane(int fd, uint32_t *out_plane_id) {
             break;
         }
     }
-    if (found != 0 && pres.count_planes > 0) {
-        *out_plane_id = plane_ids[0]; /* fallback: first plane */
+    /* Fall back to any unclaimed plane this CRTC can drive. Deliberately not the
+     * device's first plane as before: on a multi-CRTC device that is very likely
+     * to belong to somebody else. */
+    if (found != 0 && fallback >= 0) {
+        *out_plane_id = (uint32_t)fallback;
         found = 0;
     }
     free(plane_ids);
@@ -152,50 +238,74 @@ static int ensure_atomic_cap(int fd) {
     return 0;
 }
 
-static int ensure_kms_state(int fd, uint32_t crtc_id, uint32_t connector_id,
-                             uint32_t width, uint32_t height) {
-    if (kms.initialized) return 0;
-    memset(&kms, 0, sizeof(kms));
-    kms.crtc_id = crtc_id;
-    kms.connector_id = connector_id;
-    kms.width = width;
-    kms.height = height;
+/* Returns the state for this CRTC, resolving it on first sight. NULL on failure,
+ * which leaves the caller to fall back to the legacy ioctl. */
+static struct kms_state *ensure_kms_state(int fd, uint32_t crtc_id, uint32_t connector_id,
+                                           uint32_t width, uint32_t height) {
+    struct kms_state *k = kms_find(crtc_id);
+    if (k && k->initialized) {
+        /* Re-modeset of a CRTC already resolved. The ids stay valid, but the
+         * geometry may not: the plane's SRC_W/SRC_H and CRTC_W/CRTC_H are taken
+         * from here, and JP22's three panels need not be the same size. */
+        k->width = width;
+        k->height = height;
+        return k;
+    }
 
-    if (ensure_atomic_cap(fd) != 0) return -1;
+    if (!k) {
+        if (kms_count >= MAX_KMS_OUTPUTS) {
+            fprintf(stderr, "=== DRMATOMIC: more than %d CRTCs in use, ignoring crtc=%u\n",
+                    MAX_KMS_OUTPUTS, crtc_id);
+            return NULL;
+        }
+        k = &kms[kms_count];
+    }
 
-    if (find_primary_plane(fd, &kms.plane_id) != 0) {
-        fprintf(stderr, "=== DRMATOMIC: failed to find a primary plane\n");
-        return -1;
+    memset(k, 0, sizeof(*k));
+    k->crtc_id = crtc_id;
+    k->connector_id = connector_id;
+    k->width = width;
+    k->height = height;
+
+    if (ensure_atomic_cap(fd) != 0) return NULL;
+
+    if (find_primary_plane(fd, crtc_id, &k->plane_id) != 0) {
+        fprintf(stderr, "=== DRMATOMIC: failed to find a primary plane for crtc=%u\n", crtc_id);
+        return NULL;
     }
 
     int ok = 1;
-    ok &= get_obj_prop_id(fd, kms.crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID", &kms.crtc_mode_id_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE", &kms.crtc_active_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", &kms.conn_crtc_id_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &kms.plane_fb_id_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID", &kms.plane_crtc_id_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X", &kms.plane_src_x_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y", &kms.plane_src_y_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W", &kms.plane_src_w_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H", &kms.plane_src_h_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X", &kms.plane_crtc_x_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y", &kms.plane_crtc_y_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W", &kms.plane_crtc_w_prop, NULL) == 0;
-    ok &= get_obj_prop_id(fd, kms.plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H", &kms.plane_crtc_h_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID", &k->crtc_mode_id_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE", &k->crtc_active_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", &k->conn_crtc_id_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID", &k->plane_fb_id_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID", &k->plane_crtc_id_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X", &k->plane_src_x_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y", &k->plane_src_y_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W", &k->plane_src_w_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H", &k->plane_src_h_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_X", &k->plane_crtc_x_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_Y", &k->plane_crtc_y_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W", &k->plane_crtc_w_prop, NULL) == 0;
+    ok &= get_obj_prop_id(fd, k->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H", &k->plane_crtc_h_prop, NULL) == 0;
 
     if (!ok) {
-        fprintf(stderr, "=== DRMATOMIC: failed to resolve one or more property IDs\n");
-        return -1;
+        fprintf(stderr, "=== DRMATOMIC: failed to resolve property IDs for crtc=%u\n", crtc_id);
+        return NULL;
     }
-    fprintf(stderr, "=== DRMATOMIC: resolved plane=%u crtc=%u connector=%u, all props OK\n",
-            kms.plane_id, kms.crtc_id, kms.connector_id);
-    kms.initialized = 1;
-    return 0;
+    k->initialized = 1;
+    /* Only counted once fully resolved, so a failed attempt does not leave a
+     * half-built entry that kms_find() would later hand out. */
+    if (k == &kms[kms_count]) kms_count++;
+    fprintf(stderr, "=== DRMATOMIC: resolved plane=%u crtc=%u connector=%u (output %d), all props OK\n",
+            k->plane_id, k->crtc_id, k->connector_id, kms_count);
+    return k;
 }
 
 /* modeset!=0: full modeset commit (blob + ACTIVE + CRTC_ID + plane geometry).
  * modeset==0: flip-only commit (just FB_ID on the plane, NONBLOCK|EVENT). */
-static int do_atomic_commit(int fd, uint32_t fb_id, const struct drm_mode_modeinfo *mode,
+static int do_atomic_commit(int fd, struct kms_state *k, uint32_t fb_id,
+                             const struct drm_mode_modeinfo *mode,
                              int modeset, uint64_t user_data) {
     uint32_t mode_blob_id = 0;
     if (modeset) {
@@ -216,36 +326,36 @@ static int do_atomic_commit(int fd, uint32_t fb_id, const struct drm_mode_modein
     uint64_t vals[16];
     int n = 0, o = 0;
 
-    objs[o] = kms.plane_id;
+    objs[o] = k->plane_id;
     int plane_start = n;
-    props[n] = kms.plane_fb_id_prop;   vals[n] = fb_id; n++;
-    props[n] = kms.plane_crtc_id_prop; vals[n] = kms.crtc_id; n++;
+    props[n] = k->plane_fb_id_prop;   vals[n] = fb_id; n++;
+    props[n] = k->plane_crtc_id_prop; vals[n] = k->crtc_id; n++;
     if (modeset) {
-        props[n] = kms.plane_src_x_prop;  vals[n] = 0; n++;
-        props[n] = kms.plane_src_y_prop;  vals[n] = 0; n++;
-        props[n] = kms.plane_src_w_prop;  vals[n] = ((uint64_t)kms.width) << 16; n++;
-        props[n] = kms.plane_src_h_prop;  vals[n] = ((uint64_t)kms.height) << 16; n++;
-        props[n] = kms.plane_crtc_x_prop; vals[n] = 0; n++;
-        props[n] = kms.plane_crtc_y_prop; vals[n] = 0; n++;
-        props[n] = kms.plane_crtc_w_prop; vals[n] = kms.width; n++;
-        props[n] = kms.plane_crtc_h_prop; vals[n] = kms.height; n++;
+        props[n] = k->plane_src_x_prop;  vals[n] = 0; n++;
+        props[n] = k->plane_src_y_prop;  vals[n] = 0; n++;
+        props[n] = k->plane_src_w_prop;  vals[n] = ((uint64_t)k->width) << 16; n++;
+        props[n] = k->plane_src_h_prop;  vals[n] = ((uint64_t)k->height) << 16; n++;
+        props[n] = k->plane_crtc_x_prop; vals[n] = 0; n++;
+        props[n] = k->plane_crtc_y_prop; vals[n] = 0; n++;
+        props[n] = k->plane_crtc_w_prop; vals[n] = k->width; n++;
+        props[n] = k->plane_crtc_h_prop; vals[n] = k->height; n++;
     }
     counts[o] = n - plane_start;
     o++;
 
-    objs[o] = kms.crtc_id;
+    objs[o] = k->crtc_id;
     int crtc_start = n;
     if (modeset) {
-        props[n] = kms.crtc_mode_id_prop; vals[n] = mode_blob_id; n++;
-        props[n] = kms.crtc_active_prop;  vals[n] = 1; n++;
+        props[n] = k->crtc_mode_id_prop; vals[n] = mode_blob_id; n++;
+        props[n] = k->crtc_active_prop;  vals[n] = 1; n++;
     }
     counts[o] = n - crtc_start;
     o++;
 
     if (modeset) {
-        objs[o] = kms.connector_id;
+        objs[o] = k->connector_id;
         int conn_start = n;
-        props[n] = kms.conn_crtc_id_prop; vals[n] = kms.crtc_id; n++;
+        props[n] = k->conn_crtc_id_prop; vals[n] = k->crtc_id; n++;
         counts[o] = n - conn_start;
         o++;
     }
@@ -299,18 +409,29 @@ int ioctl(int fd, unsigned long request, ...) {
             if (c->count_connectors > 0 && c->set_connectors_ptr) {
                 connector_id = ((uint32_t *)(uintptr_t)c->set_connectors_ptr)[0];
             }
-            if (ensure_kms_state(fd, c->crtc_id, connector_id, c->mode.hdisplay, c->mode.vdisplay) == 0) {
-                int r = do_atomic_commit(fd, c->fb_id, &c->mode, 1, 0);
+            struct kms_state *k = ensure_kms_state(fd, c->crtc_id, connector_id,
+                                                   c->mode.hdisplay, c->mode.vdisplay);
+            if (k) {
+                int r = do_atomic_commit(fd, k, c->fb_id, &c->mode, 1, 0);
                 return r < 0 ? -1 : 0;
             }
-            fprintf(stderr, "=== DRMATOMIC: kms_state init failed, falling back to legacy SETCRTC\n");
+            fprintf(stderr, "=== DRMATOMIC: kms_state init failed for crtc=%u, falling back to legacy SETCRTC\n",
+                    c->crtc_id);
         }
     }
 
-    if (request == DRM_IOCTL_MODE_PAGE_FLIP && arg && kms.initialized) {
+    if (request == DRM_IOCTL_MODE_PAGE_FLIP && arg) {
         struct drm_mode_crtc_page_flip *p = (struct drm_mode_crtc_page_flip *)arg;
-        int r = do_atomic_commit(fd, p->fb_id, NULL, 0, p->user_data);
-        return r < 0 ? -1 : 0;
+        /* Flip on the CRTC the caller named. Previously this used whichever
+         * single global state had been resolved first, so with more than one
+         * screen every flip landed on the first CRTC — three per frame onto one
+         * CRTC, which drains the DRM file's event space and fails ENOSPC. An
+         * unknown CRTC falls through to the legacy ioctl rather than guessing. */
+        struct kms_state *k = kms_find(p->crtc_id);
+        if (k && k->initialized) {
+            int r = do_atomic_commit(fd, k, p->fb_id, NULL, 0, p->user_data);
+            return r < 0 ? -1 : 0;
+        }
     }
 
     int ret = real_ioctl(fd, request, arg);

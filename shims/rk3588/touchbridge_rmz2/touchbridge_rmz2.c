@@ -37,6 +37,15 @@
  * The source device's ABS_X/ABS_Y range is read from the device itself via
  * EVIOCGABS at startup, not assumed/hardcoded — QEMU's usb-tablet reports
  * 0..32767 today, but this works unchanged if that ever changes.
+ *
+ * One instance per display. JP22 has three screens, and a single tablet cannot
+ * serve them: every window would drive the same absolute device and the guest
+ * could not tell which screen a click landed on. The launcher instead gives each
+ * head its own usb-tablet (QEMU's display=/head= properties, see
+ * scripts/qemu/arch_devices.sh), so this runs once per head — `--head N` picks
+ * the Nth tablet, sizes itself from that head's DRM connector, and publishes
+ * /dev/input/qengine-touchN for the matching output's touchDevice to resolve
+ * through. Single-screen devices are just the N=1 case and behave as before.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -53,6 +62,14 @@
 static int uifd = -1;
 static int screen_w = 1280, screen_h = 800;
 static int touch_active = 0;
+static const char *opt_symlink = NULL;
+static const char *opt_connector = NULL;
+static int opt_index = 0;
+static int opt_check = 0;
+static int opt_wait = 0;
+
+/* Defined below main()'s helpers but called from the uinput setup above them. */
+static void publish_symlink(const char *link_path);
 
 #define BITS_PER_LONG (8 * (int)sizeof(long))
 #define ABS_BITS_LEN ((ABS_MAX / BITS_PER_LONG) + 1)
@@ -73,7 +90,11 @@ static int bit_is_set(const unsigned long *bits, int bit) {
  * "connected" connectors are considered, and the connector's directory
  * name itself isn't assumed — only that it lives under /sys/class/drm and
  * contains a dash (cardN, renderDxxx, and version don't). */
-static int detect_screen_size_from_sysfs(int *out_w, int *out_h) {
+/* want_connector selects a specific connector by the tail of its sysfs name
+ * ("Virtual-2" matches "card0-Virtual-2"); NULL keeps the original behaviour of
+ * taking the first connected one. One instance runs per head and each needs its
+ * own screen's geometry, which need not match the others'. */
+static int detect_screen_size_from_sysfs(const char *want_connector, int *out_w, int *out_h) {
     DIR *d = opendir("/sys/class/drm");
     if (!d) return -1;
 
@@ -81,6 +102,11 @@ static int detect_screen_size_from_sysfs(int *out_w, int *out_h) {
     struct dirent *entry;
     while (found != 0 && (entry = readdir(d)) != NULL) {
         if (!strchr(entry->d_name, '-')) continue;
+        if (want_connector) {
+            size_t nlen = strlen(entry->d_name), wlen = strlen(want_connector);
+            if (wlen > nlen || strcmp(entry->d_name + (nlen - wlen), want_connector) != 0)
+                continue;
+        }
 
         char status_path[320];
         snprintf(status_path, sizeof(status_path), "/sys/class/drm/%s/status", entry->d_name);
@@ -123,19 +149,30 @@ static int device_looks_like_tablet(int fd, const char *name) {
 /* Scans /dev/input/event* for the device QEMU's usb-tablet actually is
  * right now, rather than assuming a fixed number. Returns a malloc'd path
  * on success (caller frees), NULL if nothing matched. */
-static char *find_tablet_device(void) {
+/* Picks the `want`th (0-based) matching tablet, in ascending /dev/input/eventN
+ * order.
+ *
+ * With GPU_MAX_OUTPUTS>1 the launcher adds one usb-tablet per head, each bound
+ * to its own scanout via QEMU's display=/head= properties — that binding is what
+ * lets the guest tell which window a click came from, since otherwise all three
+ * windows drive one absolute device and arrive indistinguishable. All of them
+ * report the same EVIOCGNAME, so they can only be told apart by position, and
+ * QEMU registers them in command-line order. readdir() does not return entries
+ * in any particular order, so the matches are sorted by event number before
+ * indexing or "the second tablet" would vary run to run. */
+static char *find_tablet_device(int want) {
     DIR *d = opendir("/dev/input");
     if (!d) {
         fprintf(stderr, "opendir /dev/input failed: %s\n", strerror(errno));
         return NULL;
     }
 
-    char *found_path = NULL;
-    char found_name[256] = {0};
+    int matches[64];
+    char names[64][256];
     int nmatches = 0;
 
     struct dirent *entry;
-    while ((entry = readdir(d)) != NULL) {
+    while ((entry = readdir(d)) != NULL && nmatches < (int)(sizeof(matches) / sizeof(matches[0]))) {
         if (strncmp(entry->d_name, "event", 5) != 0) continue;
 
         char path[sizeof("/dev/input/") + sizeof(entry->d_name)];
@@ -148,27 +185,71 @@ static char *find_tablet_device(void) {
         if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0) name[0] = '\0';
 
         if (device_looks_like_tablet(fd, name)) {
+            matches[nmatches] = atoi(entry->d_name + 5);
+            snprintf(names[nmatches], sizeof(names[0]), "%s", name);
             nmatches++;
-            fprintf(stderr, "Candidate tablet device: %s (\"%s\")%s\n", path, name,
-                    nmatches > 1 ? " [extra match, keeping first]" : "");
-            if (nmatches == 1) {
-                found_path = strdup(path);
-                strncpy(found_name, name, sizeof(found_name) - 1);
-            }
         }
         close(fd);
     }
     closedir(d);
 
-    if (!found_path) {
+    if (nmatches == 0) {
         fprintf(stderr, "No device matching \"USB Tablet\" with ABS_X/ABS_Y found under /dev/input/\n");
         return NULL;
     }
-    if (nmatches > 1) {
-        fprintf(stderr, "Warning: %d candidate tablet devices found, using %s (\"%s\")\n",
-                nmatches, found_path, found_name);
+
+    /* Insertion sort on event number, carrying the names along. n is at most the
+     * number of input devices, so anything cleverer would be noise. */
+    for (int i = 1; i < nmatches; i++) {
+        int kn = matches[i];
+        char kname[256];
+        snprintf(kname, sizeof(kname), "%s", names[i]);
+        int j = i - 1;
+        while (j >= 0 && matches[j] > kn) {
+            matches[j + 1] = matches[j];
+            snprintf(names[j + 1], sizeof(names[0]), "%s", names[j]);
+            j--;
+        }
+        matches[j + 1] = kn;
+        snprintf(names[j + 1], sizeof(names[0]), "%s", kname);
     }
-    return found_path;
+
+    for (int i = 0; i < nmatches; i++)
+        fprintf(stderr, "Candidate tablet device: /dev/input/event%d (\"%s\")%s\n",
+                matches[i], names[i], i == want ? " [selected]" : "");
+
+    if (want >= nmatches) {
+        fprintf(stderr, "Requested tablet index %d but only %d candidate(s) exist. "
+                        "Is GPU_MAX_OUTPUTS set high enough on the launcher?\n",
+                want, nmatches);
+        return NULL;
+    }
+
+    char path[64];
+    snprintf(path, sizeof(path), "/dev/input/event%d", matches[want]);
+    return strdup(path);
+}
+
+/* find_tablet_device() with a bounded retry.
+ *
+ * These units start before USB enumeration has finished, so a single lookup at
+ * startup routinely finds nothing — the tablets appear a second or two later.
+ * Polling here rather than letting the process die and be restarted keeps the
+ * failure modes distinct: exhausting the wait means "this head has no tablet"
+ * (a single-screen guest running a per-head unit), which is a clean exit rather
+ * than something to restart. */
+static char *find_tablet_device_waiting(int want, int wait_secs) {
+    const int poll_ms = 200;
+    int tries = wait_secs > 0 ? (wait_secs * 1000) / poll_ms : 0;
+    for (int i = 0;; i++) {
+        char *p = find_tablet_device(want);
+        if (p) return p;
+        if (i >= tries) return NULL;
+        if (i == 0)
+            fprintf(stderr, "Tablet %d not present yet; waiting up to %ds for USB enumeration.\n",
+                    want, wait_secs);
+        usleep(poll_ms * 1000);
+    }
 }
 
 static void emit(int type, int code, int val) {
@@ -235,7 +316,18 @@ static void setup_uinput_device(void) {
     usetup.id.bustype = BUS_VIRTUAL;
     usetup.id.vendor = 0x1234;
     usetup.id.product = 0x5680;
-    strcpy(usetup.name, "RMZ2TouchBridge Virtual Touchscreen");
+    /* Distinct per instance, so neither udev nor a human reading
+     * /proc/bus/input/devices has to guess which screen a node belongs to.
+     *
+     * Head 0 deliberately keeps the original unsuffixed name: it is the only one
+     * that existed before multi-head, and anything out there matching on it — a
+     * udev rule, a debugging habit — should not break just because the program
+     * learned to run more than one copy of itself. */
+    if (opt_index == 0)
+        snprintf(usetup.name, sizeof(usetup.name), "RMZ2TouchBridge Virtual Touchscreen");
+    else
+        snprintf(usetup.name, sizeof(usetup.name),
+                 "RMZ2TouchBridge Virtual Touchscreen %d", opt_index);
     ioctl(uifd, UI_DEV_SETUP, &usetup);
 
     struct uinput_abs_setup abs_x = { .code = ABS_X, .absinfo = { .minimum = 0, .maximum = screen_w } };
@@ -257,42 +349,173 @@ static void setup_uinput_device(void) {
         exit(1);
     }
     usleep(300000);
+    if (opt_symlink) publish_symlink(opt_symlink);
     fprintf(stderr, "Virtual touchscreen created (%dx%d).\n", screen_w, screen_h);
 }
 
+/* Publishes a stable path for the uinput device just created.
+ *
+ * Engine's Hardware::updateTouchDevicePathsInConfig() resolves each output's
+ * touchDevice as a symlink and substitutes the target before handing the config
+ * to Qt, so the value in ScreenConfiguration.json has to *be* a symlink — given a
+ * plain device node it logs "Could not resolve symlink for:" and drops the
+ * binding, which is exactly what leaves every touch going to the primary screen.
+ * The kernel's own eventN number depends on registration order, so the link is
+ * built from the sysfs name uinput hands back rather than guessed. */
+static void publish_symlink(const char *link_path) {
+    char sysname[64] = {0};
+    if (ioctl(uifd, UI_GET_SYSNAME(sizeof(sysname)), sysname) < 0) {
+        fprintf(stderr, "UI_GET_SYSNAME failed (%s); not publishing %s\n",
+                strerror(errno), link_path);
+        return;
+    }
+
+    char dirpath[192];
+    snprintf(dirpath, sizeof(dirpath), "/sys/class/input/%s", sysname);
+    DIR *d = opendir(dirpath);
+    if (!d) {
+        fprintf(stderr, "opendir %s failed (%s); not publishing %s\n",
+                dirpath, strerror(errno), link_path);
+        return;
+    }
+    char evname[256] = {0};
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "event", 5) == 0) {
+            snprintf(evname, sizeof(evname), "%s", e->d_name);
+            break;
+        }
+    }
+    closedir(d);
+    if (!evname[0]) {
+        fprintf(stderr, "no eventN under %s; not publishing %s\n", dirpath, link_path);
+        return;
+    }
+
+    char target[96];
+    snprintf(target, sizeof(target), "/dev/input/%s", evname);
+    /* Stale link from a previous run of this instance: /dev is a tmpfs that does
+     * not survive reboot, but the service can restart within one boot. */
+    unlink(link_path);
+    if (symlink(target, link_path) < 0)
+        fprintf(stderr, "symlink %s -> %s failed: %s\n", link_path, target, strerror(errno));
+    else
+        fprintf(stderr, "Published %s -> %s\n", link_path, target);
+}
+
 int main(int argc, char **argv) {
-    /* argc==1: auto-discover device, auto-detect screen size from sysfs
-     *          (falls back to the compiled-in default if that fails).
-     * argc==3: <width> <height> — auto-discover device, explicit size.
-     * argc==4: <event-device> <width> <height> — fully explicit override,
-     *          e.g. for testing against a device that isn't QEMU's
-     *          usb-tablet, or a host where /sys/class/drm doesn't apply. */
+    /* Flags first, then the historical positional forms:
+     *   (none)                       auto-discover device, auto-detect size
+     *   <width> <height>             auto-discover device, explicit size
+     *   <event-device> <w> <h>       fully explicit
+     *
+     * Flags, all optional and all needed only for the multi-head case:
+     *   --head N         shorthand for --index N with the connector and symlink
+     *                    conventions that go with head N; what the per-head
+     *                    systemd template passes
+     *   --check          exit 0 if that tablet exists, 1 if it does not, without
+     *                    creating anything — for systemd ExecCondition=
+     *   --wait SECS      keep looking for that tablet for up to SECS before
+     *                    giving up (--head defaults it to 20)
+     *   --index N        use the Nth matching tablet (0-based, event order)
+     *   --connector NAME take the size from that DRM connector ("Virtual-2")
+     *   --symlink PATH   publish a stable path for Engine's touchDevice
+     */
     const char *src_path = NULL;
     char *discovered = NULL;
+    static char head_connector[32];
+    static char head_symlink[64];
 
-    if (argc == 1) {
-        if (detect_screen_size_from_sysfs(&screen_w, &screen_h) == 0) {
+    int argi = 1;
+    while (argi < argc && strncmp(argv[argi], "--", 2) == 0) {
+        if (strcmp(argv[argi], "--index") != 0 &&
+            strcmp(argv[argi], "--head") != 0 &&
+            strcmp(argv[argi], "--connector") != 0 &&
+            strcmp(argv[argi], "--wait") != 0 &&
+            strcmp(argv[argi], "--symlink") != 0) {
+            /* --check takes no value, so it is handled before the pairing rule. */
+            if (strcmp(argv[argi], "--check") == 0) { opt_check = 1; argi++; continue; }
+            fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[argi]);
+            return 1;
+        }
+        if (argi + 1 >= argc) {
+            fprintf(stderr, "%s: %s needs a value\n", argv[0], argv[argi]);
+            return 1;
+        }
+        if (strcmp(argv[argi], "--index") == 0 || strcmp(argv[argi], "--head") == 0) {
+            opt_index = atoi(argv[argi + 1]);
+            if (opt_index < 0) {
+                fprintf(stderr, "%s: %s must not be negative\n", argv[0], argv[argi]);
+                return 1;
+            }
+            /* --head is --index plus the two conventions that follow from it, so a
+             * systemd template can pass just "--head %i". virtio-gpu names its
+             * connectors Virtual-1..Virtual-N in head order, and each instance
+             * needs a distinct symlink for its output's touchDevice. Both remain
+             * overridable by giving --connector/--symlink after --head. */
+            if (strcmp(argv[argi], "--head") == 0) {
+                snprintf(head_connector, sizeof(head_connector), "Virtual-%d", opt_index + 1);
+                snprintf(head_symlink, sizeof(head_symlink), "/dev/input/qengine-touch%d", opt_index);
+                opt_connector = head_connector;
+                opt_symlink = head_symlink;
+                if (opt_wait == 0) opt_wait = 20;
+            }
+        } else if (strcmp(argv[argi], "--wait") == 0) {
+            opt_wait = atoi(argv[argi + 1]);
+        } else if (strcmp(argv[argi], "--connector") == 0) {
+            opt_connector = argv[argi + 1];
+        } else {
+            opt_symlink = argv[argi + 1];
+        }
+        argi += 2;
+    }
+
+    int npos = argc - argi;
+    if (npos == 0) {
+        if (detect_screen_size_from_sysfs(opt_connector, &screen_w, &screen_h) == 0) {
             fprintf(stderr, "Auto-detected screen resolution: %dx%d\n", screen_w, screen_h);
         } else {
-            fprintf(stderr, "Could not auto-detect screen resolution from /sys/class/drm; "
+            fprintf(stderr, "Could not auto-detect screen resolution from /sys/class/drm%s%s; "
                              "falling back to default %dx%d. Pass <width> <height> "
-                             "explicitly to override.\n", screen_w, screen_h);
+                             "explicitly to override.\n",
+                    opt_connector ? " for connector " : "",
+                    opt_connector ? opt_connector : "", screen_w, screen_h);
         }
-    } else if (argc == 3) {
-        screen_w = atoi(argv[1]);
-        screen_h = atoi(argv[2]);
-    } else if (argc == 4) {
-        src_path = argv[1];
-        screen_w = atoi(argv[2]);
-        screen_h = atoi(argv[3]);
+    } else if (npos == 2) {
+        screen_w = atoi(argv[argi]);
+        screen_h = atoi(argv[argi + 1]);
+    } else if (npos == 3) {
+        src_path = argv[argi];
+        screen_w = atoi(argv[argi + 1]);
+        screen_h = atoi(argv[argi + 2]);
     } else {
-        fprintf(stderr, "usage: %s [<event-device>] [<width> <height>]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--head N | --index N] [--connector NAME] "
+                        "[--symlink PATH] [<event-device>] [<width> <height>]\n", argv[0]);
         return 1;
     }
 
+    /* Probe only. A template instance for a head this launch did not create
+     * should stand down quietly rather than restart-loop, and ExecCondition=
+     * treats a non-zero exit as "skip this unit", not as a failure. */
+    if (opt_check) {
+        char *probe = find_tablet_device_waiting(opt_index, opt_wait);
+        if (!probe) return 1;
+        free(probe);
+        return 0;
+    }
+
     if (!src_path) {
-        discovered = find_tablet_device();
+        discovered = find_tablet_device_waiting(opt_index, opt_wait);
         if (!discovered) {
+            /* A per-head unit on a guest with fewer heads than instances: report
+             * it and exit *successfully*, so `Restart=on-failure` leaves it alone
+             * instead of looping forever on hardware that will never appear. */
+            if (opt_wait > 0) {
+                fprintf(stderr, "No tablet for head %d after %ds — this guest has fewer "
+                                "displays than that. Nothing to bridge; exiting.\n",
+                        opt_index, opt_wait);
+                return 0;
+            }
             fprintf(stderr, "Could not auto-discover the QEMU USB Tablet device; "
                              "pass its /dev/input/eventN path explicitly as the "
                              "first of three arguments if this persists.\n");

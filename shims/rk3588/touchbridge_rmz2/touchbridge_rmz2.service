@@ -6,7 +6,10 @@ After=systemd-udevd.service
 
 [Service]
 Type=simple
-ExecStart=/root/touchbridge_rmz2
+# --head 0 rather than bare: identical auto-detection for a single-screen
+# device, but it also publishes /dev/input/qengine-touch0, which is what an
+# output's touchDevice resolves through.
+ExecStart=/root/touchbridge_rmz2 --head 0
 Restart=always
 RestartSec=1
 StandardOutput=journal

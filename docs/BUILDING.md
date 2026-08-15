@@ -818,7 +818,7 @@ generic to "moved to a different QEMU build/host," not new bugs.
 
 Also worth noting for whoever picks this back up: the shim files above
 were pushed into the *running* guest live (`wget` from an HTTP server on
-the host, per [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md)'s workflow)
+the host, per [REMOTE_ACCESS.md](/docs/REMOTE_ACCESS.md)'s workflow)
 for fast iteration, not baked into `rootfs_out.img` on disk — and
 separately, `debugfs -w` was used at one point to inject files into that
 same image file *while QEMU still had it open* for the live boot test.
@@ -1711,4 +1711,4 @@ interception is unaffected — none of those carry a `time_t`.
 
 ## See also
 - [ENGINEOS.md](ENGINEOS.md) — Engine OS internals, product spoofing, known limitations
-- [build/REMOTE_ACCESS.md](../build/REMOTE_ACCESS.md) — driving a VM on a remote build host
+- [docs/REMOTE_ACCESS.md](/docs/REMOTE_ACCESS.md) — driving a VM on a remote build host

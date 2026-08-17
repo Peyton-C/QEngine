@@ -280,14 +280,34 @@ printf '\x00\x00\x00\x00' > "/mnt/rootfs/root/fake-dt/inmusic,internal-sd-fitted
 # /dev/mem is remapped to a plain file so a mmap of it fails cleanly rather than
 # handing out real physical memory. Sparse, never read past its header.
 : > /mnt/rootfs/root/fake-dev-mem
-# A placeholder /proc/interrupts. The shim remaps it defensively — carried over from
-# the RMZ2 IRQ-affinity check, not yet confirmed to be needed on RK3288 — so this
-# only has to be a parseable file, not accurate. If an affinity check does fire, this
-# is the file to fill in properly.
+# A static /proc/interrupts, kept only as a last-resort fallback: dtshim_jc11s
+# generates this content at runtime from the real /proc/interrupts, and falls back
+# to this file only if that finds no usable IRQ at all.
+#
+# The affinity check it exists for is no longer hypothetical. Engine on RK3288 does
+# perform it, and hard-throws when a name is missing:
+#
+#     what():  No IRQ matching 'ttyS0' found in /proc/interrupts
+#
+# then aborts, is restarted, and loops forever without ever reaching a display. The
+# earlier version of this file listed only arch_timer and uart-pl011, so that lookup
+# could never succeed and armv7 never booted to a UI.
+#
+# The names have to be here, but the numbers cannot be right in a static file: IRQs
+# are assigned at boot from whichever devices are present, and Engine writes CPU
+# affinity to /proc/irq/<N>/smp_affinity straight after finding each name. That is
+# exactly why the shim generates this dynamically — this copy is a parseable floor,
+# not a working configuration.
 {
     printf '           CPU0       CPU1       CPU2       CPU3\n'
     printf '  1:      12345      11111      10000       9999     GIC-0  29 Level     arch_timer\n'
     printf '  2:        512          0          0          0     GIC-0  33 Level     uart-pl011\n'
+    printf ' 32:       2508          0          0          0     GIC-0  74 Edge      dwc3\n'
+    printf ' 33:         23          0          0          0     GIC-0  77 Edge      fe210000.sata\n'
+    printf ' 34:          2          0          0          0     GIC-0  78 Edge      fea10000.dma-controller\n'
+    printf ' 35:       2902          0          0          0     GIC-0  75 Edge      ff0c0000.dwmmc\n'
+    printf ' 36:        107          0          0          0     GIC-0  73 Edge      ff0f0000.dwmmc\n'
+    printf ' 37:        283          0          0          0     GIC-0  79 Edge      ttyS0\n'
 } > /mnt/rootfs/root/fake-dt/interrupts
 
 echo "--- wiring touchbridge_jc11s.service + engine.service override ---"

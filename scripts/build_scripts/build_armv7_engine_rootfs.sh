@@ -352,8 +352,11 @@ Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms
 # eglfs_kms is the GBM variant, so EGL has to be on the gbm platform for it;
 # the vendor Mesa is built with "surfaceless" as its compiled-in default.
 Environment=EGL_PLATFORM=gbm
-# Software rendering, and not by preference: virgl needs virtio-gpu-gl, which is
-# PCI-only, and the 32-bit `virt` machine has no usable PCI (see arch_devices.sh).
+# Software rendering, and not by preference: virgl needs virtio-gpu-gl, which the
+# launchers do not attach on armhf. Not because they cannot any more — the machine
+# has working PCI since it moved to highmem=off — but because virgl on a 32-bit
+# guest is untested, so arch_devices.sh leaves GPU_GL_DEV empty and the GL display
+# modes refuse this architecture. Revisit here too if that ever changes.
 # kms_swrast is therefore the only driver that can back GBM here. Named explicitly
 # rather than left to Mesa's loader, which otherwise probes for a virtio_gpu driver
 # matching the kernel's device name and finds nothing usable.

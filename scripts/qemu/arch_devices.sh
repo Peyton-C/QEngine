@@ -6,14 +6,17 @@
 # new_instance.sh recorded what it read off the built rootfs. It defaults to
 # arm64, so a launcher run standalone behaves exactly as it did before.
 #
-# The split exists because the 32-bit `virt` machine has no usable PCI. The Debian
-# armmp kernel's driver fails to probe it:
+# This used to be a much wider split: armhf attached everything over virtio-mmio,
+# because on the 32-bit `virt` machine the PCI host bridge failed to probe at all —
 #
 #   pci-host-generic 4010000000.pcie: probe with driver pci-host-generic failed
 #   with error -75
 #
-# so every `-pci` device is invisible in the guest — including the USB controllers
-# — and virtio-mmio is the only way to attach anything.
+# — which made every `-pci` device invisible in the guest, USB controllers included.
+# That is a memory-map problem, not a missing driver, and `highmem=off` fixes it
+# (see the armhf branch below), so both architectures now use the same PCI devices.
+# What still differs is the machine's highmem flag, the amount of RAM that flag
+# allows, the CPU, and the accelerator.
 
 ARCH="${ARCH:-arm64}"
 
@@ -46,25 +49,58 @@ case "$ARCH" in
         # itself: the launchers' own host check sets CPU=host for KVM/HVF, and a
         # value here would win over it via ${CPU:-...} and silently disable it.
         ARCH_CPU_DEFAULT="max"
-        MMIO_GLOBAL=""
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
         GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
         ;;
     armhf)
-        MACHINE="virt"
+        # highmem=off is what makes PCI work here, and nothing else in this branch
+        # is possible without it.
+        #
+        # With the default highmem=on, QEMU puts the PCIe ECAM at 0x40_10000000 and
+        # a prefetchable window at 0x80_00000000. linux-image-armmp is the non-LPAE
+        # flavour (`# CONFIG_ARM_LPAE is not set`), so resource_size_t is 32 bits
+        # and both addresses overflow it while the host bridge is still parsing its
+        # `ranges` — that is the -75 in the header, which is -EOVERFLOW, and it
+        # happens before any device is probed. Turning highmem off moves the ECAM
+        # to 0x3f000000 and the MMIO window to 0x10000000-0x3efeffff, both inside 32
+        # bits, and enumeration then works exactly as it does on arm64:
+        #
+        #   pci-host-generic 3f000000.pcie: ECAM at [mem 0x3f000000-0x3fffffff] ...
+        #   virtio-pci 0000:00:01.0: enabling device (0100 -> 0103)
+        #   input: QEMU QEMU USB Tablet as /devices/platform/3f000000.pcie/...
+        #   [drm] pci: virtio-gpu-pci detected at 0000:00:04.0
+        #
+        # The kernel needs nothing added: armmp already ships CONFIG_VIRTIO_PCI=y
+        # (built in, not a module), CONFIG_PCI_HOST_GENERIC=y and CONFIG_PCI_MSI=y.
+        # The other way out would be linux-image-armmp-lpae, which sets
+        # CONFIG_PHYS_ADDR_T_64BIT=y and so can keep highmem=on and >3GB of RAM;
+        # it is a bigger change than this one and these devices have 2GB anyway.
+        MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
-        # virtio-gpu requires VIRTIO_F_VERSION_1, which the mmio transport only
-        # offers once the legacy interface is turned off. Without this the guest
-        # driver refuses the device and there is no display at all.
-        MMIO_GLOBAL="-global virtio-mmio.force-legacy=false"
-        GPU_DEV="virtio-gpu-device"
-        # No GL: virtio-gpu-gl is PCI-only, so the virgl launchers cannot serve
-        # this architecture. They check for an empty value and say so.
+        GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
+        # Still no GL. virtio-gpu-gl-pci is attachable now that the bus works, but
+        # virgl has never been tried against a 32-bit guest here, so the virgl
+        # display modes keep refusing armhf — they check for an empty value and say
+        # so — rather than failing in some less obvious way partway through boot.
         GPU_GL_DEV=""
-        INPUT_DEVS="-device virtio-keyboard-device -device virtio-tablet-device"
-        NET_DEV="virtio-net-device"
+        INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
+        NET_DEV="virtio-net-pci"
+        # highmem=off caps the guest's physical address space at 32 bits, and RAM on
+        # this machine starts at 0x40000000, so 3072 is the ceiling — above it QEMU
+        # refuses to start with "Addressing limited to 32 bits, but memory exceeds
+        # it by ...", which does not obviously point back here. Set before
+        # run_qemu.sh's own ${MEM:-4096}, which then leaves this value in place.
+        MEM="${MEM:-2048}"
+        case "$MEM" in
+            ''|*[!0-9]*) ;;  # a suffixed value like 2G: leave it for QEMU to judge
+            *) [ "$MEM" -le 3072 ] || {
+                   echo "ERROR: MEM=$MEM exceeds the 3072 ceiling a 32-bit guest has" >&2
+                   echo "       under machine 'virt,highmem=off'. Lower it, or move to" >&2
+                   echo "       the armmp-lpae kernel and drop highmem=off." >&2
+                   exit 1; } ;;
+        esac
         # A 32-bit guest cannot be accelerated by KVM or HVF on the hosts this
         # project targets — Apple Silicon has no AArch32 at all — and `-cpu host`
         # is accelerator-only. Set here rather than in each launcher's host check,
@@ -100,10 +136,11 @@ case "$GPU_MAX_OUTPUTS" in
         exit 1 ;;
 esac
 if [ "$GPU_MAX_OUTPUTS" -gt 1 ]; then
-    if [ "$ARCH" != arm64 ]; then
-        echo "ERROR: GPU_MAX_OUTPUTS>1 is arm64-only (armhf uses the mmio virtio-gpu)." >&2
-        exit 1
-    fi
+    # No architecture check: this was arm64-only because armhf had the mmio
+    # virtio-gpu and no USB to hang per-head tablets off. Both architectures now
+    # have virtio-gpu-pci and xhci, so the block below applies to either — though
+    # only arm64 has actually been run multi-head.
+    #
     # The GPU needs an id so the tablets below can name it as their display.
     GPU_DEV="$GPU_DEV,id=$GPU_ID,max_outputs=$GPU_MAX_OUTPUTS"
     [ -n "$GPU_GL_DEV" ] && GPU_GL_DEV="$GPU_GL_DEV,id=$GPU_ID,max_outputs=$GPU_MAX_OUTPUTS"
@@ -137,13 +174,16 @@ fi
 
 # Engine wants a playback-only card: a capture PCM makes it assign capture as the
 # default and leave playback null, which presents as a stuck XRUN rather than an
-# error (see the note in each engine launcher). hda is PCI, so a 32-bit guest has
-# to use the mmio virtio-sound device instead — that pairing has not been tested
-# against Engine's ALSA shim, which spoofs a specific card name.
+# error (see the note in each engine launcher).
+#
+# hda is PCI, which is why armhf used to get the mmio virtio-sound device instead.
+# It no longer has to, and it should not: Engine's ALSA shim spoofs a specific card
+# name and was only ever written against hda, so the shared card is the pairing more
+# likely to work. Neither has been run on armhf yet — if hda turns out to be the
+# wrong bet there, virtio-sound-device is still reachable through QEMU_EXTRA_ARGS.
+# Kept as a function, rather than folded into a variable, because run_qemu.sh calls
+# it with the -audiodev id it generated.
 #   $1 = the -audiodev id to attach to
 arch_audio_devices() {
-    case "$ARCH" in
-        arm64) printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1" ;;
-        armhf) printf -- '-device virtio-sound-device,audiodev=%s' "$1" ;;
-    esac
+    printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
 }

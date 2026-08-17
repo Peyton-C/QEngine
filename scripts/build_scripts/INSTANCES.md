@@ -91,15 +91,34 @@ devices from `ARCH`:
 
 | | arm64 | armhf |
 |---|---|---|
-| machine | `virt,highmem=on` | `virt` + `virtio-mmio.force-legacy=false` |
-| GPU | `virtio-gpu-pci` | `virtio-gpu-device` |
-| input | `usb-ehci`/`qemu-xhci` + `usb-kbd`/`usb-tablet` | `virtio-keyboard-device`/`virtio-tablet-device` |
-| net | `virtio-net-pci` | `virtio-net-device` |
-| audio | `ich9-intel-hda` + `hda-output` | `virtio-sound-device` |
+| machine | `virt,highmem=on` | `virt,highmem=off` |
+| GPU | `virtio-gpu-pci` | `virtio-gpu-pci` |
+| input | `usb-ehci`/`qemu-xhci` + `usb-kbd`/`usb-tablet` | same |
+| net | `virtio-net-pci` | `virtio-net-pci` |
+| audio | `ich9-intel-hda` + `hda-output` | same |
+| RAM default | 4096 | 2048, and 3072 is a hard ceiling |
+| CPU / accel | `max` (`host` under HVF/KVM) | `cortex-a15`, always TCG |
 
-The 32-bit split is forced: the Debian armmp kernel cannot probe that machine's PCI
-host bridge (`pci-host-generic ... failed with error -75`), so every `-pci` device is
-invisible there, USB controllers included.
+Only the first two rows really differ, and the second follows from the first. armhf
+used to attach everything over virtio-mmio because the Debian armmp kernel could not
+probe that machine's PCI host bridge (`pci-host-generic ... failed with error -75`),
+which made every `-pci` device invisible, USB controllers included. That error is
+`-EOVERFLOW`, and it is a memory-map problem rather than a missing driver: with
+`highmem=on` the PCIe ECAM sits at `0x40_10000000`, beyond what the non-LPAE armmp
+kernel's 32-bit `resource_size_t` can hold. `highmem=off` moves it to `0x3f000000`
+and the bus enumerates normally, so both architectures now use the same devices.
+
+The cost is that the guest's physical address space stops at 4GB, and since RAM
+starts at `0x40000000` that leaves 3072 as the most armhf can be given — past it
+QEMU refuses to start outright, so `arch_devices.sh` checks `MEM` and says why. If an
+armhf guest ever needs more, the alternative is `linux-image-armmp-lpae`, which has
+`CONFIG_PHYS_ADDR_T_64BIT=y` and can therefore keep `highmem=on`.
+
+Two things are still arm64-only in practice. The virgl display modes refuse armhf —
+`virtio-gpu-gl-pci` is attachable now, but virgl against a 32-bit guest is untested,
+so the GL modes fail up front instead of partway through boot. And `GPU_MAX_OUTPUTS`
+no longer *rejects* armhf, since per-head `usb-tablet`s need the USB that needed PCI,
+but multi-head has only been run on arm64.
 
 One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
 boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is

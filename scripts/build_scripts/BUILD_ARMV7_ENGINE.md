@@ -39,10 +39,12 @@ The steps individually, if you want them:
   distinguishes them. `PRODUCT_CODE=JP11 build_armv7_engine_rootfs.sh ...` picks
   one; the default is `JP07`. Only `JP07` has actually been booted.
 
-- **Rendering is software, unavoidably.** `virtio-gpu-gl` is a PCI-only device and
-  the 32-bit `virt` machine has no usable PCI, so virgl is off the table and the
-  guest runs on `kms_swrast`. The `sdl-gl` and `egl-vnc` display modes refuse
-  armhf outright for the same reason. Expect it to be slow under TCG.
+- **Rendering is software.** The guest runs on `kms_swrast`, and the `sdl-gl` and
+  `egl-vnc` display modes refuse armhf outright. This is no longer a hard limit:
+  the machine gained working PCI when it moved to `highmem=off`, so
+  `virtio-gpu-gl-pci` can be attached (see `../qemu/arch_devices.sh`). It is simply
+  untested against a 32-bit guest, and the display modes stay closed until someone
+  tries it. Expect software rendering to be slow under TCG either way.
 
 - **Engine needs its EGL device integration named explicitly** —
   `QT_QPA_EGLFS_INTEGRATION=eglfs_kms`, plus `EGL_PLATFORM=gbm` and

@@ -49,8 +49,12 @@ case "$ARCH" in
             # named here: without virtio_blk the root device never appears and the
             # initramfs gives up with "ALERT! UUID=... does not exist".
             virtio_blk virtio_net
-            # The 32-bit virt machine has no PCI, so the USB controllers are
-            # unreachable and virtio input devices are the only way to get a pointer in.
+            # Kept, but no longer load-bearing. This was the only way to get a
+            # pointer into a 32-bit guest back when that machine had no reachable
+            # PCI and so no USB controllers; the launchers now run it with
+            # highmem=off, which fixes PCI, and the pointer arrives over usb-tablet
+            # through the usbhid above. Costs nothing and keeps the mmio input
+            # devices usable from QEMU_EXTRA_ARGS.
             virtio_input
         )
         ;;

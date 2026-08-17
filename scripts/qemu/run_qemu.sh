@@ -34,8 +34,9 @@ BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 DEVICE="${DEVICE:-engine}"
 
 # Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
-# devices from ARCH. Kept in one file so the PCI-vs-mmio reasoning does not get
-# copied and drift.
+# devices from ARCH — and, for armhf, a lower default MEM than the one below, which
+# that architecture's machine type requires. Kept in one file so the highmem
+# reasoning behind all of it does not get copied and drift.
 # shellcheck source=arch_devices.sh
 . "$QEMU_DIR/arch_devices.sh"
 
@@ -61,6 +62,8 @@ DATA_IMG="${DATA_IMG:-$BUILD_DIR/$_data}"
 KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/$_kern}"
 INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/$_init}"
 SSH_PORT="${SSH_PORT:-2225}"
+# armhf has already set this to a value its machine type can address; ${MEM:-...}
+# leaves that in place, the same way it does for ACCEL and CPU below.
 MEM="${MEM:-4096}"
 SMP="${SMP:-8}"
 
@@ -74,8 +77,8 @@ QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
 
 if [ "$NEEDS_GL" -eq 1 ]; then
     [ -n "$GPU_GL_DEV" ] || {
-        echo "ERROR: DISPLAY_MODE=$DISPLAY_MODE needs virgl, which is PCI-only, and" >&2
-        echo "       ARCH=$ARCH has no usable PCI. Use a non-GL display mode." >&2
+        echo "ERROR: DISPLAY_MODE=$DISPLAY_MODE needs virgl, which ARCH=$ARCH does" >&2
+        echo "       not offer a GPU for. Use a non-GL display mode." >&2
         exit 1; }
     GPU="$GPU_GL_DEV"
 else
@@ -112,7 +115,7 @@ fi
 # Unquoted on purpose: these hold multiple arguments and must word-split.
 # shellcheck disable=SC2086
 exec "$QEMU_BIN" \
-  -machine "$MACHINE" $MMIO_GLOBAL -accel "$ACCEL" \
+  -machine "$MACHINE" -accel "$ACCEL" \
   -cpu "$CPU" -m "$MEM" -smp "$SMP" \
   -device "$GPU" \
   $INPUT_DEVS \

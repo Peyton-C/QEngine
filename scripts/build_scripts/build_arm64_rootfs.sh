@@ -21,7 +21,7 @@
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
-#   --firmware  *-Update.img to extract from.
+#   --firmware  Firmware .img to extract from.
 #   --out       Output rootfs image path. Default: build/rootfs_out.img
 #   --size      Final image size in bytes. Default: 4294967296 (4GiB)
 #   --force     Overwrite --out if it already exists.
@@ -35,7 +35,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
-# Both builders mount the whole shims tree, so a shim shared between them is
+# The builders mount the whole shims tree, so a shim shared between them is
 # reached at the same path in either: /shims/<name> for the shared ones,
 # /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
 # Names the compiled output of the shared shims, so one source yields one
@@ -174,9 +174,12 @@ docker run --rm --platform linux/arm64 \
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
-for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
-                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH \
-                teeshim/teeshim_$SHIM_ARCH.so dtshim/dtshim_$SHIM_ARCH.so; do
+for artifact in alsashim/alsashim_$SHIM_ARCH.so \
+                drmatomic/drmatomic_$SHIM_ARCH.so \
+                touchbridge/touchbridge_$SHIM_ARCH \
+                midisurface/midisurface_$SHIM_ARCH \
+                teeshim/teeshim_$SHIM_ARCH.so \
+                dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -368,19 +371,18 @@ cp -a /shims/rk3588/controllermap/controllermap.service /mnt/rootfs/etc/systemd/
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 ln -sf ../controllermap.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/controllermap.service
 
-echo "--- disabling the tty1 getty (Engine's display) ---"
+echo "--- disabling the tty1 getty (Application's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
 # lives on, and the getty keeps reading the keyboard underneath it. Every
-# keystroke therefore goes to *both* Engine and a root login shell you cannot
-# see
+# keystroke therefore goes to *both* the app and a root login shell you cannot
+# see.
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
 # allocation) stops anything bringing it back.
 #
 # The *serial* getty is deliberately left alone — serial-getty@ttyAMA0 is a
-# different template and remains the way in on -serial stdio. Engine's own
-# keyboard input is unaffected: eglfs reads evdev directly, not the VT.
+# different template and remains the way in on -serial stdio.
 rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service

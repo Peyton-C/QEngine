@@ -17,7 +17,7 @@
 #
 # Usage: build_mpc_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
-#   --firmware  MPC firmware .img to extract from.
+#   --firmware  Firmware .img to extract from.
 #   --out       Output rootfs image path. Default: build/rootfs_out.img
 #   --size      Final image size in bytes. Default: 4294967296 (4GiB)
 #   --force     Overwrite --out if it already exists.
@@ -31,10 +31,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
-# Names the compiled output of the shims shared with the Engine builders, so one
-# source yields one artifact per architecture rather than one per device family:
-# shims/<name>/<name>_$SHIM_ARCH. This build is armhf like the armv7 Engine one,
-# so it produces and consumes the same touchbridge binary.
+# The builders mount the whole shims tree, so a shim shared between them is
+# reached at the same path in either: /shims/<name> for the shared ones,
+# /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
+# Names the compiled output of the shared shims, so one source yields one
+# artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
 SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -122,26 +123,26 @@ docker run --rm --platform linux/arm/v7 \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
-        # touchbridge_mpc is copied straight into an armv7 rootfs, so a
-        # wrong-architecture container here would install a binary that cannot
-        # execute in the guest. Fail loudly instead.
+        # These shims are copied straight into an armv7 rootfs, so a
+        # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
         case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
-            echo "ERROR: touchbridge container is $(uname -m), expected armv7l." >&2; exit 1 ;;
+            echo "ERROR: shim container is $(uname -m), expected armv7l." >&2; exit 1 ;;
         esac
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
 
-        gcc -O2 -Wall \
-            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
+        gcc -O2 -Wall \
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
     '
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
-for artifact in touchbridge/touchbridge_$SHIM_ARCH dtshim/dtshim_$SHIM_ARCH.so; do
-  [ -s "$SHIMS_DIR/$artifact" ] || {
+for artifact in touchbridge/touchbridge_$SHIM_ARCH \
+                dtshim/dtshim_$SHIM_ARCH.so; do
+    [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 
@@ -159,17 +160,13 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 # NOTE: this container intentionally runs the *host* architecture, not armhf —
 # e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
 # So it must never be the source of anything that ends up inside the guest
-# rootfs; the one such file, the touch bridge, is built in the armhf container
-# above instead.
+# rootfs. Nothing here is: the shims come from the armhf container above.
 
 IMG="/out/$OUT_NAME"
 
 # The steps the rootfs builders share, so a change to one lands in all of them.
-# Each file in rootfs_steps/ defines one function and explains what it is for.
-# MPC uses all but one: skip_firmware_update has no /usr/Engine to pass a flag
-# to. write_fake_dt does apply -- MPC reads inmusic,product-code and
-# serial-number through libaz0x-info, so an emulated one needs them faked just
-# as Engine does.
+# Each file in rootfs_steps/ defines one function and explains what it is for. The
+# calls below read as the sequence they are.
 for _step in /steps/*.sh; do . "$_step"; done
 
 resize_filesystem "$IMG"
@@ -228,6 +225,23 @@ chmod 755 /mnt/rootfs/root/touchbridge_mpc
 cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
 ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
 
+echo "--- disabling the tty1 getty (Application's display) ---"
+# MPC renders fullscreen via KMS on the same VT the console getty
+# lives on, and the getty keeps reading the keyboard underneath it. Every
+# keystroke therefore goes to *both* the app and a root login shell you cannot
+# see.
+#
+# Removing the enablement symlink disables it; masking getty@tty1 and
+# autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
+# allocation) stops anything bringing it back.
+#
+# The *serial* getty is deliberately left alone — serial-getty@ttyAMA0 is a
+# different template and remains the way in on -serial stdio.
+rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
+ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
+
+
 echo "--- preloading dtshim into acvs.service ---"
 # A drop-in rather than an edit, so the vendor unit stays as shipped. systemd
 # reads drop-ins after the main unit and last assignment wins for a given
@@ -249,23 +263,6 @@ cat > /mnt/rootfs/etc/systemd/system/acvs.service.d/override.conf <<'EOF'
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so
 EOF
-
-echo "--- disabling the tty1 getty (MPC's display) ---"
-# MPC renders fullscreen via KMS on the same VT the console getty
-# lives on, and the getty keeps reading the keyboard underneath it. Every
-# keystroke therefore goes to *both* MPC and a root login shell you cannot
-# see.
-#
-# Removing the enablement symlink disables it; masking getty@tty1 and
-# autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
-# allocation) stops anything bringing it back.
-#
-# The *serial* getty is deliberately left alone
-# — serial-getty@ttyAMA0 is a different template and remains the way in on
-# -serial stdio.
-rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
-ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
-ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"

@@ -36,9 +36,12 @@ section for why. Both are installed and preloaded by the rootfs builders.
   an optional serial, and writes them with `printf` rather than copying a fixture —
   these must have no trailing newline, which a repo file easily picks up and which
   Engine's direct `fopen()`/`read()` callers will not tolerate.
-- `/root/fake-dev-mem`, an empty file `/dev/mem` remaps to, so an `mmap` of it fails
-  cleanly rather than handing out real physical memory. That is what the hardware
-  anti-clone check probes.
+- `/root/fake-dev-mem`, the file `/dev/mem` remaps to, so a probe of physical memory
+  reads zeros rather than real physical memory. That is what the hardware anti-clone
+  check looks at. It is sparse and 4400MiB — large enough that RK3288 register space
+  near `0xFF000000` falls inside it. It was zero-length until an emulated MPC
+  crash-looped on SIGBUS: an `mmap` of an empty file does not fail, it succeeds and
+  faults on first touch, since every page lies past the end of the file.
 
 ## Checked against the real devicetrees
 

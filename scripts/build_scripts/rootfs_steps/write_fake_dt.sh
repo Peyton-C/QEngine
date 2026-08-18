@@ -25,10 +25,19 @@ write_fake_dt() {
     printf '%s' "$_code"   > "$_rootfs/root/fake-dt/inmusic,product-code"
     printf '%s' "$_serial" > "$_rootfs/root/fake-dt/serial-number"
 
-    # /dev/mem is remapped here so a mmap of it fails cleanly rather than handing out
-    # real physical memory, which is what the hardware anti-clone check probes. Left
-    # as a file rather than served from the shim so that failure mode does not move.
+    # /dev/mem is remapped here so a probe of physical memory reads zeros instead of
+    # real physical memory, which is what the hardware anti-clone check looks at.
     # Both architectures need it: dtshim remaps /dev/mem on either, and until now
     # only the armv7 builder created the file, so an arm64 guest got ENOENT instead.
-    : > "$_rootfs/root/fake-dev-mem"
+    #
+    # Sparse, and large enough to cover the addresses a guest actually maps. It used
+    # to be zero-length, on the assumption that an mmap of an empty file would fail
+    # cleanly -- it does not. The mmap succeeds and the first touch raises SIGBUS,
+    # because every page is past the end of the file. That crash-looped MPC (SIGBUS
+    # every ~3s, invisible until NRestarts was checked) once it resolved its product
+    # code and got far enough to probe: it maps RK3288 register space near
+    # 0xFF000000, so the file has to reach past 0xFF800000 (4283MiB) for those pages
+    # to exist. 4400MiB does, and being sparse it costs ~0 on disk -- 32MiB actually
+    # allocated in a built image.
+    truncate -s 4400M "$_rootfs/root/fake-dev-mem"
 }

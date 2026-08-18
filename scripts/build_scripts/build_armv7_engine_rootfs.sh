@@ -11,7 +11,7 @@
 #   4. Build the dtshim/drmatomic/touchbridge shims for armhf. Only dtshim is
 #      RK3288-specific; the other two compile from the RK3588 sources unmodified.
 #   5. Copy those shims + fake-dt files into /root.
-#   6. Wire touchbridge_jc11s.service and an engine.service.d override so
+#   6. Wire touchbridge.service and an engine.service.d override so
 #      engine.service loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
@@ -50,15 +50,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
-# midisurface is shared with the arm64 builder and lives outside the per-SoC
-# directories, so it is mounted separately at the same place that builder mounts
-# it. Spelled out even though this build's SHIMS_DIR already spans the whole
-# shims tree: it keeps the shared-shim lines identical between the two files, and
-# it is what stays correct when the rest of the shims are genericized and this
-# SHIMS_DIR narrows to rk3288.
-SHARED_SHIMS_DIR="$REPO_ROOT/shims"
-# Names that shim's compiled output, so one source yields one artifact per
-# architecture: shims/midisurface/midisurface_$SHIM_ARCH.
+# Both builders mount the whole shims tree, so a shim shared between them is
+# reached at the same path in either: /shims/<name> for the shared ones,
+# /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
+# Names the compiled output of the shared shims, so one source yields one
+# artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
 SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -124,7 +120,8 @@ echo "--- resizing image to $SIZE bytes ---"
 qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 
 ### 2b. Build the shims ######################################################
-# The shim binaries are .gitignored (*.so, plus touchbridge_rmz2 by name), so
+# The shim binaries are .gitignored (*.so, plus the shared shims' per-arch
+# outputs by name), so
 # a fresh clone has sources only — this step is what makes the install step
 # below work at all rather than silently depending on artifacts a previous
 # session happened to leave in the working tree. Building them here also
@@ -142,7 +139,6 @@ docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
-    -v "$SHARED_SHIMS_DIR:/shims-shared" \
     debian:bookworm bash -c '
         # No apostrophes below, comments included: this whole block is one
         # single-quoted argument, and one would end it early and hand the rest to
@@ -174,31 +170,30 @@ docker run --rm --platform linux/arm/v7 \
         # drmatomic.c exports both, which is what makes it interpose here at
         # all. Nothing in that is RK3288-specific, so it stays in the shared source.
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3288/dtshim/dtshim_jc11s.so /shims/rk3288/dtshim/dtshim_jc11s.c -ldl -lpthread
+            -o /shims/rk3288/dtshim/dtshim_jc11s.so /shims/rk3288/dtshim/dtshim.c -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
-            -o /shims-shared/drmatomic/drmatomic_$SHIM_ARCH.so /shims-shared/drmatomic/drmatomic.c -ldl
+            -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
-            -o /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
 
         # The control surface, from the same RK3588 sources: neither is
         # architecture-specific. alsashim resolves everything through dlsym so it
         # needs no ALSA headers; midisurface links libasound directly.
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims-shared/alsashim/alsashim_$SHIM_ARCH.so /shims-shared/alsashim/alsashim.c -ldl
+            -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -O2 -Wall \
-            -o /shims-shared/midisurface/midisurface_$SHIM_ARCH /shims-shared/midisurface/midisurface.c -lasound
+            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
 
-for artifact in rk3288/dtshim/dtshim_jc11s.so \
-                rk3288/touchbridge_jc11s/touchbridge_jc11s; do
+for artifact in rk3288/dtshim/dtshim_jc11s.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
-                midisurface/midisurface_$SHIM_ARCH; do
-    [ -s "$SHARED_SHIMS_DIR/$artifact" ] || {
+                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH; do
+    [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 
@@ -297,25 +292,25 @@ skip_firmware_update /mnt/rootfs
 
 echo "--- inserting shims into /root ---"
 mkdir -p /mnt/rootfs/root/fake-dt
-cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim_jc11s.so
-cp -a /shims-shared/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
-cp -a /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /mnt/rootfs/root/touchbridge_jc11s
+cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim.so
+cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
+cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
 # Landed without a device in the name, unlike the shims either builder has
 # carried since before this build existed. alsashim is architecture-neutral --
 # it resolves everything through dlsym -- so both builders will eventually
 # install one file from one source, and the guest-side path is the half of that
 # which costs nothing to settle now.
-cp -a /shims-shared/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # A service rather than a preload: it is a MIDI device Engine binds, not a
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
-cp -a /shims-shared/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
-chmod 755 /mnt/rootfs/root/dtshim_jc11s.so /mnt/rootfs/root/drmatomic.so \
-          /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim.so \
+cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/midisurface
 
-# The devicetree properties dtshim_jc11s.c remaps. These are the real RK3288 paths;
+# The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps
 # unconditionally and a missing target turns a working read into ENOENT.
 #
@@ -361,34 +356,17 @@ printf '\x00\x00\x00\x00' > "/mnt/rootfs/root/fake-dt/inmusic,internal-sd-fitted
     printf ' 37:        283          0          0          0     GIC-0  79 Edge      ttyS0\n'
 } > /mnt/rootfs/root/fake-dt/interrupts
 
-echo "--- wiring touchbridge_jc11s.service + engine.service override ---"
-# Written here rather than copied from shims/: the committed unit still passes an
-# explicit /dev/input/event2, which the RK3588 touchbridge source this is now built
-# from does not take — it scans for the tablet by name and only wants a resolution.
-cat > /mnt/rootfs/etc/systemd/system/touchbridge_jc11s.service <<'EOF'
-[Unit]
-Description=JC11S QEMU tablet -> synthetic multitouch bridge
-Before=engine.service
-DefaultDependencies=no
-After=systemd-udevd.service
-
-[Service]
-Type=simple
-ExecStart=/root/touchbridge_jc11s 1280 800
-Restart=always
-RestartSec=1
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_jc11s.service
+echo "--- wiring touchbridge.service + engine.service override ---"
+# The same unit either builder installs, each from its own SoC directory: the
+# binary is shared but the invocation is not -- RK3588 passes --head N and has a
+# templated unit per display, RK3288 is single-head and passes a resolution.
+cp -a /shims/rk3288/touchbridge/touchbridge.service /mnt/rootfs/etc/systemd/system/touchbridge.service
+ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge.service
 
 # The virtual control surface. The same unit both builders install: it names
 # no device and passes no client name, because the binary works out which
 # product to be from the guest's own product code.
-cp -a /shims-shared/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 
 echo "--- disabling the tty1 getty (Engine's display) ---"
@@ -412,12 +390,12 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Unit]
-After=touchbridge_jc11s.service midisurface.service
-Requires=touchbridge_jc11s.service
+After=touchbridge.service midisurface.service
+Requires=touchbridge.service
 Wants=midisurface.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic.so:/root/alsashim.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device
@@ -463,7 +441,6 @@ docker run --rm --privileged \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
-    -v "$SHARED_SHIMS_DIR:/shims-shared:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

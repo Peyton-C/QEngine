@@ -76,7 +76,7 @@ echo Getting Kernel...
 MODULES=(
     # HID (keyboard/tablet — usb-kbd/usb-tablet under QEMU)
     hid hid_generic usbhid
-    # Required for touchbridge_rmz2 to provide the source device
+    # Required for touchbridge to provide the source device
     evdev uinput
     # FAT32/exFAT mount (USB flash drive with a real Engine Library).
     # fat is the shared core, vfat the long-filename driver; nls_cp437 is

@@ -79,7 +79,7 @@ software (`kms_swrast` — virgl needs PCI, which the 32-bit `virt` machine lack
 `QT VNC Display` is N for the same reason as arm64: Qt 6.7.2 ships no `libqvnc.so`.
 Audio is N because the shim stack it needs was left out, not because it was tried
 and failed. Touch is confirmed end-to-end against the SDL display —
-`touchbridge_jc11s` re-emits QEMU's absolute tablet as a uinput multitouch device and
+`touchbridge` re-emits QEMU's absolute tablet as a uinput multitouch device and
 Engine responds to it. The remaining `?` rows are untried, not known-broken. See
 [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
 

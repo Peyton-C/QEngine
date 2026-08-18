@@ -1,6 +1,6 @@
 # fake-dt-rmz2
 
-Fake devicetree/proc files for `dtshim_rmz2.so` (RANE SYSTEM ONE / RMZ2),
+Fake devicetree/proc files for `dtshim.so` (RANE SYSTEM ONE / RMZ2),
 deployed to `/root/fake-dt/` in the guest. Confirmed working all the way
 through Engine rendering its onboarding screen on-screen via `eglfs` — see
 BUILDING.md's arm64/RK3588 section for the full story and current status.
@@ -16,7 +16,7 @@ BUILDING.md's arm64/RK3588 section for the full story and current status.
   `dsi@fde20000/panel@0/rotation` property) — not stored as a repo file
   here since it's binary.
 - `interrupts` — **static fallback only**, as of the dynamic-generation
-  change in `dtshim_rmz2.c`. Engine hard-throws (`std::runtime_error`,
+  change in `dtshim.c`. Engine hard-throws (`std::runtime_error`,
   aborts) if it can't find IRQ lines for `dwc3`, `fe210000.sata`,
   `fea10000.dma-controller`, `ff0c0000.dwmmc`, `ff0f0000.dwmmc`, and
   `ttyS0` by name — none of which exist under QEMU's `virt` machine — and
@@ -83,7 +83,7 @@ script in place:
 mkdir -p /etc/systemd/system/engine.service.d
 cat > /etc/systemd/system/engine.service.d/override.conf << 'EOF'
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so
 Environment=QT_QPA_PLATFORM=eglfs
 EOF
 systemctl daemon-reload

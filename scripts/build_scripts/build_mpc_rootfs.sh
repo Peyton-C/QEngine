@@ -7,7 +7,7 @@
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge for armhf (the shared source under shims/rk3588 is
+#   4. Build touchbridge for armhf (the shared source under shims/touchbridge is
 #      architecture-independent — see the build step below).
 #   5. Copy it into /root and wire touchbridge_mpc.service ahead of acvs.service.
 #   6. Blank the root password for passwordless serial-console login, and
@@ -120,7 +120,7 @@ docker run --rm --platform linux/arm/v7 \
 
         gcc -O2 -Wall \
             -o /shims/rk3288/touchbridge_mpc/touchbridge_mpc \
-               /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
+               /shims/touchbridge/touchbridge.c
     '
 
 [ -s "$SHIMS_DIR/rk3288/touchbridge_mpc/touchbridge_mpc" ] || {

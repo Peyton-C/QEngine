@@ -53,7 +53,7 @@ The steps individually, if you want them:
   and Engine dies in an EGL restart loop; see
   [../../docs/BUILDING.md](../../docs/BUILDING.md#engine-504-on-armv7-rk3288).
 
-- **The shims are shared with the arm64 build**, except `dtshim_jc11s.c`, which
+- **The shims are shared with the arm64 build**, except `dtshim.c`, which
   carries RK3288's devicetree paths. `drmatomic` and `touchbridge` build from the
   RK3588 sources. One 32-bit-specific catch is worth knowing before writing another
   shim here: this guest's glibc is a 64-bit-`time_t` build, so it imports
@@ -65,7 +65,7 @@ The steps individually, if you want them:
   Use an instance (see [INSTANCES.md](INSTANCES.md)) to keep several side by side.
 
 - **Touch works out of the box**, same mechanism as the MPC build: the rootfs build
-  installs `touchbridge_jc11s` and starts it before `engine.service`. Engine only
+  installs `touchbridge` and starts it before `engine.service`. Engine only
   responds to a real touchscreen, and QEMU's virtio tablet presents as an absolute
   pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
   the `sdl` display.

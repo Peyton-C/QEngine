@@ -1042,6 +1042,37 @@ allocation, so disabling alone is not enough). `serial-getty@ttyAMA0` is left
 alone and remains the way in over `-serial stdio`. Engine's keyboard input is
 unaffected, since eglfs reads evdev directly rather than through the VT.
 
+#### Where the shims live, and how one source serves two SoCs
+
+Most shims are architecture-neutral: they interpose libc or ALSA calls, or talk to
+uinput, and nothing in them depends on the CPU. Those live at the top of `shims/` —
+`alsashim/`, `drmatomic/`, `dtshim/`, `midisurface/`, `teeshim/`, `touchbridge/` — one
+source each, compiled by whichever builders need them. Each builder sets `SHIM_ARCH`
+(`arm64` or `armhf`) once near the top, and the outputs are named for it:
+`shims/drmatomic/drmatomic_$SHIM_ARCH.so`. So the lines either builder spends on a
+shared shim are identical between them, and a diff of the two files shows only what
+genuinely differs.
+
+`dtshim` is the one shim whose behaviour is per-SoC, because the devicetree it fakes
+is: it takes `-DSOC_RK3588` or `-DSOC_RK3288`, which selects the `DT_REMAPS` table of
+properties it serves, and refuses to compile without one. Everything else in it — the
+`open`/`fopen`/`write` interposition, the runtime `/proc/interrupts` generation — is
+shared.
+
+What stays under `shims/rk3288/` and `shims/rk3588/` is what is genuinely tied to one
+SoC or one product: `dtshim/fake-dt-rmz2/` (RK3588's static `/proc/interrupts`
+fallback), each SoC's `touchbridge/` service units — RK3588 instantiates a templated
+one per display where RK3288 is single-head — and `controllermap/`, which hardcodes
+RMZ2's assignment directory.
+
+The steps both rootfs builders perform identically live in
+[scripts/build_scripts/rootfs_steps/](../scripts/build_scripts/rootfs_steps/), one
+function per file, sourced into the privileged container: growing the filesystem,
+blocking telemetry and blanking the root password, writing the fake devicetree,
+telling Engine to skip firmware updates, and the final consistency check. They are
+there for the same reason `extract_rootfs.sh` is — the two builders had already
+drifted into byte-identical copies once.
+
 #### The shims are built from source now
 
 Every shim binary is `.gitignored` (`*.so`, plus `touchbridge` by name),

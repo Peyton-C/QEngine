@@ -110,10 +110,11 @@ version was never released for the device.
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –   | –   | ?   | ?       | ?     |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –   | –   | –   | 4.6.0   | 5.0.4 |
 
-SC5000 on 5.0.4 boots to a rendered UI but has no audio or control surface yet — see
-the support matrix above. Its image (`JP07-JP08-JP11`) also carries `JP08` and `JP11`;
-both are selectable with `PRODUCT_CODE=` on the rootfs build but neither has been
-booted. `!` on Prime GO 4.3.0 marks a known issue rather than a clean pass.
+SC5000 on 5.0.4 boots to a rendered UI and binds a virtual control surface; audio is
+what it still lacks — see the support matrix above. Its image (`JP07-JP08-JP11`) also
+carries `JP08` and `JP11`; both are selectable with `PRODUCT_CODE=` on the rootfs
+build but neither has been booted. `PRODUCT_CODE=` works on the arm64 builder too,
+defaulting to `RMZ2`. `!` on Prime GO 4.3.0 marks a known issue rather than a clean pass.
 
 ## Emulated MPCs
 

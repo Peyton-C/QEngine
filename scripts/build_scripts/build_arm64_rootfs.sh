@@ -5,9 +5,9 @@
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build alsashim_rmz2.so (the only shim built here rather than committed
+#   4. Build alsashim (the only shim built here rather than committed
 #      prebuilt — see the build step below).
-#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge_rmz2 shims +
+#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge shims +
 #      fake-dt files into /root.
 #   6. Wire touchbridge_rmz2.service, midisurface.service (virtual control
 #      surface, auto motor-off), controllermap.service (USB controller ->
@@ -124,7 +124,7 @@ docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm64 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface" \
+    -v "$SHARED_SHIMS_DIR:/shims-shared" \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
@@ -145,9 +145,9 @@ docker run --rm --platform linux/arm64 \
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_rmz2.so /shims/dtshim/dtshim_rmz2.c -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
-            -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
+            -o /shims-shared/drmatomic/drmatomic_$SHIM_ARCH.so /shims-shared/drmatomic/drmatomic.c -ldl
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
+            -o /shims-shared/alsashim/alsashim_$SHIM_ARCH.so /shims-shared/alsashim/alsashim.c -ldl
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/teeshim/teeshim_rmz2.so /shims/teeshim/teeshim_rmz2.c
         gcc -O2 -Wall \
@@ -171,15 +171,18 @@ docker run --rm --platform linux/arm64 \
     exit 1
 }
 
-for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
-                alsashim/alsashim_rmz2.so teeshim/teeshim_rmz2.so \
+for artifact in dtshim/dtshim_rmz2.so teeshim/teeshim_rmz2.so \
                 touchbridge_rmz2/touchbridge_rmz2; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
-# Checked separately: it is the one shim that does not live under SHIMS_DIR.
-[ -s "$SHARED_SHIMS_DIR/midisurface/midisurface_$SHIM_ARCH" ] || {
-    echo "ERROR: shim build produced no midisurface/midisurface_$SHIM_ARCH" >&2; exit 1; }
+# The shared shims are checked separately: they live outside SHIMS_DIR, and each
+# one is named for the architecture it was built for rather than for a device.
+for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
+                midisurface/midisurface_$SHIM_ARCH; do
+    [ -s "$SHARED_SHIMS_DIR/$artifact" ] || {
+        echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
+done
 
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
@@ -268,8 +271,8 @@ cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 echo "--- inserting shims into /root ---"
 mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
-cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
-cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
+cp -a /shims-shared/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
+cp -a /shims-shared/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 cp -a /shims/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
 cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
 # Started as a service (below) rather than preloaded into engine.service: it
@@ -290,8 +293,8 @@ cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 # Raw big-endian <u32> devicetree cell, not text — 0 (no rotation), the
 # value confirmed working against RMZ2's real panel orientation.
 printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
-chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
-          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so \
+chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/alsashim.so /mnt/rootfs/root/teeshim_rmz2.so \
           /mnt/rootfs/root/touchbridge_rmz2 \
           /mnt/rootfs/root/midisurface
 
@@ -401,7 +404,7 @@ After=touchbridge_rmz2.service
 Requires=touchbridge_rmz2.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so:/root/teeshim_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic.so:/root/alsashim.so:/root/teeshim_rmz2.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
@@ -455,7 +458,7 @@ docker run --rm --privileged \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface:ro" \
+    -v "$SHARED_SHIMS_DIR:/shims-shared:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$STAGE_DIR:/stage:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \

@@ -83,13 +83,13 @@ script in place:
 mkdir -p /etc/systemd/system/engine.service.d
 cat > /etc/systemd/system/engine.service.d/override.conf << 'EOF'
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic.so
 Environment=QT_QPA_PLATFORM=eglfs
 EOF
 systemctl daemon-reload
 ```
 
-`drmatomic_rmz2.so` (see `../drmatomic_rmz2.c`) is required alongside this
+`drmatomic.so` (see `../drmatomic.c`) is required alongside this
 shim for `eglfs` to actually produce visible output — without it Engine
 starts fine but the screen stays black. See BUILDING.md's arm64/RK3588
 section for why.

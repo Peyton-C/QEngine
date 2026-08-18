@@ -655,7 +655,7 @@ needs a daemon that isn't always running/passwordless-startable; rootless
 
 Deployed via an `engine.service` systemd drop-in
 (`/etc/systemd/system/engine.service.d/override.conf`, setting
-`Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so` and
+`Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic.so` and
 `Environment=QT_QPA_PLATFORM=eglfs`) rather than editing the vendor
 `runengine`/`engine` scripts in place — see
 [shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)
@@ -698,7 +698,7 @@ incompatibility. This explains why the failure was identical whether
 `SETCRTC` was legacy or hand-rolled atomic — the framebuffer itself was
 never valid for that plane, regardless of which ioctl path submitted it.
 
-The fix, in [shims/rk3588/dtshim/drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c):
+The fix, in [shims/drmatomic/drmatomic.c](../shims/drmatomic/drmatomic.c):
 intercepts `DRM_IOCTL_MODE_ADDFB2` and rewrites `pixel_format` from
 `ARGB8888` to `XRGB8888` before it reaches the kernel, **and** separately
 replaces Qt's legacy `SETCRTC`/`PAGE_FLIP` calls with a real
@@ -908,7 +908,7 @@ in `XRUN` forever with `Audio_probe` frozen, and no error is printed. All of
 [scripts/qemu/](../scripts/qemu/)'s launch scripts already do this; the
 Linux-targeted ones use `pipewire` rather than the macOS-only `coreaudio`.
 
-**2. Preload `alsashim_rmz2.so`.** Built and installed by
+**2. Preload `alsashim.so`.** Built and installed by
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh), which
 adds it to `engine.service`'s `LD_PRELOAD` and sets `ALSASHIM_CARD=0`.
 Without it Engine rejects the emulated card on its *name* before ever
@@ -1047,8 +1047,10 @@ unaffected, since eglfs reads evdev directly rather than through the VT.
 Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
 so a fresh clone has sources only.
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
-all six — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
-`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface` — in one
+all six — `dtshim_rmz2.so`, `teeshim_rmz2.so`, `touchbridge_rmz2`, and the
+three shared with the armv7 build, which carry the architecture they were built
+for rather than a device: `drmatomic_arm64.so`, `alsashim_arm64.so`,
+`midisurface_arm64` — in one
 `debian:bookworm` arm64 container before installing them. Previously it copied
 artifacts that nothing produced, which worked only if a previous session had
 left them in the tree.
@@ -1125,7 +1127,7 @@ device and primary flag; it does not decide how many windows exist. Nothing in t
 rootfs needs patching for JP22, and the build no longer touches it.
 
 Booting three screens then exposed a second bug, in our own shim.
-[drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c) kept a *single* global
+[drmatomic.c](../shims/drmatomic/drmatomic.c) kept a *single* global
 `kms_state`, which was correct for as long as every product had one display. With
 three, `ensure_kms_state()` returned early after the first CRTC, so the second and
 third modesets reused the first CRTC's ids — and the `PAGE_FLIP` handler ignored
@@ -1181,7 +1183,7 @@ Qt's multi-screen path — kept, and now genuinely in play.
 Two shims used to log unconditionally, and both were expensive enough to be
 felt:
 
-- `drmatomic_rmz2.so` logged every atomic commit — i.e. a synchronous write
+- `drmatomic.so` logged every atomic commit — i.e. a synchronous write
   to the journal on *every rendered frame*. Now behind `DRMATOMIC_DEBUG`;
   modesets and failures still log, since those are rare and useful.
 - `dtshim_rmz2.so`'s devicetree-access log (added to rule the devicetree out
@@ -1573,12 +1575,12 @@ devicetree-property mechanism used throughout this doc, and getting a
 fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 
 **New shims** (`shims/rk3288/dtshim/dtshim_jc11s.c`,
-`shims/rk3288/drmatomic_jc11s/`, `shims/rk3288/touchbridge_jc11s/`):
-`drmatomic_rmz2.c` and `touchbridge_rmz2.c` from the arm64/RMZ2 work
+`shims/drmatomic/`, `shims/rk3288/touchbridge_jc11s/`):
+`drmatomic.c` and `touchbridge_rmz2.c` from the arm64/RMZ2 work
 build for armhf from the same sources and work identically — neither
 depends on CPU architecture at all, only on the Linux DRM/uinput kernel
 UAPIs, which use fixed-width types specifically so 32- and 64-bit callers
-are both safe. (`drmatomic_rmz2.c` did need one addition to *interpose* on
+are both safe. (`drmatomic.c` did need one addition to *interpose* on
 a 32-bit guest, which is a property of the guest's libc rather than of the
 architecture — see the `__ioctl_time64` finding below.) Only
 `dtshim_jc11s.c` needed real changes: a fresh
@@ -1674,9 +1676,9 @@ the integration pinned, `Engine` starts, registers the touchscreen,
 migrates its database and reaches its MIDI device inquiry — and the
 display stays black while the journal fills with `[W] Could not queue DRM
 page flip on screen Virtual1 (Invalid argument)`, once per frame. That is
-the exact symptom `drmatomic_rmz2.c` exists to fix (see its header
+the exact symptom `drmatomic.c` exists to fix (see its header
 comment: virtio-gpu's primary plane rejects Qt's `ARGB8888` framebuffer),
-and `drmatomic_jc11s.so` *was* built, *was* listed in `LD_PRELOAD`, and
+and `drmatomic.so` *was* built, *was* listed in `LD_PRELOAD`, and
 *was* mapped into the process per `/proc/<pid>/maps` — while printing not
 one of its `=== DRMATOMIC:` lines, which it emits on every modeset and on
 every failure. A loaded interposer that never interposes.
@@ -1689,7 +1691,7 @@ callers' relocations. `readelf -sW --dyn-syms` on the guest's own
 reference to plain `ioctl` at all. A shim exporting only `ioctl` therefore
 interposes nothing, silently, because it loads perfectly well and simply
 never runs. The same file on the arm64 rootfs imports `ioctl@GLIBC_2.17`,
-which is why this never came up on RK3588. `drmatomic_rmz2.c` now exports
+which is why this never came up on RK3588. `drmatomic.c` now exports
 `__ioctl_time64` as an alias of its `ioctl`, and resolves the real
 function preferring the `time64` entry point (which converts the
 timeval-carrying ioctls; plain `ioctl` does not). aarch64 glibc has no

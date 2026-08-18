@@ -24,7 +24,7 @@
 # assigned as the input device, and the playback slot is left null. Engine then
 # drives capture only and never feeds playback, which shows up as a stuck XRUN and a
 # frozen "Audio_probe" watchdog rather than any error. Playback-only removes the
-# ambiguity. Requires alsashim_rmz2.so preloaded into engine.service (see
+# ambiguity. Requires alsashim.so preloaded into engine.service (see
 # build_arm64_rootfs.sh) — without it Engine rejects the card on name alone.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

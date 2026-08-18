@@ -70,7 +70,11 @@ The steps individually, if you want them:
   pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
   the `sdl` display.
 
-- **What is not done yet:** audio and the control surface. The arm64 build's
-  `alsashim`, `midisurface` and `controllermap` are RMZ2-specific and were
-  deliberately left out here, so the guest boots and renders but has no sound card
-  Engine will accept.
+- **What is not done yet:** audio. `alsashim` and `midisurface` are carried over
+  from the arm64 build and are no longer RMZ2-specific -- they live in
+  `shims/alsashim/` and `shims/midisurface/`, build for either architecture, and
+  between them give Engine a control surface it will bind. Only `controllermap`
+  is left out, which exists to swap a real USB controller's assignment files in
+  and hardcodes RMZ2's directory. `alsashim` is preloaded for one job here, the
+  MIDI card-number gate; the sound card Engine will accept is still missing, and
+  the 32-bit virt machine has no PCI for the HDA device anyway.

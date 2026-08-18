@@ -50,10 +50,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
-# Names the compiled output of shims shared by both builders, which are built
-# from one source into shims/midisurface/midisurface_$SHIM_ARCH rather than into
-# a per-SoC directory. Only this line differs between the two builders, so those
-# build and install steps stay byte-identical and can be diffed.
+# midisurface is shared with the arm64 builder and lives outside the per-SoC
+# directories, so it is mounted separately at the same place that builder mounts
+# it. Spelled out even though this build's SHIMS_DIR already spans the whole
+# shims tree: it keeps the shared-shim lines identical between the two files, and
+# it is what stays correct when the rest of the shims are genericized and this
+# SHIMS_DIR narrows to rk3288.
+SHARED_SHIMS_DIR="$REPO_ROOT/shims"
+# Names that shim's compiled output, so one source yields one artifact per
+# architecture: shims/midisurface/midisurface_$SHIM_ARCH.
 SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -137,6 +142,7 @@ docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
+    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface" \
     debian:bookworm bash -c '
         # No apostrophes below, comments included: this whole block is one
         # single-quoted argument, and one would end it early and hand the rest to
@@ -178,19 +184,20 @@ docker run --rm --platform linux/arm/v7 \
         # architecture-specific. alsashim resolves everything through dlsym so it
         # needs no ALSA headers; midisurface links libasound directly.
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3288/alsashim_jc11s.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
+            -o /shims/rk3588/alsashim/alsashim_$SHIM_ARCH.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
         gcc -O2 -Wall \
-            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+            -o /shims-shared/midisurface/midisurface_$SHIM_ARCH /shims-shared/midisurface/midisurface.c -lasound
     '
 
-for artifact in rk3288/dtshim/dtshim_jc11s.so \
-                rk3288/dtshim/drmatomic_jc11s.so \
+for artifact in rk3288/dtshim/dtshim_jc11s.so rk3288/dtshim/drmatomic_jc11s.so \
                 rk3288/touchbridge_jc11s/touchbridge_jc11s \
-                rk3288/alsashim_jc11s.so \
-                midisurface/midisurface_$SHIM_ARCH; do
+                rk3588/alsashim/alsashim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
+# Checked separately: it is the one shim that does not live under SHIMS_DIR.
+[ -s "$SHARED_SHIMS_DIR/midisurface/midisurface_$SHIM_ARCH" ] || {
+    echo "ERROR: shim build produced no midisurface/midisurface_$SHIM_ARCH" >&2; exit 1; }
 
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
@@ -290,14 +297,19 @@ mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim_jc11s.so
 cp -a /shims/rk3288/dtshim/drmatomic_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so
 cp -a /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /mnt/rootfs/root/touchbridge_jc11s
-cp -a /shims/rk3288/alsashim_jc11s.so /mnt/rootfs/root/alsashim_jc11s.so
+# Landed without a device in the name, unlike the shims either builder has
+# carried since before this build existed. alsashim is architecture-neutral --
+# it resolves everything through dlsym -- so both builders will eventually
+# install one file from one source, and the guest-side path is the half of that
+# which costs nothing to settle now.
+cp -a /shims/rk3588/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # A service rather than a preload: it is a MIDI device Engine binds, not a
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
-cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+cp -a /shims-shared/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
 chmod 755 /mnt/rootfs/root/dtshim_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so \
-          /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim_jc11s.so \
+          /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/midisurface
 
 # The devicetree properties dtshim_jc11s.c remaps. These are the real RK3288 paths;
@@ -373,7 +385,7 @@ ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.ta
 # The virtual control surface. The same unit both builders install: it names
 # no device and passes no client name, because the binary works out which
 # product to be from the guest's own product code.
-cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+cp -a /shims-shared/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 
 echo "--- disabling the tty1 getty (Engine's display) ---"
@@ -402,7 +414,7 @@ Requires=touchbridge_jc11s.service
 Wants=midisurface.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so:/root/alsashim_jc11s.so
+Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so:/root/alsashim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device
@@ -448,6 +460,7 @@ docker run --rm --privileged \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

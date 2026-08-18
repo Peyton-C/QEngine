@@ -19,13 +19,12 @@ section for why. Both are installed and preloaded by the rootfs builders.
 **Compiled in, per SoC** (`DT_REMAPS` entries with a blob, served from an anonymous
 `memfd` so nothing lands on the read-only rootfs):
 
-- `rotation` — raw big-endian `<u32>`, served as 0. The real RMZ2 `system.dtb` has 180
-  (`\x00\x00\x00\xb4`) on `dsi@fde20000/panel@0/rotation`, but 0 is what the emulated
-  panel wants and what has been confirmed working. RK3588 answers four different panel
-  node paths with the same value, because which node exists depends on the display the
-  image is built for and Engine probes whichever it expects.
-- `inmusic,az01-pcb-rev` (`B`) and `chosen/inmusic,internal-sd-fitted` — RK3288 only;
-  RMZ2's devicetree has no such properties.
+- `rotation` — raw big-endian `<u32>`, served as 0, deliberately unlike the hardware.
+  RK3588 answers four panel node paths and RK3288 one; see the audit below for why that
+  covers every device and why 0 rather than the real value.
+- `inmusic,az01-pcb-rev` (`B`) and `chosen/inmusic,internal-sd-fitted` — RK3288 only.
+  No devicetree declares `pcb-rev` at all; it is u-boot-injected on `az01` boards, and
+  `az04` has neither the pins nor the property. Again, see the audit.
 - `FALLBACK_INTERRUPTS` — see below.
 
 **Written by the builder**, via `scripts/build_scripts/rootfs_steps/write_fake_dt.sh`:
@@ -40,6 +39,45 @@ section for why. Both are installed and preloaded by the rootfs builders.
 - `/root/fake-dev-mem`, an empty file `/dev/mem` remaps to, so an `mmap` of it fails
   cleanly rather than handing out real physical memory. That is what the hardware
   anti-clone check probes.
+
+## Checked against the real devicetrees
+
+Audited against 55 shipped DTS files spanning all three board families — RK3288 `az01`,
+RK3288 `az05`, and RK3588 `az04`/`az04b`. Conclusions, so nobody has to redo it:
+
+**Panel coverage is complete.** Every RK3288 device — roughly forty across `az01` and
+`az05` — puts `rotation` under `mipi@ff960000/panel@0`, so the single RK3288 entry
+covers all of them. Every RK3588 device puts it under `dsi@fde20000/panel@0`. The four
+display-node prefixes that appear anywhere in those files (`dsi@fde20000`,
+`dsi@fde30000`, `edp-panel`, `mipi@ff960000`) are exactly the four the RK3588 table
+serves. Of its extra three: `dsi@fde30000` and `edp-panel` exist because the JP22
+`ScreenConfiguration` the arm64 builder writes points Qt at them, and `mipi@ff960000` is
+the stale RK3288-lineage probe mentioned above. JP22 itself declares no `rotation`
+property at all, so answering those paths with 0 is the whole of what it needs.
+
+**We serve 0, and the hardware does not.** Real values are `<0xb4>` (180°) on RMZ2 and
+`<0x10e>` (270°) on the RK3288 boards. That divergence is deliberate: the physical panels
+are mounted rotated and the emulated virtio-gpu framebuffer is not, so serving the real
+value would rotate the guest's output wrongly.
+
+**`serial-number` and `inmusic,az01-pcb-rev` are in no devicetree.** Not one of the 55
+declares either as a property. What `az01` boards do have is a pinctrl node *named*
+`az01-pcb-rev` (`rockchip,pins`) — GPIO lines for reading the board revision — so u-boot
+must read those pins at boot and inject the property. That is why both are synthesized
+here rather than copied from a DTS, and why the RK3588 table correctly omits `pcb-rev`:
+`az04` has no such pins and no such property, so a real RMZ2's Engine fails that read
+too. Both Engine binaries do reference `inmusic,az01-pcb-rev`; it is shared code that
+only `az01` hardware satisfies.
+
+**`inmusic,panel-rotation` is not ours to serve.** It appears in 49 files, alongside
+`rotation` and with the same value, and is read by the kernel's panel driver. Neither
+Engine binary references it. Engine reaches `rotation` through the
+`ScreenConfiguration` JSON rather than by a compiled-in path, which is why grepping the
+binary for it finds nothing on arm64.
+
+**`inmusic,internal-sd-fitted`** is declared by ten `az01`/`az05` files but referenced by
+neither Engine binary. Served anyway on RK3288: it costs four bytes, and something
+outside Engine may read it.
 
 ## `/proc/interrupts`, and why it is generated rather than stored
 

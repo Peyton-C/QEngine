@@ -22,10 +22,17 @@
 # See the note above the shim install for the two things that were staged while
 # that was still being worked out, and why neither is needed.
 #
-# Not carried over from the arm64 build: alsashim, midisurface and controllermap.
-# Those are RMZ2-specific (a spoofed card name, a virtual control surface for that
-# deck, and its assignment mapping); audio and control-surface support here are
-# their own problem and are deliberately out of scope for first boot.
+# Not carried over from the arm64 build: controllermap, which exists to swap a
+# real USB controller's assignment files in and hardcodes RMZ2's directory.
+#
+# alsashim and midisurface ARE carried over, because the control surface needs
+# both: midisurface is the virtual surface Engine binds, and alsashim is what
+# makes Engine willing to bind it at all -- its MIDI enumerator drops any
+# sequencer client with no card number, which a userspace client never has.
+# Only that one gate is wanted here. alsashim's other job, getting an emulated
+# sound card past Engine's card-name allowlist, is an audio concern and the
+# 32-bit virt machine has no PCI for the HDA device anyway, so no ALSASHIM_CARD
+# is set and audio stays out of scope.
 #
 # Usage: build_armv7_engine_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
@@ -141,7 +148,7 @@ docker run --rm --platform linux/arm/v7 \
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h. No libgl1-mesa-dri:
         # unlike the RMZ2 rootfs this one already ships a complete Mesa, so
         # nothing foreign needs staging in. See the privileged container below.
-        apt-get install -y -qq gcc libc6-dev libdrm-dev >/dev/null 2>&1
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
 
         # dtshim is the only genuinely RK3288-specific shim. drmatomic and
         # touchbridge build from the RK3588 sources: neither depends on the CPU
@@ -160,10 +167,19 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/rk3288/dtshim/drmatomic_jc11s.so /shims/rk3588/dtshim/drmatomic_rmz2.c -ldl
         gcc -O2 -Wall \
             -o /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
+
+        # The control surface, from the same RK3588 sources: neither is
+        # architecture-specific. alsashim resolves everything through dlsym so it
+        # needs no ALSA headers; midisurface links libasound directly.
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/rk3288/alsashim_jc11s.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
+        gcc -O2 -Wall \
+            -o /shims/rk3288/midisurface_jc11s /shims/rk3588/midisurface_rmz2/midisurface_rmz2.c -lasound
     '
 
 for artifact in rk3288/dtshim/dtshim_jc11s.so rk3288/dtshim/drmatomic_jc11s.so \
-                rk3288/touchbridge_jc11s/touchbridge_jc11s; do
+                rk3288/touchbridge_jc11s/touchbridge_jc11s \
+                rk3288/alsashim_jc11s.so rk3288/midisurface_jc11s; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -261,8 +277,15 @@ mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim_jc11s.so
 cp -a /shims/rk3288/dtshim/drmatomic_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so
 cp -a /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /mnt/rootfs/root/touchbridge_jc11s
+cp -a /shims/rk3288/alsashim_jc11s.so /mnt/rootfs/root/alsashim_jc11s.so
+# A service rather than a preload: it is a MIDI device Engine binds, not a
+# library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
+# decide which device to answer Engine's inquiry as, so one binary and one unit
+# serve every product this image can be built as.
+cp -a /shims/rk3288/midisurface_jc11s /mnt/rootfs/root/midisurface_jc11s
 chmod 755 /mnt/rootfs/root/dtshim_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so \
-          /mnt/rootfs/root/touchbridge_jc11s
+          /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim_jc11s.so \
+          /mnt/rootfs/root/midisurface_jc11s
 
 # The devicetree properties dtshim_jc11s.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps
@@ -334,6 +357,37 @@ WantedBy=multi-user.target
 EOF
 ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_jc11s.service
 
+# The virtual control surface. Written here rather than copied from shims/: the
+# committed unit is the arm64 one, which passes RMZ2_Controller explicitly and
+# points at /root/midisurface_rmz2. This build takes neither -- the binary works
+# out which device to be from the guest's own product code, so the unit carries
+# no device-specific configuration at all.
+cat > /mnt/rootfs/etc/systemd/system/midisurface_jc11s.service <<'EOF'
+[Unit]
+Description=Virtual MIDI control surface
+# Engine's MIDI enumerator binds devices during its own startup and does not
+# pick one up afterwards, so the surface has to exist first.
+Before=engine.service
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# / is read-only, so the fifo lives in /run. The `exec 3<>` holds it open
+# read-write for the service's whole life, so an interactive writer
+# disconnecting never gives the surface EOF on stdin.
+ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface_jc11s < /run/midisurface.fifo'
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -sf ../midisurface_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface_jc11s.service
+
 echo "--- disabling the tty1 getty (Engine's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
 # lives on, and the getty keeps reading the keyboard underneath it. Every
@@ -355,11 +409,12 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Unit]
-After=touchbridge_jc11s.service
+After=touchbridge_jc11s.service midisurface_jc11s.service
 Requires=touchbridge_jc11s.service
+Wants=midisurface_jc11s.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so
+Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so:/root/alsashim_jc11s.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device

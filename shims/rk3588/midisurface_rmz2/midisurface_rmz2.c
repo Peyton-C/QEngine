@@ -87,42 +87,101 @@
 /* Universal MIDI device inquiry, as Engine's KnownDevices IdRequest sends it. */
 static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
 
-/* The reply Engine's DeviceInquiryResponse pattern accepts:
- *   7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F
- * i.e. a standard identity reply — 7E <device id> 06 02, inMusic's
- * manufacturer id 00 00 17, family LSB 0x27 (SYSTEM ONE, the same product id
- * RMZ2_Controller_Device.qml uses in its own sysex) — with family/member and
- * the software-revision bytes left free apart from a trailing 0x7F.
+/* The reply Engine's DeviceInquiryResponse pattern accepts, per device.
  *
- * The revision bytes matter: Engine compares them against
- * /usr/Engine/Firmware/RMZ2 Controller/firmware.json ("version": "1.0.0.27")
- * and, on a mismatch, flashes UpdateImage.rbin — putting the unit into a
- * full-screen "UPDATING... PLAYER WILL REBOOT AFTER UPDATE" state that a
- * virtual surface can never complete. The comparison is for *equality*, not
- * "older than": Engine OS supports official downgrades, where an older
- * release's control-surface firmware must be flashed back over a newer one.
- * Reporting all-0x7F (the highest value 7-bit MIDI data bytes can hold) was
- * tried and still triggered the update, confirming that.
+ * Engine does not bind a control surface by name. It broadcasts a MIDI Device
+ * Inquiry and matches the answer against a table it ships in
+ * Content/KnownDevices.vfsb, then loads the assignment file that table names.
+ * So the surface has to answer as the device the guest is pretending to be, or
+ * Engine ignores it -- or worse, binds it to the wrong control map.
  *
- * The revision is the four bytes at index 11 of the reply (Engine parses them
- * via FUN_0080bd84(response, 0xb)), counting the leading F0, each rendered in
- * *decimal*. That was pinned down empirically: sending 01 00 00 27 made
- * Engine's Settings > About/Update screen report "Controller Version:
- * 1.0.0.39" — 0x27 = 39 — so the bytes below encode 1.0.0.27 as 01 00 00 1B,
- * matching firmware.json exactly and leaving the unit alone.
+ * One binary therefore has to serve every product an image can be built as,
+ * which is what the armv7 build needs: that single firmware image is JP07,
+ * JP08, JP11 or JP14 depending only on the product code the guest reports.
  *
- * Those four bytes are not hardcoded at runtime, though: since the number we
- * must echo is whatever the rootfs we are running inside ships, we read it
- * from firmware.json at startup (see apply_rootfs_fw_version) and patch it in.
- * A version pinned at build time would silently become an update-loop trigger
- * the day a rootfs is built from a different *-Update.img; reading it in the
- * guest also survives an Engine update applied inside the guest. The literal
- * below is the fallback for when the file cannot be read or parsed. */
-static const unsigned char ID_RESPONSE_DEFAULT[] = {
-    0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27,
-    0x00, 0x00, 0x01, 0x00, 0x00, 0x1B, 0x7F, 0xF7};
+ * Generated from that file. RMZ2 is the odd one out: inMusic's manufacturer id
+ * 00 00 17 and a trailing 7F, where the RK3288 family uses 00 02 0B and the
+ * Numark units 00 01 3f, both trailing 00.
+ *
+ * Every one of those patterns wildcards the six bytes before the trailing one
+ * -- the software revision -- so they cannot affect *binding*. They do still
+ * decide whether Engine tries to flash the unit, and only RMZ2's are filled in,
+ * from its own firmware.json (see apply_rootfs_fw_version below). The other
+ * entries carry zeros and will not survive that comparison. Answering it for
+ * them is a separate problem from getting the surface bound, which is all this
+ * does.
+ *
+ * Several devices share a reply -- JC11/JC11S, JP11/JP11S, NH08/NH08S. That is
+ * Engine's business, not ours: we answer for the code the guest claims, and
+ * Engine resolves the rest from its own per-product configuration. */
+struct device_identity {
+    const char *code;
+    unsigned char response[17];
+};
 
-/* Offset of the four software-revision bytes within the reply above. */
+static const struct device_identity DEVICE_IDENTITIES[] = {
+    {"JC11", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 08 */
+    {"JC11S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 08 */
+    {"JC16", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0B */
+    {"JP07", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 06 */
+    {"JP08", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0A */
+    {"JP11", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0C */
+    {"JP11S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0C */
+    {"JP13", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0D */
+    {"JP14", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0E */
+    {"JP20", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 11  (prefix pattern) */
+    {"JP21", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 12  (prefix pattern) */
+    {"NH08", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
+    {"NH08S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
+    {"NH10", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x59, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 59 */
+    /* Unchanged from the single reply this table replaced, revision bytes and
+     * all: RMZ2 is a working configuration and nothing here is meant to alter
+     * it. apply_rootfs_fw_version overwrites those four from the rootfs. */
+    {"RMZ2", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27, 0x00, 0x00, 0x01, 0x00, 0x00, 0x1B, 0x7F, 0xF7}},   /* 00 00 17 27 */
+};
+
+/* Where the guest records which device it is pretending to be. dtshim serves
+ * this file to Engine in place of the real devicetree node, but it is a plain
+ * world-readable file and we are not preloaded, so we read it directly. */
+#define PRODUCT_CODE_PATH "/root/fake-dt/inmusic,product-code"
+
+/* Which device is this guest? Empty string if it will not say.
+ *
+ * MIDISURFACE_PRODUCT_CODE overrides, which is how this gets tested off a real
+ * rootfs -- and how an instance whose fake-dt says one thing can be made to
+ * present as another without a rebuild. */
+static const char *product_code(void) {
+    static char code[32];
+    static int done = 0;
+    if (done) return code;
+    done = 1;
+
+    const char *env = getenv("MIDISURFACE_PRODUCT_CODE");
+    if (env && *env) {
+        snprintf(code, sizeof(code), "%s", env);
+        return code;
+    }
+    FILE *f = fopen(PRODUCT_CODE_PATH, "r");
+    if (!f) return code;                 /* stays empty */
+    if (!fgets(code, sizeof(code), f)) code[0] = '\0';
+    fclose(f);
+    /* The file is written with printf and carries no newline, but tolerate one
+     * rather than answer an inquiry as "JP13\n". */
+    for (char *c = code; *c; c++) {
+        if (*c == '\n' || *c == '\r') { *c = '\0'; break; }
+    }
+    return code;
+}
+
+static const struct device_identity *identity_for(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t i = 0; i < sizeof(DEVICE_IDENTITIES) / sizeof(DEVICE_IDENTITIES[0]); i++)
+        if (strcmp(DEVICE_IDENTITIES[i].code, code) == 0)
+            return &DEVICE_IDENTITIES[i];
+    return NULL;
+}
+
+/* Offset of the four software-revision bytes within a reply. */
 #define ID_RESPONSE_REV_OFFSET 11
 
 /* Where the shipped controller firmware version lives in the rootfs.
@@ -214,8 +273,23 @@ static void init_id_response(void) {
         }
         if (id_response_len) return;
     }
-    memcpy(id_response, ID_RESPONSE_DEFAULT, sizeof(ID_RESPONSE_DEFAULT));
-    id_response_len = sizeof(ID_RESPONSE_DEFAULT);
+    const char *code = product_code();
+    const struct device_identity *dev = identity_for(code);
+    if (!dev) {
+        /* Refusing to guess. Answering with the wrong device's identity is
+         * worse than not answering: Engine would bind the surface and drive it
+         * with another product's control map, which looks like a wiring fault
+         * rather than a configuration one. */
+        fprintf(stderr,
+                "WARNING: no identity known for product code '%s' (from %s). "
+                "The surface will not answer Engine's inquiry and will not be "
+                "bound. Set MIDISURFACE_ID_RESPONSE to override.\n",
+                *code ? code : "<unset>", PRODUCT_CODE_PATH);
+        return;
+    }
+    memcpy(id_response, dev->response, sizeof(dev->response));
+    id_response_len = sizeof(dev->response);
+    printf("identifying as %s\n", dev->code);
     apply_rootfs_fw_version();
     fflush(stdout);
 }
@@ -397,7 +471,16 @@ static void handle_incoming(void) {
                 snd_seq_ev_set_sysex(&out, id_response_len,
                                      (void *)id_response);
                 send_event(&out);
-                printf("answered device inquiry (identifying as inMusic 0x27)\n");
+                /* The bytes actually sent, not a product name: this answers for
+                 * fifteen devices now, and a message naming the wrong one is how
+                 * a mis-set product code stays invisible. */
+                if (id_response_len >= 9)
+                    printf("answered device inquiry (manufacturer %02X %02X %02X,"
+                           " product %02X)\n", id_response[5], id_response[6],
+                           id_response[7], id_response[8]);
+                else
+                    printf("answered device inquiry (%zu bytes)\n",
+                           id_response_len);
                 fflush(stdout);
                 if (motor_off_enabled) motor_off_due_ms = now_ms() + MOTOR_OFF_DEBOUNCE_MS;
             }

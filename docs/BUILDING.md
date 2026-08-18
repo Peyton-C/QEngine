@@ -622,7 +622,7 @@ preset defaults, EDisks hotplug handling for the attached virtio disks).
 
 Getting from "Engine execs" to "real Qt/QML startup" took two rounds of
 the same `dtshim`-style fix, both landing in
-[shims/rk3588/dtshim/dtshim.c](../shims/rk3588/dtshim/dtshim.c) (cross-compiled
+[shims/dtshim/dtshim.c](../shims/dtshim/dtshim.c) (cross-compiled
 in a Debian 12 arm64 `podman`/`docker` container per
 [6.](#6-toolchain-for-cross-compiling-shims) above — `docker` itself
 needs a daemon that isn't always running/passwordless-startable; rootless
@@ -1574,7 +1574,7 @@ product code as `JC11S` (Prime 4+) via the same `inmusic,product-code`
 devicetree-property mechanism used throughout this doc, and getting a
 fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 
-**New shims** (`shims/rk3288/dtshim/dtshim.c`,
+**New shims** (`shims/dtshim/dtshim.c`,
 `shims/drmatomic/`, `shims/rk3288/touchbridge/`):
 `drmatomic.c` and `touchbridge.c` from the arm64/RMZ2 work
 build for armhf from the same sources and work identically — neither
@@ -1583,11 +1583,12 @@ UAPIs, which use fixed-width types specifically so 32- and 64-bit callers
 are both safe. (`drmatomic.c` did need one addition to *interpose* on
 a 32-bit guest, which is a property of the guest's libc rather than of the
 architecture — see the `__ioctl_time64` finding below.) Only
-`dtshim.c` needed real changes: a fresh
-file (not a port of the old `shims/rk3288/dtshim/dtshim.c`, which carries
-Qt5-era EGL/GBM interception hacks already known to break Qt6's own
-GBM handling — see the arm64 section above) that keeps RK3288's real
-devicetree paths (product-code, serial-number, rotation, `/dev/mem`,
+`dtshim.c` needed real changes. It was written fresh for RK3588 rather than
+ported from the RK3288 file, which carried Qt5-era EGL/GBM interception hacks
+already known to break Qt6's own GBM handling — see the arm64 section above.
+The two have since been merged back into one `shims/dtshim/dtshim.c` that takes
+`-DSOC_RK3288` or `-DSOC_RK3588`, those hacks being in neither. It keeps each
+SoC's real devicetree paths (product-code, serial-number, rotation, `/dev/mem`,
 reused unchanged from the old file, since the underlying hardware layout
 doesn't change between Engine versions) plus a `/proc/interrupts` remap
 carried over from the RMZ2 shim, needed here too.

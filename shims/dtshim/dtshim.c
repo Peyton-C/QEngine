@@ -1,14 +1,24 @@
-/* Forked from dtshim.c for RANE SYSTEM ONE (RMZ2, arm64/RK3588) — see
- * BUILDING.md's arm64/RK3588 section. Devicetree layout differs from the
- * RK3288 az01 lineup this file was originally written for:
- *   - product-code value is "RMZ2", not JC11/JP11
+/* Serves a fake devicetree, and a usable /proc/interrupts, to an emulated Engine.
+ *
+ * One source, two SoCs. Everything that matters here -- the open/openat/fopen and
+ * write interposition, the runtime /proc/interrupts generation and its IRQ
+ * affinity probing, the /dev/mem neutering -- is the same on both, which is why
+ * this was two files that had diverged rather than two different shims. Define
+ * SOC_RK3588 or SOC_RK3288 to pick which devicetree properties it serves; that
+ * choice is the whole of the difference, and it lives in DT_REMAPS below.
+ *
+ * How the two devicetrees differ, for the record:
+ *   - product-code is "RMZ2" on RK3588; JC11/JP11/JP14 and relatives on RK3288
  *   - no inmusic,az01-pcb-rev property exists in RMZ2's devicetree
- *   - the panel/rotation node lives at dsi@fde20000/panel@0, not mipi@ff960000
- *   - no chosen/inmusic,internal-sd-fitted property found
- *   - the Qt5-ABI stub symbols in the original file are gone: this build is
+ *   - the panel/rotation node lives at dsi@... or edp-panel on RK3588, and at
+ *     mipi@ff960000 on RK3288
+ *   - no chosen/inmusic,internal-sd-fitted property on RK3588
+ *
+ * Two things the RK3288 original carried that neither build wants any more:
+ *   - the Qt5-ABI stub symbols are gone: this build is
  *     Qt 6.7.2, a different ABI, and that missing-symbol issue was never
  *     observed here
- *   - the original file's eglCreateWindowSurface/eglSurfaceAttrib
+ *   - the eglCreateWindowSurface/eglSurfaceAttrib
  *     interception (a workaround for a RK3288-era fbdev_window/single-buffer
  *     quirk) is gone too: on this build it actively broke KMS scanout —
  *     eglSwapBuffers kept succeeding but nothing ever reached the screen,
@@ -374,6 +384,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     return get_real_write()(fd, buf, count);
 }
 
+#if defined(SOC_RK3588)
 /* Devicetree-access logging. remap() below only special-cases the handful
  * of /sys/firmware/devicetree/base/... paths we already know Engine reads
  * (product-code, serial-number, rotation) — anything else under that tree
@@ -437,21 +448,61 @@ static void log_dt_access(const char *fn, const char *orig_path,
     pthread_mutex_unlock(&dt_log_lock);
     errno = saved_errno;
 }
+#else
+/* The logging above exists for the RK3588 bring-up, where it answered which
+ * devicetree properties Engine actually reads. Compiled out elsewhere rather
+ * than deleted: the call sites below stay identical for both SoCs, and
+ * `if (0) ...` costs nothing. */
+#define is_dt_path(p) 0
+#define log_dt_access(fn, orig, mapped, ok, err) ((void)0)
+#endif
+
+/* Which devicetree properties this shim serves from /root/fake-dt, per SoC.
+ *
+ * dtshim remaps unconditionally: if a path is listed here, the file it points at
+ * must exist in the guest, because a missing target turns a working read into
+ * ENOENT. That loudness is deliberate -- a silently-absent property is far harder
+ * to diagnose than a failed read -- so the builders write exactly this set, and
+ * the two lists are kept whole per SoC rather than factored into a common part
+ * plus differences. What each SoC remaps is then readable in one place.
+ *
+ * The RK3588 panel node lives at dsi@... or edp-panel; RK3288's at
+ * mipi@ff960000. RK3288 additionally has an az01-pcb-rev and a
+ * chosen/inmusic,internal-sd-fitted that RK3588 has no property for. */
+struct dt_remap { const char *from; const char *to; };
+
+static const struct dt_remap DT_REMAPS[] = {
+#if defined(SOC_RK3588)
+    {"/sys/firmware/devicetree/base/inmusic,product-code", "/root/fake-dt/inmusic,product-code"},
+    {"/sys/firmware/devicetree/base/serial-number",        "/root/fake-dt/serial-number"},
+    {"/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation",  "/root/fake-dt/rotation"},
+    {"/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation",  "/root/fake-dt/rotation"},
+    {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", "/root/fake-dt/rotation"},
+    {"/sys/firmware/devicetree/base/edp-panel/rotation",             "/root/fake-dt/rotation"},
+#elif defined(SOC_RK3288)
+    {"/sys/firmware/devicetree/base/inmusic,product-code", "/root/fake-dt/inmusic,product-code"},
+    {"/sys/firmware/devicetree/base/serial-number",        "/root/fake-dt/serial-number"},
+    {"/sys/firmware/devicetree/base/inmusic,az01-pcb-rev", "/root/fake-dt/inmusic,az01-pcb-rev"},
+    {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", "/root/fake-dt/rotation"},
+    {"/sys/firmware/devicetree/base/chosen/inmusic,internal-sd-fitted",
+                                                           "/root/fake-dt/inmusic,internal-sd-fitted"},
+#else
+# error "define SOC_RK3288 or SOC_RK3588 so dtshim knows which properties to serve"
+#endif
+    /* Neither of these is a devicetree property, and both are the same on every
+     * SoC. /dev/mem is remapped to a plain file so a mmap of it fails cleanly
+     * rather than handing out real physical memory; /proc/interrupts is a static
+     * fallback, see get_fake_interrupts_fd() above, which is what normally
+     * answers that read. */
+    {"/dev/mem",         "/root/fake-dev-mem"},
+    {"/proc/interrupts", "/root/fake-dt/interrupts"},
+};
 
 static const char *remap(const char *path) {
     if (!path) return NULL;
-    if (strcmp(path, "/sys/firmware/devicetree/base/inmusic,product-code") == 0)
-        return "/root/fake-dt/inmusic,product-code";
-    if (strcmp(path, "/sys/firmware/devicetree/base/serial-number") == 0)
-        return "/root/fake-dt/serial-number";
-    if (strcmp(path, "/dev/mem") == 0)
-        return "/root/fake-dev-mem";
-    if (strcmp(path, "/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/edp-panel/rotation") == 0)
-        return "/root/fake-dt/rotation";
-    /* Static fallback only — see get_fake_interrupts_fd() above, which is
-     * tried first and covers the normal case dynamically. */
-    if (strcmp(path, "/proc/interrupts") == 0)
-        return "/root/fake-dt/interrupts";
+    for (size_t i = 0; i < sizeof(DT_REMAPS) / sizeof(DT_REMAPS[0]); i++)
+        if (strcmp(path, DT_REMAPS[i].from) == 0)
+            return DT_REMAPS[i].to;
     return path;
 }
 

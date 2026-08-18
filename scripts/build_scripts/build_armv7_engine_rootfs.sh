@@ -170,7 +170,7 @@ docker run --rm --platform linux/arm/v7 \
         # drmatomic.c exports both, which is what makes it interpose here at
         # all. Nothing in that is RK3288-specific, so it stays in the shared source.
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3288/dtshim/dtshim_jc11s.so /shims/rk3288/dtshim/dtshim.c -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
             -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
@@ -185,14 +185,11 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
 
-for artifact in rk3288/dtshim/dtshim_jc11s.so; do
-    [ -s "$SHIMS_DIR/$artifact" ] || {
-        echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
-done
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
-                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH; do
+                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH \
+                dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -274,7 +271,7 @@ skip_firmware_update /mnt/rootfs
 # QT_QPA_EGLFS_INTEGRATION now settles.
 
 echo "--- inserting shims into /root ---"
-cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim.so
+cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
 # Landed without a device in the name, unlike the shims either builder has

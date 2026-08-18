@@ -144,7 +144,7 @@ docker run --rm --platform linux/arm64 \
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libgl1-mesa-dri >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3588/dtshim/dtshim_rmz2.so /shims/rk3588/dtshim/dtshim.c -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3588 -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
             -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
@@ -172,15 +172,11 @@ docker run --rm --platform linux/arm64 \
     exit 1
 }
 
-for artifact in rk3588/dtshim/dtshim_rmz2.so; do
-    [ -s "$SHIMS_DIR/$artifact" ] || {
-        echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
-done
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH \
-                teeshim/teeshim_$SHIM_ARCH.so; do
+                teeshim/teeshim_$SHIM_ARCH.so dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -253,7 +249,7 @@ mkdir -p /mnt/rootfs/usr/lib/dri
 cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 
 echo "--- inserting shims into /root ---"
-cp -a /shims/rk3588/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim.so
+cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
 cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so

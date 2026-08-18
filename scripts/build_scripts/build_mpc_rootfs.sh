@@ -27,6 +27,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
+# Names the compiled output of the shims shared with the Engine builders, so one
+# source yields one artifact per architecture rather than one per device family:
+# shims/<name>/<name>_$SHIM_ARCH. This build is armhf like the armv7 Engine one,
+# so it produces and consumes the same touchbridge binary.
+SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
@@ -105,6 +110,7 @@ echo "--- building the touch bridge from source ---"
 # depends on pull order. The comment above pins intent; this pull makes it true.
 docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
@@ -119,11 +125,11 @@ docker run --rm --platform linux/arm/v7 \
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
 
         gcc -O2 -Wall \
-            -o /shims/rk3288/touchbridge_mpc/touchbridge_mpc \
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH \
                /shims/touchbridge/touchbridge.c
     '
 
-[ -s "$SHIMS_DIR/rk3288/touchbridge_mpc/touchbridge_mpc" ] || {
+[ -s "$SHIMS_DIR/touchbridge/touchbridge_$SHIM_ARCH" ] || {
     echo "ERROR: touch bridge build produced no binary" >&2; exit 1; }
 
 ### 3-5. e2fsck/resize2fs + touch bridge + root password, via a
@@ -198,7 +204,7 @@ echo "--- installing the touch bridge ---"
 # absolute *mouse*. MPC only responds to a real touchscreen, so the bridge
 # re-emits that pointer as a uinput multitouch device. It must start before
 # acvs.service: MPC enumerates input once, at its own startup.
-cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc /mnt/rootfs/root/touchbridge_mpc
+cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge_mpc
 chmod 755 /mnt/rootfs/root/touchbridge_mpc
 cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
 ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
@@ -235,6 +241,7 @@ docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-sli
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \

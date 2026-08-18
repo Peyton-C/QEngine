@@ -199,7 +199,7 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
     echo "       The Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
     exit 1
 fi
-if [ ! -d /mnt/rootfs/usr/bin/MPC ]; then
+if [ ! -f /mnt/rootfs/usr/bin/MPC ]; then
     echo "ERROR: no /usr/bin/MPC in this rootfs, so it is not an MPC image." >&2
     exit 1
 fi

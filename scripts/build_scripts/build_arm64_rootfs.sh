@@ -238,6 +238,11 @@ grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /
 echo "--- blanking root password for serial-console login ---"
 sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
 
+# Shared with the other rootfs builder, which needs exactly the same edit --
+# see rootfs_steps/skip_firmware_update.sh for why Engine needs telling.
+. /steps/skip_firmware_update.sh
+skip_firmware_update /mnt/rootfs
+
 echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
 # This rootfs has no /usr/lib/dri at all — real hardware only ever needed
 # Panthor (kernel-side, panthor.ko), so there's no userspace DRI driver on
@@ -437,6 +442,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$STAGE_DIR:/stage:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

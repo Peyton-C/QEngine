@@ -95,21 +95,21 @@ static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
  * So the surface has to answer as the device the guest is pretending to be, or
  * Engine ignores it -- or worse, binds it to the wrong control map.
  *
- * One binary therefore has to serve every product an image can be built as,
- * which is what the armv7 build needs: that single firmware image is JP07,
- * JP08, JP11 or JP14 depending only on the product code the guest reports.
- *
  * Generated from that file. RMZ2 is the odd one out: inMusic's manufacturer id
  * 00 00 17 and a trailing 7F, where the RK3288 family uses 00 02 0B and the
  * Numark units 00 01 3f, both trailing 00.
  *
  * Every one of those patterns wildcards the six bytes before the trailing one
- * -- the software revision -- so they cannot affect *binding*. They do still
- * decide whether Engine tries to flash the unit, and only RMZ2's are filled in,
- * from its own firmware.json (see apply_rootfs_fw_version below). The other
- * entries carry zeros and will not survive that comparison. Answering it for
- * them is a separate problem from getting the surface bound, which is all this
- * does.
+ * -- the software revision -- so the zeros below cannot affect *binding*, and
+ * nothing here fills them in. Engine does compare the revision separately, to
+ * decide whether the unit needs flashing, but that comparison is switched off
+ * upstream of this program: both rootfs builders launch Engine with
+ * -skipFirmwareUpdate, which answers "no update needed" before Engine reads
+ * firmware.json at all. See the flag's note in either builder for why matching
+ * the version here was abandoned.
+ *
+ * The visible cost is cosmetic: Settings > About reports a controller version
+ * of all zeros. Nothing acts on it.
  *
  * Several devices share a reply -- JC11/JC11S, JP11/JP11S, NH08/NH08S. That is
  * Engine's business, not ours: we answer for the code the guest claims, and
@@ -134,10 +134,7 @@ static const struct device_identity DEVICE_IDENTITIES[] = {
     {"NH08", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
     {"NH08S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
     {"NH10", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x59, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 59 */
-    /* Unchanged from the single reply this table replaced, revision bytes and
-     * all: RMZ2 is a working configuration and nothing here is meant to alter
-     * it. apply_rootfs_fw_version overwrites those four from the rootfs. */
-    {"RMZ2", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27, 0x00, 0x00, 0x01, 0x00, 0x00, 0x1B, 0x7F, 0xF7}},   /* 00 00 17 27 */
+    {"RMZ2", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x00, 0x17, 0x27, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xF7}},   /* 00 00 17 27 */
 };
 
 /* Where the guest records which device it is pretending to be. dtshim serves
@@ -181,84 +178,11 @@ static const struct device_identity *identity_for(const char *code) {
     return NULL;
 }
 
-/* Offset of the four software-revision bytes within a reply. */
-#define ID_RESPONSE_REV_OFFSET 11
-
-/* Where the shipped controller firmware version lives in the rootfs.
- *
- * Spelled out rather than globbed for the product: /usr/Engine/Firmware holds
- * firmware for the whole product family the release supports, roughly twenty
- * directories (JC11 Controller, JP08 Motor, NH10 Controller, ...), so there is
- * nothing to infer from what is present — only the product's own name selects
- * the right one. This program is RMZ2-specific throughout anyway (deck
- * channels, note numbers, product id 0x27), so a path that pretended otherwise
- * would buy nothing. Each directory's firmware.json also carries a
- * "deviceToFlash" ("Rane SYSTEM ONE" here) if a product-agnostic lookup is
- * ever wanted. */
-#define FW_JSON_PATH "/usr/Engine/Firmware/RMZ2 Controller/firmware.json"
-
-/* Pull "version": "1.0.0.27" out of firmware.json as four bytes. Scraped with
- * strstr rather than parsed as JSON: one flat string field does not justify a
- * parser, and anything the scrape gets wrong fails the checks below rather
- * than producing a plausible-but-wrong version. */
-static int read_fw_version(const char *path, unsigned char out[4]) {
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;
-    char buf[4096];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    buf[n] = '\0';
-
-    const char *key = strstr(buf, "\"version\"");
-    if (!key) return -1;
-    const char *colon = strchr(key + 9, ':');
-    if (!colon) return -1;
-    const char *val = strchr(colon, '"');
-    if (!val) return -1;
-
-    unsigned fields[4];
-    if (sscanf(val + 1, "%u.%u.%u.%u", &fields[0], &fields[1], &fields[2],
-               &fields[3]) != 4)
-        return -1;
-    for (int i = 0; i < 4; i++) {
-        /* Each field travels as a single MIDI data byte, so >127 cannot be
-         * expressed at all. That means the file is not in the form assumed
-         * here, and truncating would report exactly the kind of mismatch this
-         * whole mechanism exists to avoid. */
-        if (fields[i] > 0x7F) return -1;
-        out[i] = (unsigned char)fields[i];
-    }
-    return 0;
-}
-
-/* Overridable via MIDISURFACE_ID_RESPONSE (space-separated hex), since the
- * exact placement of the revision field inside the reply is inferred rather
- * than documented — being able to try an encoding without a rebuild/redeploy
- * cycle is worth the few lines. */
+/* Overridable via MIDISURFACE_ID_RESPONSE (space-separated hex): an escape
+ * hatch for answering as a device this table does not carry, without a
+ * rebuild. */
 static unsigned char id_response[64];
 static size_t id_response_len = 0;
-
-/* Patch the revision bytes of id_response with the rootfs's own firmware
- * version, leaving the compiled-in default in place if it cannot be read. */
-static void apply_rootfs_fw_version(void) {
-    unsigned char rev[4];
-    if (read_fw_version(FW_JSON_PATH, rev) == 0) {
-        memcpy(id_response + ID_RESPONSE_REV_OFFSET, rev, sizeof(rev));
-        printf("reporting controller firmware %u.%u.%u.%u (from %s)\n",
-               rev[0], rev[1], rev[2], rev[3], FW_JSON_PATH);
-        return;
-    }
-
-    /* Loud, and on stderr: falling back is not a graceful degradation. The
-     * built-in version is only right for the release it was taken from, and
-     * being wrong is what puts Engine on the un-completable update screen. */
-    const unsigned char *def = id_response + ID_RESPONSE_REV_OFFSET;
-    fprintf(stderr,
-            "WARNING: could not read a version from %s — falling back to the "
-            "built-in %u.%u.%u.%u. If this rootfs ships a different controller "
-            "firmware, Engine will try to flash the unit.\n",
-            FW_JSON_PATH, def[0], def[1], def[2], def[3]);
-}
 
 static void init_id_response(void) {
     const char *env = getenv("MIDISURFACE_ID_RESPONSE");
@@ -290,7 +214,6 @@ static void init_id_response(void) {
     memcpy(id_response, dev->response, sizeof(dev->response));
     id_response_len = sizeof(dev->response);
     printf("identifying as %s\n", dev->code);
-    apply_rootfs_fw_version();
     fflush(stdout);
 }
 

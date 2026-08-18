@@ -257,6 +257,11 @@ grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /
 echo "--- blanking root password for serial-console login ---"
 sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
 
+# Shared with the other rootfs builder, which needs exactly the same edit --
+# see rootfs_steps/skip_firmware_update.sh for why Engine needs telling.
+. /steps/skip_firmware_update.sh
+skip_firmware_update /mnt/rootfs
+
 # Nothing is staged into /usr/lib/dri. Unlike the RMZ2 rootfs, this one ships a
 # complete Mesa — /usr/lib/dri holds ~35 *_dri.so entries that are all the same 13MB
 # gallium megadriver — and MESA_LOADER_DRIVER_OVERRIDE=kms_swrast in the unit below
@@ -459,6 +464,7 @@ docker run --rm --privileged \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh
 

@@ -6,9 +6,9 @@ properties Engine needs, so without this Engine reads an empty product code and 
 
 One source, two SoCs: build with `-DSOC_RK3588` or `-DSOC_RK3288`, which selects the
 `DT_REMAPS` table of properties served and the `FALLBACK_INTERRUPTS` table below. It
-refuses to compile without one. Everything else — the `open`/`open64`/`fopen`/`fopen64`
-and `write` interposition, the runtime `/proc/interrupts` generation, the `/dev/mem`
-neutering — is shared.
+refuses to compile without one. Everything else — the
+`open`/`open64`/`fopen`/`fopen64`, `access`/`faccessat` and `write` interposition, the
+runtime `/proc/interrupts` generation, the `/dev/mem` neutering — is shared.
 
 `drmatomic.so` is required alongside this shim for `eglfs` to produce visible output;
 without it Engine starts fine but the screen stays black. See BUILDING.md's arm64/RK3588
@@ -96,6 +96,34 @@ is what the MPC build now does, with this shim unmodified — see BUILD_MPC.md. 
 therefore a third consumer, and the first that wants only the identity half: it reads
 `inmusic,product-code` and `serial-number` through `libaz0x-info` and nothing else the
 table serves.
+
+## Existence checks, not just opens
+
+`access` and `faccessat` are interposed alongside the open family, because a caller
+may check before it reads and never open at all. MPC does exactly that, and it is
+why an emulated MPC identified itself as `<Unknown>` for a while despite the shim
+serving `inmusic,product-code` correctly to anything that opened it. Measured in the
+guest, with the shim preloaded:
+
+```
+LD_PRELOAD=/root/dtshim.so sh -c '[ -r …/inmusic,product-code ]'   -> failed
+LD_PRELOAD=/root/dtshim.so cat …/inmusic,product-code              -> ACV5
+```
+
+MPC imports `access` and — checked against its dynamic symbols — no member of the
+stat family at all, so the guard failed on the real sysfs path and the read was
+abandoned. Engine never showed this because it opens directly.
+
+A blob-backed property is answered from the table rather than from a file, since
+there is no file anywhere to consult: readable yes, writable or executable no.
+Remapped properties defer to the real call against the remapped path, so a missing
+`/root/fake-dt` still reports missing.
+
+The stat family is deliberately **not** interposed. Nothing needs it — MPC imports
+none of it, Engine opens directly — and it is the riskiest family to get wrong:
+`stat`/`stat64`/`__xstat`/`__xstat64`/`statx` vary by glibc version and by
+`_FILE_OFFSET_BITS`, so a mistake there breaks every caller rather than only the
+ones that wanted a devicetree. Add it when something demonstrably needs it.
 
 ## `/proc/interrupts`, and why it is generated rather than stored
 

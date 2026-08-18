@@ -85,6 +85,8 @@ typedef int (*open64_t)(const char *, int, ...);
 typedef FILE *(*fopen_t)(const char *, const char *);
 typedef FILE *(*fopen64_t)(const char *, const char *);
 typedef ssize_t (*write_t)(int, const void *, size_t);
+typedef int (*access_t)(const char *, int);
+typedef int (*faccessat_t)(int, const char *, int, int);
 
 /* Shared real-libc handles, resolved once and reused both by the wrapper
  * functions below and by the internal /proc/interrupts generation/probing
@@ -596,6 +598,64 @@ static int dt_blob_fd(const char *path) {
     const struct dt_remap *e = dt_lookup(path);
     if (!e || !e->blob) return -1;
     return blob_fd("fake-dt-property", e->blob, e->len);
+}
+
+/* Existence checks, which a caller may do before ever opening the file.
+ *
+ * MPC does exactly that: it imports access() and, notably, no member of the stat
+ * family at all, so a guarded read of inmusic,product-code never reaches the open
+ * wrappers below -- the guard fails on the real sysfs path and the read is
+ * abandoned. That is invisible from Engine, which opens directly, and it is why an
+ * emulated MPC identified as <Unknown> despite the shim serving the property
+ * correctly to anything that asked for it by opening.
+ *
+ * Deliberately not interposing the stat family. Nothing needs it: MPC imports none
+ * of it and Engine opens directly. It is also the riskiest family to interpose --
+ * stat/stat64/__xstat/__xstat64/statx differ by glibc version and by
+ * _FILE_OFFSET_BITS, so getting it wrong breaks every caller rather than only the
+ * ones that wanted a devicetree. Add it when something demonstrably needs it.
+ */
+int access(const char *path, int mode) {
+    static access_t real_access = NULL;
+    if (!real_access) real_access = (access_t)dlsym(RTLD_NEXT, "access");
+    if (!path) return real_access(path, mode);
+
+    const struct dt_remap *e = dt_lookup(path);
+    /* A blob-backed property has no file anywhere to consult, so answer from the
+     * table: it is there and readable, and nothing the shim serves is writable or
+     * executable. */
+    if (e && e->blob) {
+        if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
+        if (is_dt_path(path)) log_dt_access("access", path, "<in-memory>", 1, 0);
+        return 0;
+    }
+    const char *mapped = remap(path);
+    int rc = real_access(mapped, mode);
+    if (is_dt_path(path)) log_dt_access("access", path, mapped, rc == 0, errno);
+    return rc;
+}
+
+/* Same remap for the at-relative form. Only AT_FDCWD with an absolute path can
+ * name a devicetree property -- every path the table holds is absolute -- so
+ * anything else goes straight through rather than being second-guessed. */
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    static faccessat_t real_faccessat = NULL;
+    if (!real_faccessat) real_faccessat = (faccessat_t)dlsym(RTLD_NEXT, "faccessat");
+    if (path && path[0] == '/') {
+        const struct dt_remap *e = dt_lookup(path);
+        if (e) {
+            if (e->blob) {
+                if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
+                if (is_dt_path(path)) log_dt_access("faccessat", path, "<in-memory>", 1, 0);
+                return 0;
+            }
+            const char *mapped = remap(path);
+            int rc = real_faccessat(dirfd, mapped, mode, flags);
+            if (is_dt_path(path)) log_dt_access("faccessat", path, mapped, rc == 0, errno);
+            return rc;
+        }
+    }
+    return real_faccessat(dirfd, path, mode, flags);
 }
 
 int open(const char *path, int flags, ...) {

@@ -239,7 +239,8 @@ if [ ! -d /mnt/rootfs/usr/Engine ]; then
     exit 1
 fi
 
-harden_for_emulation /mnt/rootfs
+block_telemetry /mnt/rootfs
+blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"

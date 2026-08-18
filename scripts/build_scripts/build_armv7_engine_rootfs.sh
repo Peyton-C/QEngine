@@ -222,7 +222,8 @@ if [ ! -d /mnt/rootfs/usr/Engine ]; then
     exit 1
 fi
 
-harden_for_emulation /mnt/rootfs
+block_telemetry /mnt/rootfs
+blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 # Nothing is staged into /usr/lib/dri. Unlike the RMZ2 rootfs, this one ships a

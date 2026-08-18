@@ -152,7 +152,7 @@ docker run --rm --platform linux/arm64 \
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3588/teeshim/teeshim_rmz2.so /shims/rk3588/teeshim/teeshim_rmz2.c
+            -o /shims/teeshim/teeshim_$SHIM_ARCH.so /shims/teeshim/teeshim.c
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
 
@@ -172,14 +172,15 @@ docker run --rm --platform linux/arm64 \
     exit 1
 }
 
-for artifact in rk3588/dtshim/dtshim_rmz2.so rk3588/teeshim/teeshim_rmz2.so; do
+for artifact in rk3588/dtshim/dtshim_rmz2.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so drmatomic/drmatomic_$SHIM_ARCH.so \
-                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH; do
+                touchbridge/touchbridge_$SHIM_ARCH midisurface/midisurface_$SHIM_ARCH \
+                teeshim/teeshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -265,7 +266,7 @@ chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
 write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-RMZ2}"
 # Only this build installs teeshim: it bypasses a TEE check that only Engine
 # 5.1.0+ on RK3588 makes, and there is no armv7 counterpart.
-cp -a /shims/rk3588/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim.so
+cp -a /shims/teeshim/teeshim_$SHIM_ARCH.so /mnt/rootfs/root/teeshim.so
 chmod 755 /mnt/rootfs/root/teeshim.so
 # A static /proc/interrupts, kept only as a last-resort fallback: dtshim generates
 # this content at runtime from the real /proc/interrupts and falls back to the file

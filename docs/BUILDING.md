@@ -1073,7 +1073,7 @@ writes `TestApp` into `/tmp/engine-quit-reason` and returns 0.
 execs `/usr/bin/test-app-launcher`. The guest boots straight into the factory
 test application and Engine is never seen.
 
-[teeshim.so](../shims/rk3588/teeshim/teeshim_rmz2.c) is preloaded ahead of
+[teeshim.so](../shims/teeshim/teeshim.c) is preloaded ahead of
 `libteec.so.1` and answers the five `TEEC_*` entry points with success, writing
 the non-zero verdict Engine reads back out of the operation's output parameter.
 The shim's header comment carries the full reconstruction of the check, the

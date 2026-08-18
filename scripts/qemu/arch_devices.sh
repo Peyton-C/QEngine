@@ -82,7 +82,7 @@ case "$ARCH" in
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
         # GL works here. Two things had to be true: the machine gained a working PCI
         # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the
-        # rootfs carries a virgl-capable DRI driver built by build_virgl_dri.sh --
+        # rootfs carries a virgl-capable DRI driver built by build_virgl_mesa.sh --
         # the vendor Mesa has no virgl compiled in, and Debian's packaged driver
         # cannot load in these images.
         #

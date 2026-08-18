@@ -41,9 +41,9 @@ The steps individually, if you want them:
 
 - **Rendering goes through virgl to the host's GPU**, in a GL display mode
   (`egl-vnc` or `sdl-gl`). It was software for a long time, and the difference is
-  not marginal: 617ms per frame on JP13 before, 18ms after on a Rock Pi 4a. Two
+  not marginal — it is the difference between a slideshow and a usable UI. Two
   things had to land — the machine gained a working PCI bus with `highmem=off`, so
-  `virtio-gpu-gl-pci` can be attached, and `build_virgl_dri.sh` builds the DRI
+  `virtio-gpu-gl-pci` can be attached, and `build_virgl_mesa.sh` builds the DRI
   driver the guest needs, because the vendor Mesa has no virgl in it and Debian's
   packaged driver cannot load here (see that script for why). A non-GL mode such as
   `vnc` still rasterizes on the guest CPU.

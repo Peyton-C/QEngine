@@ -130,7 +130,7 @@ only been run on arm64.
 
 The virgl display modes used to be arm64-only too, and are not any more — armhf
 renders through virgl on the host's GPU. It needs three things together: a GL display
-mode, a QEMU with virglrenderer built in, and the DRI driver `build_virgl_dri.sh`
+mode, a QEMU with virglrenderer built in, and the DRI driver `build_virgl_mesa.sh`
 produces. Ironically, arm64 is now the unproven one: an RMZ2 guest loads no DRI
 driver at all, so the driver `build_arm64_rootfs.sh` copies in is never consulted and
 that path wants investigating.

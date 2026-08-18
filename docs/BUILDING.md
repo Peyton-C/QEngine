@@ -589,9 +589,9 @@ A few more things that bit during bring-up, worth calling out directly:
   guest's 324KB `libEGL` never consults a DRI driver in the first place.
 
   On **armv7** the same single-file approach failed the same way and is now fixed:
-  `build_virgl_dri.sh` builds a virgl-only Mesa at the guest's own version, whose
-  dependencies these images already satisfy, and that took JP13 from 617ms per frame
-  to 18ms. `--arch arm64` produces the equivalent driver, but swapping it into RMZ2
+  `build_virgl_mesa.sh` builds a virgl-only Mesa at the guest's own version, whose
+  dependencies these images already satisfy, and the improvement on JP13 was two
+  orders of magnitude. `--arch arm64` produces the equivalent driver, but on RMZ2
   was tested and changed nothing, so what RMZ2's EGL actually loads is still open.
   Whatever is tried, verify with `grep dri /proc/$(pidof Engine)/maps`, not logs.
 
@@ -1749,7 +1749,7 @@ ABRT` and a restart loop). Three environment variables in
 `EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with
 `surfaceless` as its compiled-in default), and
 `MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu` names the virgl driver
-`build_virgl_dri.sh` puts in the image. That used to be `kms_swrast`, because virgl
+`build_virgl_mesa.sh` puts in the image. That used to be `kms_swrast`, because virgl
 needs `virtio-gpu-gl` and the 32-bit `virt` machine had no usable PCI; PCI works
 since the machine moved to `highmem=off`, so rendering goes to the host's GPU now.
 A non-GL display mode still rasterizes on the guest CPU, and `kms_swrast` stays in

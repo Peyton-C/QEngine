@@ -1,11 +1,27 @@
 #!/bin/bash
-# build_virgl_dri.sh — builds the Mesa DRI driver that lets a guest render through
+# build_virgl_mesa.sh — builds the Mesa component that lets a guest render through
 # virgl on the host's GPU, instead of rasterizing every frame on an emulated CPU.
 #
-# Usage: build_virgl_dri.sh --arch <arm64|armhf> [--force]
-#   Writes virtio_gpu_dri-<arch>.so to the repo's build/ and reuses it on later
-#   runs, the same way get_kernel.sh caches a kernel per architecture. Requires
-#   Docker.
+# Usage: build_virgl_mesa.sh --arch <arm64|armhf> [--force]
+#   Caches its output in the repo's build/ and reuses it on later runs, the way
+#   get_kernel.sh caches a kernel per architecture. Requires Docker.
+#
+# What it builds differs by guest, because the two vendor Mesa builds load drivers
+# by different mechanisms -- established by looking at what Engine actually maps:
+#
+#   armhf   a DRI driver, virtio_gpu_dri.so. That guest's Mesa dlopens
+#           /usr/lib/dri/<name>_dri.so, and its own build has no virgl in it.
+#
+#   arm64   a whole replacement libgallium-<ver>.so. That guest's Mesa is a
+#           shared-gallium build: every driver is compiled inside that one library
+#           and libEGL calls into it directly through versioned symbols. There is
+#           no plug-in slot, so a DRI driver dropped into /usr/lib/dri is never
+#           opened -- which is what the arm64 builder used to do, to no effect.
+#
+# The Mesa version is pinned per guest and they differ. For the DRI driver it has
+# to match because the guest's libEGL loads it across the DRI ABI; for the shared
+# library it has to match exactly, because the symbol version node is named after
+# the file itself.
 #
 # Why this is built rather than copied out of Debian, which is what the rootfs
 # builders used to do:
@@ -18,8 +34,9 @@
 # the dlopen fails, and Mesa falls back to swrast *without a word in any log*: the
 # kernel still reports "[drm] features: +virgl", Engine still commits a KMS
 # modeset, and nothing mentions kms_swrast. It looks exactly like success. On a
-# JP13 guest it cost 617ms per frame instead of 18ms, and went unnoticed until
-# frame times were measured.
+# JP13 guest that was the difference between a slideshow and a usable UI, and it
+# went unnoticed until frame times were measured -- every other signal said the
+# driver was working.
 #
 # A virgl-only build has none of that: 11MB, and its dependencies are libglapi,
 # libdrm, libexpat, libz, libstdc++, libm, libgcc_s and libc, all of which these
@@ -29,12 +46,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
-
-# Matched to the Mesa the guests ship, deliberately. The DRI driver is loaded by
-# the guest's own libEGL/libgbm, so the two have to agree on the driver ABI, and
-# the file that used to be copied in was Mesa 22.3.6 against a 24.0.7 loader.
-# Check a guest with: strings /usr/lib/dri/kms_swrast_dri.so | grep -o 'Mesa [0-9.]*'
-MESA_VER=24.0.7
 
 ARCH=""
 FORCE=0
@@ -46,13 +57,34 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Per-guest configuration. Read a guest's own version rather than trusting this
+# table if a firmware update might have moved it:
+#   armhf:  strings /usr/lib/dri/kms_swrast_dri.so | grep -o 'Mesa [0-9.]*'
+#   arm64:  ls /usr/lib/libgallium-*.so
 case "$ARCH" in
-    arm64) TRIPLE=aarch64-linux-gnu; CPU_FAMILY=aarch64; CPU=aarch64 ;;
-    armhf) TRIPLE=arm-linux-gnueabihf; CPU_FAMILY=arm; CPU=armv7 ;;
+    arm64)
+        TRIPLE=aarch64-linux-gnu; CPU_FAMILY=aarch64; CPU=aarch64
+        MESA_VER=24.3.4
+        MODE=gallium
+        # softpipe alongside virgl so a guest with no GL host still has the
+        # software path the vendor library provided. The hardware drivers the
+        # vendor also built -- panfrost, lima, etnaviv, zink -- are deliberately
+        # left out: they drive silicon no emulated guest has, and zink would pull
+        # in a Vulkan stack. That makes this library wrong for real hardware.
+        GALLIUM_DRIVERS=virgl,softpipe
+        ARTIFACT="libgallium-$MESA_VER.so"
+        OUT="$OUT_DIR/libgallium-$MESA_VER-$ARCH.so"
+        ;;
+    armhf)
+        TRIPLE=arm-linux-gnueabihf; CPU_FAMILY=arm; CPU=armv7
+        MESA_VER=24.0.7
+        MODE=dri
+        GALLIUM_DRIVERS=virgl
+        ARTIFACT=virtio_gpu_dri.so
+        OUT="$OUT_DIR/virtio_gpu_dri-$ARCH.so"
+        ;;
     *) echo "ERROR: --arch must be arm64 or armhf." >&2; exit 1 ;;
 esac
-
-OUT="$OUT_DIR/virtio_gpu_dri-$ARCH.so"
 if [ -s "$OUT" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
     exit 0
@@ -63,7 +95,7 @@ fi
 # instead of hours. `docker run --platform` does not re-pull, so a tag already
 # cached for another architecture would be reused silently -- hence the explicit
 # pull, and the assertion inside.
-echo "--- building a virgl-only Mesa $MESA_VER DRI driver for $ARCH ---"
+echo "--- building Mesa $MESA_VER ($MODE, drivers: $GALLIUM_DRIVERS) for $ARCH ---"
 docker pull -q --platform linux/amd64 debian:trixie >/dev/null
 
 STAGE="$(mktemp -d /tmp/build-virgl-dri.XXXXXX)"
@@ -72,6 +104,7 @@ trap 'rm -rf "$STAGE"' EXIT
 docker run --rm --platform linux/amd64 \
     -e TRIPLE="$TRIPLE" -e DEBARCH="$ARCH" -e MESA_VER="$MESA_VER" \
     -e CPU_FAMILY="$CPU_FAMILY" -e CPU="$CPU" \
+    -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -e ARTIFACT="$ARTIFACT" \
     -v "$STAGE:/out" \
     debian:trixie bash -euo pipefail -c '
         case "$(uname -m)" in x86_64|amd64) ;; *)
@@ -122,7 +155,7 @@ EOF
         # *_dri.so in it at all. Their other outputs are simply not copied out.
         meson setup build --cross-file /cross.txt \
             -Dbuildtype=release \
-            -Dgallium-drivers=virgl \
+            -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
             -Dplatforms= \
             -Dglx=disabled \
@@ -145,31 +178,57 @@ EOF
         ninja -C build > /out/ninja.log 2>&1 || {
             echo "ERROR: mesa build failed" >&2; tail -30 /out/ninja.log >&2; exit 1; }
 
-        D=$(find build -name virtio_gpu_dri.so | head -n 1)
-        [ -n "$D" ] || { echo "ERROR: no virtio_gpu_dri.so was produced." >&2; exit 1; }
-        cp "$D" /out/virtio_gpu_dri.so
+        D=$(find build -name "$ARTIFACT" | head -n 1)
+        [ -n "$D" ] || { echo "ERROR: no $ARTIFACT was produced." >&2; find build -name "*.so" | head -n 10 >&2; exit 1; }
+        cp "$D" "/out/$ARTIFACT"
     '
 
-[ -s "$STAGE/virtio_gpu_dri.so" ] || {
-    echo "ERROR: the build produced no driver." >&2; exit 1; }
+[ -s "$STAGE/$ARTIFACT" ] || {
+    echo "ERROR: the build produced no $ARTIFACT." >&2; exit 1; }
 
-# Assert the two properties that actually matter, because the failure mode this
-# script exists to prevent is silent. A driver missing its loader entry point, or
-# needing a library the guest lacks, fails at dlopen and Mesa quietly uses swrast.
-if ! nm -D --defined-only "$STAGE/virtio_gpu_dri.so" 2>/dev/null |
-        grep -q '__driDriverGetExtensions_virtio_gpu'; then
-    echo "ERROR: the driver does not export __driDriverGetExtensions_virtio_gpu," >&2
-    echo "       so the guest's Mesa loader would never use it." >&2
+# Assert what a working result must look like. The failure mode this script exists
+# to prevent is silent -- Mesa falls back to software with nothing logged -- so a
+# broken artifact is indistinguishable from a working one once it is in a guest.
+# grep reads its whole input on purpose here and below. Under `set -o pipefail`
+# a `grep -q` exits at the first match, the command feeding it dies of SIGPIPE,
+# and the pipeline reports failure -- so a match looks like a miss, and an
+# inverted test like the NEEDED one below looks like a pass.
+if ! strings -n 4 "$STAGE/$ARTIFACT" | grep -w virgl >/dev/null; then
+    echo "ERROR: no virgl in the result; it would render in software." >&2
     exit 1
 fi
-if readelf -d "$STAGE/virtio_gpu_dri.so" | grep NEEDED |
-        grep -qE 'libLLVM|libdrm_(radeon|amdgpu|nouveau)|libsensors|libxcb|libelf'; then
-    echo "ERROR: the driver still needs libraries a vendor rootfs does not have:" >&2
-    readelf -d "$STAGE/virtio_gpu_dri.so" | grep NEEDED | sed 's/^/       /' >&2
-    exit 1
-fi
+case "$MODE" in
+dri)
+    if ! nm -D --defined-only "$STAGE/$ARTIFACT" 2>/dev/null |
+            grep '__driDriverGetExtensions_virtio_gpu' >/dev/null; then
+        echo "ERROR: no __driDriverGetExtensions_virtio_gpu, so the loader skips it." >&2
+        exit 1
+    fi
+    # Any of these means a failed dlopen in a stripped rootfs, hence silent swrast.
+    if readelf -d "$STAGE/$ARTIFACT" | grep NEEDED |
+            grep -E 'libLLVM|libdrm_(radeon|amdgpu|nouveau)|libsensors|libxcb|libelf' >/dev/null; then
+        echo "ERROR: it needs libraries a vendor rootfs does not have:" >&2
+        readelf -d "$STAGE/$ARTIFACT" | grep NEEDED | sed 's/^/       /' >&2
+        exit 1
+    fi
+    ;;
+gallium)
+    # The guest's libEGL resolves against this file by soname and by a symbol
+    # version node named after it, so a mismatch breaks GL outright.
+    if ! readelf -d "$STAGE/$ARTIFACT" | grep -i "soname.*$ARTIFACT" >/dev/null; then
+        echo "ERROR: soname does not match $ARTIFACT; the guest would not load it." >&2
+        exit 1
+    fi
+    for sym in dri_create_drawable driCreateContextAttribs dri2_from_dma_bufs; do
+        nm -D --defined-only "$STAGE/$ARTIFACT" | awk '{print $3}' |
+            sed 's/@.*//' | grep -x "$sym" >/dev/null || {
+                echo "ERROR: missing $sym, which the guest libEGL imports." >&2
+                exit 1; }
+    done
+    ;;
+esac
 
-mv "$STAGE/virtio_gpu_dri.so" "$OUT"
+mv "$STAGE/$ARTIFACT" "$OUT"
 echo ""
 echo "Built: $OUT ($(du -h "$OUT" | cut -f1))"
 readelf -d "$OUT" | grep NEEDED | grep -oE '\[[^]]+\]' | tr -d '[]' |

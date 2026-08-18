@@ -171,8 +171,8 @@ docker run --rm --platform linux/arm/v7 \
 # package's driver is one megadriver holding every gallium driver, so it needs
 # libLLVM and the AMD/nouveau libdrms, none of which this rootfs has -- and Mesa
 # responds to the failed dlopen by falling back to swrast in total silence. See
-# build_virgl_dri.sh.
-"$SCRIPT_DIR_SELF/build_virgl_dri.sh" --arch "$SHIM_ARCH"
+# build_virgl_mesa.sh.
+"$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH"
 VIRGL_DRI="$REPO_ROOT/build/virtio_gpu_dri-$SHIM_ARCH.so"
 [ -s "$VIRGL_DRI" ] || {
     echo "ERROR: no virgl DRI driver at $VIRGL_DRI." >&2
@@ -259,7 +259,7 @@ echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
 # entries that are all one 13MB gallium megadriver -- but that build has no virgl
 # compiled into it: its only usable DRI entry points are kms_swrast and swrast. So
 # GL can only ever be rasterized on the guest's CPU unless a virgl driver is added,
-# which is what build_virgl_dri.sh produces and this copies in.
+# which is what build_virgl_mesa.sh produces and this copies in.
 #
 # Additive: virtio_gpu_dri.so is the name Mesa's loader looks for from the kernel's
 # device name, and nothing already in /usr/lib/dri uses it, so every swrast driver

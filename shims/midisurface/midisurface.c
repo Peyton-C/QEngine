@@ -495,6 +495,29 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* The motor toggle is RMZ2's, not a generic control. It sends Shift + Slip
+     * on RMZ2's deck channels, which is Action.ToggleMotor only in
+     * RMZ2_Controller_Assignments.qml -- on any other product those same notes
+     * land on whatever that product's assignment file maps them to, and the
+     * unit acts on it. Firing it unbidden on the wrong device is worse than not
+     * firing it at all, so the guest's own product code decides, not the flag.
+     *
+     * Other motorized products exist (JP08 and JP14 are the SC5000M and
+     * SC6000M) and presumably need the same treatment eventually, but with
+     * their own note numbers read from their own assignment files. Answering
+     * that is a separate job from not misfiring here. */
+    if (motor_off_enabled) {
+        const char *code = product_code();
+        if (strcmp(code, "RMZ2") != 0) {
+            fprintf(stderr,
+                    "WARNING: --motor-off ignored: this guest reports product code "
+                    "'%s', and the toggle it sends is RMZ2's Shift+Slip. Sending it "
+                    "here would trigger whatever %s maps those notes to.\n",
+                    *code ? code : "<unset>", *code ? code : "this device");
+            motor_off_enabled = 0;
+        }
+    }
+
     init_id_response();
 
     int err = snd_seq_open(&seq, "default", SND_SEQ_OPEN_DUPLEX, 0);
@@ -613,6 +636,12 @@ int main(int argc, char **argv) {
             if (ch < 0) {
                 fprintf(stderr, "usage: motor left|right\n");
             } else {
+                const char *pc = product_code();
+                if (strcmp(pc, "RMZ2") != 0)
+                    fprintf(stderr,
+                            "WARNING: these are RMZ2's Shift+Slip notes and this guest "
+                            "is '%s'; sending anyway because you asked.\n",
+                            *pc ? pc : "<unset>");
                 toggle_motor(ch);
                 printf("toggled motorized-platter mode on deck ch %#04x\n", ch);
                 fflush(stdout);

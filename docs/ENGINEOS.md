@@ -266,6 +266,15 @@ control is a *toggle* (acting on each would turn the motor back on). The
 `motor left|right` command does the same thing on demand. See
 [BUILDING.md](BUILDING.md#audio-playback-working--build-and-launch-requirements).
 
+The flag alone does not decide this: the toggle is Shift + Slip on RMZ2's deck
+channels, which is `Action.ToggleMotor` only in
+`RMZ2_Controller_Assignments.qml`, so on any other product those notes land on
+whatever that product maps them to. `midisurface` therefore checks the guest's
+own `inmusic,product-code` and ignores `--motor-off` with a warning unless it
+reads `RMZ2`. JP08 and JP14 are motorized too (SC5000M and SC6000M) and will
+need the same treatment with their own note numbers; the `motor` command still
+sends on demand, warning first, since typing it is explicit.
+
 Two mapping-level alternatives were tried and both failed (each reverted):
 
 - **Deleting `MotorizedTimecode { }`** from

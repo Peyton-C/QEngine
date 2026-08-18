@@ -147,12 +147,12 @@ docker run --rm --platform linux/arm64 \
             -o /shims/rk3588/dtshim/dtshim_rmz2.so /shims/rk3588/dtshim/dtshim.c -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
             -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
+        gcc -O2 -Wall \
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/rk3588/teeshim/teeshim_rmz2.so /shims/rk3588/teeshim/teeshim_rmz2.c
-        gcc -O2 -Wall \
-            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
 
@@ -203,20 +203,12 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 
 IMG="/out/$OUT_NAME"
 
-echo "--- e2fsck (required before resize2fs) ---"
-set +e
-e2fsck -f -y "$IMG"
-FSCK_RC=$?
-set -e
-# 0 = clean, 1/2 = errors found and corrected — all fine to proceed from.
-# Anything higher means e2fsck couldn't fix it.
-if [ "$FSCK_RC" -gt 2 ]; then
-    echo "ERROR: e2fsck failed with exit code $FSCK_RC" >&2
-    exit 1
-fi
+# The steps both rootfs builders share, so a change to one lands in both. Each
+# file in rootfs_steps/ defines one function and explains what it is for; the
+# calls below read as the sequence they are.
+for _step in /steps/*.sh; do . "$_step"; done
 
-echo "--- resize2fs ---"
-resize2fs "$IMG"
+resize_filesystem "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
@@ -246,16 +238,7 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-aarch64.so.1 ]; then
     exit 1
 fi
 
-echo "--- blocking Sentry telemetry (docs/BLOCKING_TELEMETRY.md) ---"
-TELEMETRY_LINE="127.0.0.1 o230257.ingest.sentry.io"
-grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /mnt/rootfs/etc/hosts
-
-echo "--- blanking root password for serial-console login ---"
-sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
-
-# Shared with the other rootfs builder, which needs exactly the same edit --
-# see rootfs_steps/skip_firmware_update.sh for why Engine needs telling.
-. /steps/skip_firmware_update.sh
+harden_for_emulation /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
@@ -269,15 +252,25 @@ mkdir -p /mnt/rootfs/usr/lib/dri
 cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 
 echo "--- inserting shims into /root ---"
-mkdir -p /mnt/rootfs/root/fake-dt
 cp -a /shims/rk3588/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
-cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
-cp -a /shims/rk3588/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
+cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge /mnt/rootfs/root/alsashim.so \
+          /mnt/rootfs/root/midisurface
+write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-RMZ2}"
+# Only this build installs teeshim: it bypasses a TEE check that only Engine
+# 5.1.0+ on RK3588 makes, and there is no armv7 counterpart.
+cp -a /shims/rk3588/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim.so
+chmod 755 /mnt/rootfs/root/teeshim.so
+# A static /proc/interrupts, kept only as a last-resort fallback: dtshim generates
+# this content at runtime from the real /proc/interrupts and falls back to the file
+# only if that finds no usable IRQ at all.
+cp -a /shims/rk3588/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 
 echo "--- installing controllermap (USB controller -> assignment mapping) ---"
 mkdir -p /mnt/rootfs/root/controllermap/mappings
@@ -287,24 +280,11 @@ if [ -d /shims/rk3588/controllermap/mappings ]; then
     cp -a /shims/rk3588/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
 fi
 chmod 755 /mnt/rootfs/root/controllermap/controllermap.sh
-# PRODUCT_CODE selects which device this pretends to be, as it does in the armv7
-# builder. Written here rather than copied from a committed fixture so that both
-# builders spell it the same way and changing it needs no edit to a tracked file.
-printf '%s' "${PRODUCT_CODE:-RMZ2}" > "/mnt/rootfs/root/fake-dt/inmusic,product-code"
-printf '%s' 'QENGINE0001SIM' > /mnt/rootfs/root/fake-dt/serial-number
-# A static /proc/interrupts, kept only as a last-resort fallback: dtshim generates
-# this content at runtime from the real /proc/interrupts and falls back to the file
-# only if that finds no usable IRQ at all.
-cp -a /shims/rk3588/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
-# Raw big-endian <u32> devicetree cell, not text — 0 (no rotation), the
-# value confirmed working against RMZ2's real panel orientation.
-printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
-chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
-          /mnt/rootfs/root/alsashim.so /mnt/rootfs/root/teeshim.so \
-          /mnt/rootfs/root/touchbridge \
-          /mnt/rootfs/root/midisurface
 
 echo "--- wiring touchbridge.service + engine.service override ---"
+# The same unit either builder installs, each from its own SoC directory: the
+# binary is shared but the invocation is not -- RK3588 passes --head N and has a
+# templated unit per display, RK3288 is single-head and passes a resolution.
 cp -a /shims/rk3588/touchbridge/touchbridge.service /mnt/rootfs/etc/systemd/system/touchbridge.service
 ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge.service
 
@@ -447,13 +427,7 @@ umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
 
-echo "--- final consistency check ---"
-e2fsck -f -y "$IMG" || true
-
-if [ ! -s "$IMG" ]; then
-    echo "ERROR: output image missing or empty — something failed silently above." >&2
-    exit 1
-fi
+verify_rootfs "$IMG"
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"

@@ -30,28 +30,32 @@
  * nothing". This program answers the inquiry automatically, choosing which
  * device to answer as from the guest's own product code (see
  * DEVICE_IDENTITIES). The ALSA client name is cosmetic by comparison; it
- * defaults to "RMZ2_Controller" and can be overridden with argv[1].
+ * is named after the guest's own product code (RMZ2_Controller, JP14_Controller,
+ * ...) and can be overridden with argv[1].
  *
- * WHAT IS NOT GENERIC: the transport vocabulary below. Engine's per-product
- * assignment files disagree about which channel and note mean "play", so the
- * play/cue/load/motor convenience commands are RMZ2's numbers, read out of the
- * rootfs's own preset assignment files
- * (/usr/Engine/AssignmentFiles/PresetAssignmentFiles/RMZ2/), which are plain
- * QML and need no reverse engineering:
+ * The transport vocabulary is per-product too, and for the same reason: Engine's
+ * assignment files disagree about which channel and note mean "play". play, cue
+ * and load read their numbers from DEVICE_CONTROLS below, so `play left` sends
+ * the right thing on any product in that table, and single-deck players take
+ * `play` with no deck at all. The numbers come from each product's own
+ * <CODE>_Controller_Assignments.qml, which every rootfs ships for every product
+ * under /usr/Engine/AssignmentFiles/PresetAssignmentFiles/<CODE>/ -- plain QML,
+ * no reverse engineering. RMZ2's, for reference:
  *
  *   RMZ2_Controller_Assignments.qml
- *     Left deck  -> midiChannel 0x04, load note 0x1A
- *     Right deck -> midiChannel 0x05, load note 0x1B
+ *     Left deck  -> deckMidiChannel 0x04, loadNote 0x1A
+ *     Right deck -> deckMidiChannel 0x05, loadNote 0x1B
  *     PlayCue    -> playNote 0x01, cueNote 0x02
  *     Sync 0x14, Shift 0x5D, Censor 0x0B, Slip 0x20, ...
  *   RMZ2_Controller_Device.qml
  *     SysEx identity: F0 00 00 17 <deviceId 7F> <productId 27> ... F7
  *     (manufacturer 00 00 17 = inMusic, product 0x27 = SYSTEM ONE)
  *
- * On another product those commands will send something, and Engine will act
- * on it, but it will not be the button named. The `sysex`, `on`, `off`, `cc`
- * and `press` commands take raw numbers and are unaffected; read the target's
- * own assignment file for its vocabulary.
+ * WHAT IS STILL NOT GENERIC: motor. It is a shift-chord rather than a note, and
+ * only RMZ2 spells it Shift + Slip; the other motorized products (JP08 and JP14,
+ * the SC5000M and SC6000M) do something structurally different. It refuses to
+ * fire on anything but RMZ2 -- see --motor-off. The `sysex`, `on`, `off`, `cc`
+ * and `press` commands take raw numbers and are unaffected by any of this.
  *
  * Commands are read from stdin, one per line, so this can be driven
  * interactively or fed from a script/fifo:
@@ -61,9 +65,13 @@
  *   off   <ch> <note>        note-off
  *   cc    <ch> <cc> <val>    control change
  *   sysex <hex bytes...>     raw sysex, e.g. sysex F0 00 00 17 7F 27 ... F7
- *   play  left|right         convenience for the deck play button
- *   cue   left|right         convenience for the deck cue button
- *   load  left|right         convenience for the deck load button
+ *   play  [deck]             convenience for the deck play button
+ *   cue   [deck]             convenience for the deck cue button
+ *   load  [deck]             convenience for the deck load button
+ *                            <deck> is a name as the product's own assignment
+ *                            file spells it (left/right, or deck on the
+ *                            single-deck players) or a 1-based index, and may be
+ *                            omitted where the product has only one deck.
  *   motor left|right         toggle the deck's motorized-platter mode
  *                            (shift + slip). REQUIRED ONCE PER ENGINE START
  *                            before play will do anything — see below.
@@ -82,17 +90,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-/* Deck identities straight out of RMZ2_Controller_Assignments.qml. */
-#define DECK_LEFT_CH 0x04
-#define DECK_RIGHT_CH 0x05
-#define NOTE_PLAY 0x01
-#define NOTE_CUE 0x02
-#define LOAD_NOTE_LEFT 0x1A
-#define LOAD_NOTE_RIGHT 0x1B
-/* Shift + Slip is Action.ToggleMotor in RMZ2_Controller_Assignments.qml. */
-#define NOTE_SHIFT 0x5D
-#define NOTE_SLIP 0x20
 
 
 /* Universal MIDI device inquiry, as Engine's KnownDevices IdRequest sends it. */
@@ -189,6 +186,126 @@ static const struct device_identity *identity_for(const char *code) {
     return NULL;
 }
 
+/* Per-device deck vocabulary.
+ *
+ * Scraped from each product's own <CODE>_Controller_Assignments.qml, which every
+ * rootfs ships for every product under
+ * /usr/Engine/AssignmentFiles/PresetAssignmentFiles/<CODE>/. Nothing here was
+ * reverse engineered; it is four numbers per device read out of plain QML. Scraped
+ * from version 5.0.4.
+ *
+ * A channel argument alone would not have done: play/cue note and deck channel
+ * vary independently. JC11 and RMZ2 both put their decks on channels 4 and 5,
+ * and JC11 plays with note 10 where RMZ2 plays with note 1 -- so knowing the
+ * channel tells you nothing about the note, and a command that took only a
+ * channel would send one product's note to another product's deck and look
+ * portable while doing it.
+ *
+ * Two conventions run through the range. The standalone players (JP07, JP08,
+ * JP13, JP14 -- SC5000/SC6000 and relatives) are single-deck, address channel 0,
+ * use play 1 / cue 2, and have no load button at all: a track arrives from the
+ * browser rather than from a deck control. Everything else is a two-deck
+ * controller with play 10 / cue 9 and per-deck load notes 1 and 2. RMZ2 is the
+ * odd one out, pairing the players' play/cue notes with two decks of its own.
+ *
+ * A product absent from this table can still be driven with the raw press/on/
+ * off/cc commands; only the named convenience commands need to know it.*/
+#define MAX_DECKS 2
+
+struct deck_controls {
+    const char *name;          /* as the assignment file's deckName spells it */
+    unsigned char channel;
+    int load_note;             /* -1 where the product has no load button */
+};
+
+struct device_controls {
+    const char *code;
+    unsigned char play_note;
+    unsigned char cue_note;
+    int deck_count;
+    struct deck_controls decks[MAX_DECKS];
+};
+
+static const struct device_controls DEVICE_CONTROLS[] = {
+    {"JC11",  10, 9, 2, {{"Left", 0x04, 0x01}, {"Right", 0x05, 0x02}}},
+    {"JC11S", 10, 9, 2, {{"Left", 0x04, 0x01}, {"Right", 0x05, 0x02}}},
+    {"JC16",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"JP07",   1, 2, 1, {{"Deck", 0x00,   -1}}},
+    {"JP08",   1, 2, 1, {{"Deck", 0x00,   -1}}},
+    {"JP11",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"JP11S", 10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"JP13",   1, 2, 1, {{"Deck", 0x00,   -1}}},
+    {"JP14",   1, 2, 1, {{"Deck", 0x00,   -1}}},
+    {"JP20",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"JP21",  10, 9, 2, {{"Left", 0x04, 0x01}, {"Right", 0x05, 0x02}}},
+    {"NH08",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"NH08S", 10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"NH10",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
+    {"RMZ2",   1, 2, 2, {{"Left", 0x04, 0x1A}, {"Right", 0x05, 0x1B}}},
+};
+
+/* Shift + Slip is Action.ToggleMotor in RMZ2_Controller_Assignments.qml, and
+ * only there -- see the motor command and --motor-off, both of which refuse to
+ * send these anywhere else. */
+#define NOTE_SHIFT 0x5D
+#define NOTE_SLIP 0x20
+
+static const struct device_controls *controls_for(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t i = 0; i < sizeof(DEVICE_CONTROLS) / sizeof(DEVICE_CONTROLS[0]); i++)
+        if (strcmp(DEVICE_CONTROLS[i].code, code) == 0)
+            return &DEVICE_CONTROLS[i];
+    return NULL;
+}
+
+/* The controls for whichever device this guest claims to be. */
+static const struct device_controls *my_controls(void) {
+    return controls_for(product_code());
+}
+
+/* The ALSA client name. Cosmetic: Engine matches a control surface by its
+ * inquiry reply and nothing else -- across all 74 device entries in
+ * KnownDevices.vfsb there is no port- or client-name property, only
+ * DeviceInquiryResponse, AssignmentFileName and USB descriptor fields. Naming
+ * it after the product anyway keeps `aconnect -l` and Engine's own log lines
+ * ("Midi::Out::<name>") readable, and follows Engine's own AssignmentFileName
+ * spelling. An RMZ2 guest gets RMZ2_Controller, exactly the name this was
+ * hardcoded to before, so nothing moves for the product it was written for. */
+static const char *default_client_name(void) {
+    static char name[64];
+    const char *code = product_code();
+    if (!*code) return "Control Surface";
+    snprintf(name, sizeof(name), "%s_Controller", code);
+    return name;
+}
+
+/* Resolve a deck argument against this device: a name as its assignment file
+ * spells it ("left", "right", "deck"), or a 1-based index. An empty argument
+ * means the only deck, which is unambiguous on the single-deck players and an
+ * error anywhere else. Returns NULL and explains itself on stderr. */
+static const struct deck_controls *resolve_deck(const struct device_controls *dc,
+                                                const char *which) {
+    if (!dc) return NULL;
+    if (!which || !*which) {
+        if (dc->deck_count == 1) return &dc->decks[0];
+        fprintf(stderr, "%s has %d decks; name one:", dc->code, dc->deck_count);
+        for (int i = 0; i < dc->deck_count; i++)
+            fprintf(stderr, " %s", dc->decks[i].name);
+        fprintf(stderr, "\n");
+        return NULL;
+    }
+    for (int i = 0; i < dc->deck_count; i++) {
+        char idx[2] = {(char)('1' + i), '\0'};
+        if (strcasecmp(which, dc->decks[i].name) == 0 || strcmp(which, idx) == 0)
+            return &dc->decks[i];
+    }
+    fprintf(stderr, "no deck '%s' on %s; it has:", which, dc->code);
+    for (int i = 0; i < dc->deck_count; i++)
+        fprintf(stderr, " %s", dc->decks[i].name);
+    fprintf(stderr, "\n");
+    return NULL;
+}
+
 /* Overridable via MIDISURFACE_ID_RESPONSE (space-separated hex): an escape
  * hatch for answering as a device this table does not carry, without a
  * rebuild. */
@@ -246,7 +363,7 @@ static int verbose = 0;
 static int forward_client = -1;
 static int forward_port = -1;
 
-/* Auto motor-off. SYSTEM ONE's decks wait on platter timecode that cannot
+/* Auto motor-off. RMZ2's decks wait on platter timecode that cannot
  * exist under emulation, so play does nothing until motorized mode is toggled
  * off, and Engine does not persist that setting — it starts motorized every
  * time. Firing on Engine's identity inquiry is the right trigger because that
@@ -307,7 +424,7 @@ static void press(int ch, int note, int ms) {
     note_off(ch, note);
 }
 
-/* SYSTEM ONE has motorized platters, and its deck assignment ends in
+/* RMZ2 has motorized platters, and its deck assignment ends in
  * MotorizedTimecode { } — the platter reports its position as a timecode
  * signal carried on the codec's capture channels, DVS-style, not over MIDI.
  * Under emulation no platter exists, so with the motor engaged a deck accepts
@@ -423,15 +540,6 @@ static void handle_incoming(void) {
     }
 }
 
-static int deck_channel(const char *which) {
-    if (!which) return -1;
-    if (strcasecmp(which, "left") == 0 || strcmp(which, "1") == 0)
-        return DECK_LEFT_CH;
-    if (strcasecmp(which, "right") == 0 || strcmp(which, "2") == 0)
-        return DECK_RIGHT_CH;
-    return -1;
-}
-
 /* Subscribe to the first sequencer port whose client name contains `match`
  * and that can be read from, skipping our own client and Engine's. Matching on
  * a substring rather than an exact name keeps this usable against whatever
@@ -475,7 +583,7 @@ static int connect_forward_source(const char *match) {
 }
 
 int main(int argc, char **argv) {
-    const char *client_name = "RMZ2_Controller";
+    const char *client_name = NULL;   /* argv[1], else named after the product */
     const char *forward_match = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -517,6 +625,8 @@ int main(int argc, char **argv) {
             motor_off_enabled = 0;
         }
     }
+
+    if (!client_name) client_name = default_client_name();
 
     init_id_response();
 
@@ -566,8 +676,9 @@ int main(int argc, char **argv) {
 
         if (motor_off_due_ms && now_ms() >= motor_off_due_ms) {
             motor_off_due_ms = 0;
-            toggle_motor(DECK_LEFT_CH);
-            toggle_motor(DECK_RIGHT_CH);
+            const struct device_controls *dc = my_controls();
+            for (int i = 0; dc && i < dc->deck_count; i++)
+                toggle_motor(dc->decks[i].channel);
             printf("auto motor-off: toggled both decks out of motorized mode\n");
             fflush(stdout);
         }
@@ -617,25 +728,33 @@ int main(int argc, char **argv) {
                    strcmp(cmd, "load") == 0) {
             char which[32] = {0};
             sscanf(rest, "%31s", which);
-            int ch = deck_channel(which);
-            if (ch < 0) {
-                fprintf(stderr, "usage: %s left|right\n", cmd);
-            } else {
-                int note = (strcmp(cmd, "play") == 0)  ? NOTE_PLAY
-                           : (strcmp(cmd, "cue") == 0) ? NOTE_CUE
-                           : (ch == DECK_LEFT_CH)      ? LOAD_NOTE_LEFT
-                                                       : LOAD_NOTE_RIGHT;
-                press(ch, note, 80);
-                printf("sent %s -> ch %#04x note %#04x\n", cmd, ch, note);
-                fflush(stdout);
+            const struct device_controls *dc = my_controls();
+            const struct deck_controls *dk = resolve_deck(dc, which);
+            if (!dc) {
+                fprintf(stderr,
+                        "no deck vocabulary known for product code '%s'; use "
+                        "press <ch> <note>\n", product_code());
+            } else if (dk) {
+                int note = (strcmp(cmd, "play") == 0)  ? dc->play_note
+                           : (strcmp(cmd, "cue") == 0) ? dc->cue_note
+                                                       : dk->load_note;
+                if (note < 0)
+                    fprintf(stderr,
+                            "%s has no load button -- it loads from the browser\n",
+                            dc->code);
+                else {
+                    press(dk->channel, (unsigned char)note, 80);
+                    printf("sent %s -> %s ch 0x%02X note 0x%02X\n",
+                           cmd, dk->name, dk->channel, note);
+                    fflush(stdout);
+                }
             }
         } else if (strcmp(cmd, "motor") == 0) {
             char which[32] = {0};
             sscanf(rest, "%31s", which);
-            int ch = deck_channel(which);
-            if (ch < 0) {
-                fprintf(stderr, "usage: motor left|right\n");
-            } else {
+            const struct deck_controls *dk = resolve_deck(my_controls(), which);
+            if (dk) {
+                int ch = dk->channel;
                 const char *pc = product_code();
                 if (strcmp(pc, "RMZ2") != 0)
                     fprintf(stderr,
@@ -643,7 +762,7 @@ int main(int argc, char **argv) {
                             "is '%s'; sending anyway because you asked.\n",
                             *pc ? pc : "<unset>");
                 toggle_motor(ch);
-                printf("toggled motorized-platter mode on deck ch %#04x\n", ch);
+                printf("toggled motorized-platter mode on deck ch 0x%02X\n", ch);
                 fflush(stdout);
             }
         } else if (strcmp(cmd, "sysex") == 0) {

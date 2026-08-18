@@ -266,8 +266,16 @@ control is a *toggle* (acting on each would turn the motor back on). The
 `motor left|right` command does the same thing on demand. See
 [BUILDING.md](BUILDING.md#audio-playback-working--build-and-launch-requirements).
 
-The flag alone does not decide this: the toggle is Shift + Slip on RMZ2's deck
-channels, which is `Action.ToggleMotor` only in
+`play`, `cue` and `load` are not RMZ2-specific: each reads its channel and note
+from a per-device table built from every product's own
+`<CODE>_Controller_Assignments.qml`, so `play left` is correct on any of the
+fifteen products the shim knows, and the single-deck players (JP07, JP08, JP13,
+JP14) take `play` with no deck argument. A channel argument alone would not have
+been enough — JC11 and RMZ2 both put their decks on channels 4 and 5, but JC11
+plays with note 10 where RMZ2 plays with note 1.
+
+`motor` is the exception. The flag alone does not decide it: the toggle is
+Shift + Slip on RMZ2's deck channels, which is `Action.ToggleMotor` only in
 `RMZ2_Controller_Assignments.qml`, so on any other product those notes land on
 whatever that product maps them to. `midisurface` therefore checks the guest's
 own `inmusic,product-code` and ignores `--motor-off` with a warning unless it

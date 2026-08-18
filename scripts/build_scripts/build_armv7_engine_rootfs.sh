@@ -370,35 +370,10 @@ WantedBy=multi-user.target
 EOF
 ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_jc11s.service
 
-# The virtual control surface. Written here rather than copied from shims/: the
-# committed unit is the arm64 one, which passes RMZ2_Controller explicitly and
-# points at /root/midisurface. This build takes neither -- the binary works
-# out which device to be from the guest's own product code, so the unit carries
-# no device-specific configuration at all.
-cat > /mnt/rootfs/etc/systemd/system/midisurface.service <<'EOF'
-[Unit]
-Description=Virtual MIDI control surface
-# Engine's MIDI enumerator binds devices during its own startup and does not
-# pick one up afterwards, so the surface has to exist first.
-Before=engine.service
-DefaultDependencies=no
-After=systemd-udevd.service
-
-[Service]
-Type=simple
-# / is read-only, so the fifo lives in /run. The `exec 3<>` holds it open
-# read-write for the service's whole life, so an interactive writer
-# disconnecting never gives the surface EOF on stdin.
-ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
-ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface < /run/midisurface.fifo'
-Restart=on-failure
-RestartSec=2
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# The virtual control surface. The same unit both builders install: it names
+# no device and passes no client name, because the binary works out which
+# product to be from the guest's own product code.
+cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 
 echo "--- disabling the tty1 getty (Engine's display) ---"

@@ -940,7 +940,7 @@ client name):
 ```sh
 systemctl stop midisurface
 mkfifo /tmp/midififo
-/root/midisurface RMZ2_Controller --motor-off < /tmp/midififo &
+/root/midisurface --motor-off < /tmp/midififo &
 exec 3>/tmp/midififo
 # Engine must be (re)started while the surface already exists: its MIDI
 # enumerator binds devices at startup and won't pick one up later.

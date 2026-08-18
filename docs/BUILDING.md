@@ -228,6 +228,18 @@ own `QVncServer`, translating `PointerEvent` messages into synthetic touch via
 else is relayed byte-for-byte. The uinput device is created once, upfront, at
 a fixed size, so its `/dev/input/eventN` path is known before Engine starts.
 
+[build_armv7_engine_rootfs.sh](../scripts/build_scripts/build_armv7_engine_rootfs.sh)
+compiles it in the armhf shim container and installs it to `/root/vnctouchbridge`,
+the name the `scripts/vm` launcher scripts invoke. It is the only builder that does:
+its whole job is proxying Engine's own Qt VNC server, and Qt dropped that platform
+plugin, so there is nothing to proxy on arm64 or on armv7 Engine from 5.0.4 on. No
+systemd unit — the launcher scripts start it by hand.
+
+Until recently a prebuilt ARM binary was committed next to the source and no builder
+produced one, so those scripts depended on a copy that had to be placed by hand and
+could silently drift from `vnctouchbridge.c`. The binary is gone from the tree and
+`.gitignore` now covers the per-arch artifact, matching every other shim.
+
 ```bash
 /root/vnctouchbridge <listen_port> <upstream_host> <upstream_port> <width> <height>
 # e.g.

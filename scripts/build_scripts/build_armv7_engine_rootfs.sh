@@ -154,6 +154,13 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+        # -lpthread for its upstream relay thread. Only this builder compiles it:
+        # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
+        # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
+        # from 5.0.4 on. See docs/BUILDING.md section 8.
+        gcc -O2 -Wall \
+            -o /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
+               /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
@@ -161,6 +168,7 @@ docker run --rm --platform linux/arm/v7 \
 for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 drmatomic/drmatomic_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
+                rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
@@ -254,11 +262,17 @@ cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+# Not wired to a unit: it is started by hand from the prime4/primego launcher
+# scripts in scripts/vm, which invoke /root/vnctouchbridge by that name. Installed
+# unconditionally because it is 14KB and those scripts cannot work without it --
+# until now they expected a copy nothing in the build produced.
+cp -a /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH /mnt/rootfs/root/vnctouchbridge
 chmod 755 /mnt/rootfs/root/dtshim.so \
           /mnt/rootfs/root/drmatomic.so \
           /mnt/rootfs/root/touchbridge \
           /mnt/rootfs/root/alsashim.so \
-          /mnt/rootfs/root/midisurface
+          /mnt/rootfs/root/midisurface \
+          /mnt/rootfs/root/vnctouchbridge
 
 # The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps

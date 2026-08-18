@@ -62,6 +62,7 @@ build/
 # Built Files
 shims/touchbridge/touchbridge_*
 shims/midisurface/midisurface_*
+shims/rk3288/vnctouchbridge/vnctouchbridge_*
 
 # AI
 .claude/

@@ -124,11 +124,16 @@ QEMU refuses to start outright, so `arch_devices.sh` checks `MEM` and says why. 
 armhf guest ever needs more, the alternative is `linux-image-armmp-lpae`, which has
 `CONFIG_PHYS_ADDR_T_64BIT=y` and can therefore keep `highmem=on`.
 
-Two things are still arm64-only in practice. The virgl display modes refuse armhf —
-`virtio-gpu-gl-pci` is attachable now, but virgl against a 32-bit guest is untested,
-so the GL modes fail up front instead of partway through boot. And `GPU_MAX_OUTPUTS`
-no longer *rejects* armhf, since per-head `usb-tablet`s need the USB that needed PCI,
-but multi-head has only been run on arm64.
+One thing is still arm64-only in practice: `GPU_MAX_OUTPUTS` no longer *rejects*
+armhf, since per-head `usb-tablet`s need the USB that needed PCI, but multi-head has
+only been run on arm64.
+
+The virgl display modes used to be arm64-only too, and are not any more — armhf
+renders through virgl on the host's GPU. It needs three things together: a GL display
+mode, a QEMU with virglrenderer built in, and the DRI driver `build_virgl_dri.sh`
+produces. Ironically, arm64 is now the unproven one: an RMZ2 guest loads no DRI
+driver at all, so the driver `build_arm64_rootfs.sh` copies in is never consulted and
+that path wants investigating.
 
 One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
 boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is
@@ -136,12 +141,10 @@ used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
 overrides the choice.
 
 armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one,
-and it boots to a rendered UI with a virtual control surface bound. Audio is what it
-still lacks. arm64
+and it boots to a rendered UI with a virtual control surface bound, rendering through
+virgl in a GL display mode. Audio is what it still lacks. arm64
 MPC remains untried — no builder produces that rootfs, so the command line has never
-been booted, and `new_instance.sh` says so when it sees one. The virgl display modes
-additionally refuse armhf outright, since `virtio-gpu-gl` exists only as a PCI device,
-which is also why armv7 Engine renders in software (`kms_swrast`).
+been booted, and `new_instance.sh` says so when it sees one.
 
 ## Run
 

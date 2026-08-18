@@ -80,11 +80,17 @@ case "$ARCH" in
         MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
-        # Still no GL. virtio-gpu-gl-pci is attachable now that the bus works, but
-        # virgl has never been tried against a 32-bit guest here, so the virgl
-        # display modes keep refusing armhf — they check for an empty value and say
-        # so — rather than failing in some less obvious way partway through boot.
-        GPU_GL_DEV=""
+        # GL works here. Two things had to be true: the machine gained a working PCI
+        # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the
+        # rootfs carries a virgl-capable DRI driver built by build_virgl_dri.sh --
+        # the vendor Mesa has no virgl compiled in, and Debian's packaged driver
+        # cannot load in these images.
+        #
+        # Whether a *host* can serve it is separate. QEMU needs virglrenderer built
+        # in, and Debian's arm64 QEMU has neither virtio-gpu-gl-pci nor
+        # egl-headless, so on such a host the GL modes fail at startup no matter
+        # what this sets.
+        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
         # highmem=off caps the guest's physical address space at 32 bits, and RAM on

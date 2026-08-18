@@ -560,8 +560,9 @@ A few more things that bit during bring-up, worth calling out directly:
   Mesa loading, not vendor-neutral dispatch), so the vendor's own
   `libEGL`/`libgbm` just `dlopen()`s whatever `_dri.so` matches the
   requested driver name via the standard, fairly version-stable DRI driver
-  ABI — no need to replace the higher-level libraries too, and no need to
-  cross-compile Mesa from source. Not committed to this repo (23MB,
+  ABI — no need to replace the higher-level libraries too. (The "no need to
+  cross-compile Mesa from source" that used to follow here turned out to be wrong;
+  see the correction below.) Not committed to this repo (23MB,
   foreign-origin binary — regenerate with the recipe above rather than
   vendoring it) but freely redistributable (Debian's Mesa build is
   MIT/GPL). Confirmed working: no `MESA-LOADER` errors, no aborts, the
@@ -572,6 +573,27 @@ A few more things that bit during bring-up, worth calling out directly:
   client. Still not fast — TCG's own instruction-emulation overhead for
   everything else (Engine's C++/QML logic, not just rendering) is a
   separate cost this doesn't touch — but no longer double-software-limited.
+
+  **Correction, measured later: on arm64 this does not work, and the "confirmed
+  working" above was read off the wrong signals.** Checked on a booted RMZ2 with
+  `-display egl-vnc`, Engine has *no* `/usr/lib/dri/*_dri.so` mapped at all —
+  `grep dri /proc/$(pidof Engine)/maps` comes back empty — so that file is never
+  opened and nothing renders through virgl. The absence of `MESA-LOADER` errors, a
+  clean `MODESET`, and `+virgl` at the DRM level are all equally true when the
+  driver is silently unused, which is how this went unnoticed; the improved latency
+  was most likely the KMS-level fixes landing at the same time. Two things are
+  wrong. Debian's file is one megadriver holding every gallium driver, so it needs
+  `libLLVM`, `libdrm_radeon`, `libdrm_amdgpu`, `libdrm_nouveau`, `libsensors`,
+  `libxcb-dri3` and `libelf`, none of which this rootfs has — that alone makes the
+  `dlopen` fail. And nothing being mapped at all, not even a fallback, suggests this
+  guest's 324KB `libEGL` never consults a DRI driver in the first place.
+
+  On **armv7** the same single-file approach failed the same way and is now fixed:
+  `build_virgl_dri.sh` builds a virgl-only Mesa at the guest's own version, whose
+  dependencies these images already satisfy, and that took JP13 from 617ms per frame
+  to 18ms. `--arch arm64` produces the equivalent driver, but swapping it into RMZ2
+  was tested and changed nothing, so what RMZ2's EGL actually loads is still open.
+  Whatever is tried, verify with `grep dri /proc/$(pidof Engine)/maps`, not logs.
 
   One cost: **`screendump` (the HMP command used throughout this doc and
   in `BUILDING.md`'s testing) stops working** once `-display egl-headless`
@@ -1726,10 +1748,12 @@ ABRT` and a restart loop). Three environment variables in
 `QT_QPA_EGLFS_INTEGRATION=eglfs_kms` names the integration outright,
 `EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with
 `surfaceless` as its compiled-in default), and
-`MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` names a driver that is actually
-present. Software rendering is not a preference here: virgl needs
-`virtio-gpu-gl`, which is PCI-only, and the 32-bit `virt` machine has no
-usable PCI (see `scripts/qemu/arch_devices.sh`).
+`MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu` names the virgl driver
+`build_virgl_dri.sh` puts in the image. That used to be `kms_swrast`, because virgl
+needs `virtio-gpu-gl` and the 32-bit `virt` machine had no usable PCI; PCI works
+since the machine moved to `highmem=off`, so rendering goes to the host's GPU now.
+A non-GL display mode still rasterizes on the guest CPU, and `kms_swrast` stays in
+the image for that.
 
 **Second blocker — a black screen with `Engine` running normally.** With
 the integration pinned, `Engine` starts, registers the touchscreen,

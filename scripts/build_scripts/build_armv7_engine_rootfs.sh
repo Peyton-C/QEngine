@@ -101,8 +101,16 @@ esac
 # between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
 # shellcheck source=extract_rootfs.sh
 . "$SCRIPT_DIR_SELF/extract_rootfs.sh"
+# Which Mesa this firmware ships, and in which layout. Read off the rootfs rather
+# than assumed from the architecture: armv7 had no Mesa at all before 5.0.0, where
+# GL came from a proprietary Mali blob, and 5.0.x ships 24.0.7 in the DRI layout
+# while the same firmware version on arm64 ships 24.3.4 in the gallium one. See
+# detect_mesa.sh.
+# shellcheck source=detect_mesa.sh
+. "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
+detect_mesa "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -166,19 +174,31 @@ docker run --rm --platform linux/arm/v7 \
                /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
 
-# The virgl DRI driver, built once per architecture and cached in build/ the way
-# get_kernel.sh caches a kernel. Not taken from Debian's libgl1-mesa-dri: that
+# The virgl driver, built to match what detect_mesa found and cached in build/ the
+# way get_kernel.sh caches a kernel. Not taken from Debian's libgl1-mesa-dri: that
 # package's driver is one megadriver holding every gallium driver, so it needs
 # libLLVM and the AMD/nouveau libdrms, none of which this rootfs has -- and Mesa
-# responds to the failed dlopen by falling back to swrast in total silence. See
-# build_virgl_mesa.sh.
-"$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH"
-VIRGL_DRI="$REPO_ROOT/build/virtio_gpu_dri-$SHIM_ARCH.so"
-[ -s "$VIRGL_DRI" ] || {
-    echo "ERROR: no virgl DRI driver at $VIRGL_DRI." >&2
-    exit 1
-}
-cp -a "$VIRGL_DRI" "$STAGE_DIR/virtio_gpu_dri.so"
+# responds to the failed dlopen by falling back to swrast in total silence. Nor at a
+# version of our choosing: a driver from another release is an ABI gamble against
+# the loader the guest ships. See build_virgl_mesa.sh, and install_virgl_mesa.sh for
+# what each layout does to the rootfs.
+if [ "$MESA_LAYOUT" = none ]; then
+    echo "--- no Mesa in this firmware, so there is no virgl driver to build ---"
+else
+    "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
+    case "$MESA_LAYOUT" in
+        gallium) VIRGL_ARTIFACT="libgallium-$MESA_VERSION.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/libgallium-$MESA_VERSION-$SHIM_ARCH.so" ;;
+        dri)     VIRGL_ARTIFACT="virtio_gpu_dri.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/virtio_gpu_dri-$MESA_VERSION-$SHIM_ARCH.so" ;;
+    esac
+    [ -s "$VIRGL_BUILT" ] || {
+        echo "ERROR: no $(basename "$VIRGL_BUILT") in build/." >&2
+        exit 1
+    }
+    cp -a "$VIRGL_BUILT" "$STAGE_DIR/$VIRGL_ARTIFACT"
+fi
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
@@ -254,18 +274,7 @@ block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
-echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
-# This rootfs ships a complete Mesa 24.0.7 -- /usr/lib/dri holds ~35 *_dri.so
-# entries that are all one 13MB gallium megadriver -- but that build has no virgl
-# compiled into it: its only usable DRI entry points are kms_swrast and swrast. So
-# GL can only ever be rasterized on the guest's CPU unless a virgl driver is added,
-# which is what build_virgl_mesa.sh produces and this copies in.
-#
-# Additive: virtio_gpu_dri.so is the name Mesa's loader looks for from the kernel's
-# device name, and nothing already in /usr/lib/dri uses it, so every swrast driver
-# stays in place as a fallback.
-mkdir -p /mnt/rootfs/usr/lib/dri
-cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
+install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage
 
 #
 # Nor is anything staged at Engine's hardcoded Mali eglfs-integration path,
@@ -382,6 +391,8 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
+    -e MESA_LAYOUT="$MESA_LAYOUT" \
+    -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$STAGE_DIR:/stage:ro" \

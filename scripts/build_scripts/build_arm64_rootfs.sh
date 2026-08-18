@@ -97,8 +97,15 @@ esac
 # between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
 # shellcheck source=extract_rootfs.sh
 . "$SCRIPT_DIR_SELF/extract_rootfs.sh"
+# Which Mesa this firmware ships, and in which layout. Read off the rootfs rather
+# than assumed from the architecture: both follow the firmware, and arm64 has
+# shipped each of the two layouts -- 4.5.0/4.6.0 in the DRI one, 5.0.x in the
+# gallium one. See detect_mesa.sh.
+# shellcheck source=detect_mesa.sh
+. "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
+detect_mesa "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -157,20 +164,30 @@ docker run --rm --platform linux/arm64 \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
 
-# The GL driver this guest actually loads. Its Mesa is a shared-gallium build:
-# every driver is compiled inside /usr/lib/libgallium-<ver>.so and libEGL calls
-# into that library directly through versioned symbols, so there is no plug-in
-# slot. A DRI driver dropped into /usr/lib/dri -- which this script used to copy
-# out of Debian -- was never opened by anything, and the vendor library has no
-# virgl in it, so the guest software-rasterized inside an emulated CPU. Replacing
-# the library is the only way in. See build_virgl_mesa.sh.
-"$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH"
-VIRGL_GALLIUM="$(ls "$REPO_ROOT"/build/libgallium-*-"$SHIM_ARCH".so 2>/dev/null | head -n 1)"
-[ -s "$VIRGL_GALLIUM" ] || {
-    echo "ERROR: no virgl-capable libgallium in build/ for $SHIM_ARCH." >&2
-    exit 1
-}
-cp -a "$VIRGL_GALLIUM" "$STAGE_DIR/$(basename "$VIRGL_GALLIUM" | sed "s/-$SHIM_ARCH\.so$/.so/")"
+# The GL driver this guest actually loads, built to match what detect_mesa found.
+# A mismatched version is not a degradation but a break: in the gallium layout
+# libEGL resolves against a symbol version node named after the file. See
+# build_virgl_mesa.sh for the two layouts, and install_virgl_mesa.sh for what each
+# one does to the rootfs.
+if [ "$MESA_LAYOUT" = none ]; then
+    echo "--- no Mesa in this firmware, so there is no virgl driver to build ---"
+else
+    "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
+    case "$MESA_LAYOUT" in
+        gallium) VIRGL_ARTIFACT="libgallium-$MESA_VERSION.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/libgallium-$MESA_VERSION-$SHIM_ARCH.so" ;;
+        dri)     VIRGL_ARTIFACT="virtio_gpu_dri.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/virtio_gpu_dri-$MESA_VERSION-$SHIM_ARCH.so" ;;
+    esac
+    [ -s "$VIRGL_BUILT" ] || {
+        echo "ERROR: no $(basename "$VIRGL_BUILT") in build/." >&2
+        exit 1
+    }
+    # Staged under the name the guest will use, so the install step needs to know
+    # only the layout and version, not where the file came from.
+    cp -a "$VIRGL_BUILT" "$STAGE_DIR/$VIRGL_ARTIFACT"
+fi
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
@@ -246,33 +263,7 @@ block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
-echo "--- installing a virgl-capable libgallium over the vendor one ---"
-# This guest's Mesa is a shared-gallium build: every driver is compiled inside
-# /usr/lib/libgallium-<ver>.so, and libEGL links that file directly, resolving
-# about seventy symbols against a version node named after it. There is no
-# plug-in slot -- no /usr/lib/dri, no gallium-pipe directory -- so the only way to
-# add virgl is to replace the library, which is what build_virgl_mesa.sh builds.
-#
-# The vendor library carries etnaviv, lima, panfrost, softpipe, swrast and zink,
-# which suits a Mali device, and no virgl; the tell in Engine's journal is
-# "virtio_gpu: driver missing". Without virgl the guest software-rasterizes inside
-# an emulated CPU, which costs two orders of magnitude in frame time.
-#
-# The vendor file is kept beside the replacement so a guest can be put back with
-# one copy, and because the replacement drops the hardware drivers -- it is right
-# for emulation and wrong for a real unit.
-GALLIUM_SO="$(basename "$(ls /stage/libgallium-*.so | head -n 1)")"
-[ -e "/mnt/rootfs/usr/lib/$GALLIUM_SO" ] || {
-    echo "ERROR: this rootfs has no /usr/lib/$GALLIUM_SO to replace." >&2
-    echo "       Its Mesa version may have moved; check ls /usr/lib/libgallium-*" >&2
-    echo "       in the guest and update build_virgl_mesa.sh's per-arch table." >&2
-    exit 1
-}
-cp -a "/mnt/rootfs/usr/lib/$GALLIUM_SO" "/mnt/rootfs/usr/lib/$GALLIUM_SO.vendor"
-cp -a "/stage/$GALLIUM_SO" "/mnt/rootfs/usr/lib/$GALLIUM_SO"
-# cp -a carried the building user's uid in from the host; every other file in
-# /usr/lib is root's.
-chown 0:0 "/mnt/rootfs/usr/lib/$GALLIUM_SO"
+install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage
 
 echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
@@ -464,6 +455,8 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}" \
+    -e MESA_LAYOUT="$MESA_LAYOUT" \
+    -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \

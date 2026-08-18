@@ -44,8 +44,13 @@ The steps individually, if you want them:
   not marginal — it is the difference between a slideshow and a usable UI. Two
   things had to land — the machine gained a working PCI bus with `highmem=off`, so
   `virtio-gpu-gl-pci` can be attached, and `build_virgl_mesa.sh` builds the DRI
-  driver the guest needs, because the vendor Mesa has no virgl in it and Debian's
-  packaged driver cannot load here (see that script for why). A non-GL mode such as
+  driver the guest needs at the guest's own Mesa version, because the vendor Mesa has
+  no virgl in it and Debian's packaged driver cannot load here (see that script for
+  why). That version and the driver layout come from `detect_mesa.sh`, which reads
+  them off the rootfs rather than assuming: armv7 has shipped no Mesa at all
+  (pre-5.0.0 — GL came from a proprietary Mali blob) and Mesa 24.0.7 in the DRI
+  layout (5.0.x), while arm64 has shipped both layouts, so neither follows from the
+  architecture. A non-GL mode such as
   `vnc` still rasterizes on the guest CPU.
 
 - **The host needs a QEMU with virglrenderer.** Debian's arm64 build has neither

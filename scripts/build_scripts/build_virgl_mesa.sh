@@ -2,26 +2,32 @@
 # build_virgl_mesa.sh — builds the Mesa component that lets a guest render through
 # virgl on the host's GPU, instead of rasterizing every frame on an emulated CPU.
 #
-# Usage: build_virgl_mesa.sh --arch <arm64|armhf> [--force]
-#   Caches its output in the repo's build/ and reuses it on later runs, the way
-#   get_kernel.sh caches a kernel per architecture. Requires Docker.
+# Usage: build_virgl_mesa.sh --arch <arm64|armhf> --mesa-version <ver>
+#                            --layout <gallium|dri> [--force]
+#   Caches its output in the repo's build/, keyed by version and architecture, and
+#   reuses it on later runs the way get_kernel.sh caches a kernel. Requires Docker.
 #
-# What it builds differs by guest, because the two vendor Mesa builds load drivers
+# The version and the layout describe the guest, so both are read off its rootfs by
+# detect_mesa.sh and passed in. Neither can be inferred from --arch: the same
+# firmware version ships different Mesa per SoC, and one architecture has shipped
+# both layouts across its own firmware versions.
+#
+# What gets built differs by layout, because the two vendor Mesa builds load drivers
 # by different mechanisms -- established by looking at what Engine actually maps:
 #
-#   armhf   a DRI driver, virtio_gpu_dri.so. That guest's Mesa dlopens
-#           /usr/lib/dri/<name>_dri.so, and its own build has no virgl in it.
+#   dri      a DRI driver, virtio_gpu_dri.so, for a Mesa that dlopens
+#            /usr/lib/dri/<name>_dri.so. Additive: the vendor megadriver stays.
 #
-#   arm64   a whole replacement libgallium-<ver>.so. That guest's Mesa is a
-#           shared-gallium build: every driver is compiled inside that one library
-#           and libEGL calls into it directly through versioned symbols. There is
-#           no plug-in slot, so a DRI driver dropped into /usr/lib/dri is never
-#           opened -- which is what the arm64 builder used to do, to no effect.
+#   gallium  a whole replacement libgallium-<ver>.so, for a shared-gallium Mesa
+#            where every driver is compiled inside that one library and libEGL
+#            calls into it directly through versioned symbols. There is no plug-in
+#            slot, so a DRI driver dropped into /usr/lib/dri is never opened --
+#            which is what the arm64 builder used to do, to no effect.
 #
-# The Mesa version is pinned per guest and they differ. For the DRI driver it has
-# to match because the guest's libEGL loads it across the DRI ABI; for the shared
-# library it has to match exactly, because the symbol version node is named after
-# the file itself.
+# The version has to match the guest either way, for different reasons. A DRI driver
+# is loaded by the guest's libEGL across the DRI ABI, and the one this replaced was
+# two releases behind the Mesa loading it. A replacement libgallium has to match
+# exactly, because the symbol version node is named after the file itself.
 #
 # Why this is built rather than copied out of Debian, which is what the rootfs
 # builders used to do:
@@ -48,43 +54,60 @@ OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
 ARCH=""
+MESA_VER=""
+LAYOUT=""
 FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
+        --mesa-version) MESA_VER="$2"; shift 2 ;;
+        --layout) LAYOUT="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
 done
 
-# Per-guest configuration. Read a guest's own version rather than trusting this
-# table if a firmware update might have moved it:
-#   armhf:  strings /usr/lib/dri/kms_swrast_dri.so | grep -o 'Mesa [0-9.]*'
-#   arm64:  ls /usr/lib/libgallium-*.so
+# The version and the layout describe the guest, so they are read off the rootfs by
+# detect_mesa.sh and passed in here rather than kept in a table. They have to match
+# exactly, and for different reasons per layout, which the checks at the bottom
+# enforce: in the gallium layout the version is part of the ABI, because libEGL
+# resolves against a symbol version node named after the file; in the DRI layout it
+# is a loader compatibility question, and the driver this script replaced was two
+# releases behind the Mesa loading it.
+[ -n "$MESA_VER" ] || {
+    echo "ERROR: --mesa-version is required; get it from detect_mesa.sh." >&2; exit 1; }
+
+# Only the toolchain is per-architecture. Everything else follows the layout.
 case "$ARCH" in
-    arm64)
-        TRIPLE=aarch64-linux-gnu; CPU_FAMILY=aarch64; CPU=aarch64
-        MESA_VER=24.3.4
-        MODE=gallium
-        # softpipe alongside virgl so a guest with no GL host still has the
-        # software path the vendor library provided. The hardware drivers the
-        # vendor also built -- panfrost, lima, etnaviv, zink -- are deliberately
-        # left out: they drive silicon no emulated guest has, and zink would pull
-        # in a Vulkan stack. That makes this library wrong for real hardware.
+    arm64) TRIPLE=aarch64-linux-gnu; CPU_FAMILY=aarch64; CPU=aarch64 ;;
+    armhf) TRIPLE=arm-linux-gnueabihf; CPU_FAMILY=arm;     CPU=armv7 ;;
+    *) echo "ERROR: --arch must be arm64 or armhf." >&2; exit 1 ;;
+esac
+
+case "$LAYOUT" in
+    gallium)
+        # The whole library is replaced, so it has to carry a software driver too:
+        # softpipe stands in for the swrast the vendor build provided, for a guest
+        # with no GL host. The hardware drivers the vendor also had -- panfrost,
+        # lima, etnaviv, zink -- are deliberately left out, since they drive
+        # silicon no emulated guest has and zink would pull in a Vulkan stack.
+        # That is what makes this library right for emulation and wrong for a real
+        # unit.
         GALLIUM_DRIVERS=virgl,softpipe
         ARTIFACT="libgallium-$MESA_VER.so"
         OUT="$OUT_DIR/libgallium-$MESA_VER-$ARCH.so"
         ;;
-    armhf)
-        TRIPLE=arm-linux-gnueabihf; CPU_FAMILY=arm; CPU=armv7
-        MESA_VER=24.0.7
-        MODE=dri
+    dri)
+        # Additive here: this driver is dropped in beside the vendor megadriver
+        # under the name Mesa's loader derives from the kernel's device name, so
+        # nothing already present changes and virgl alone is enough.
         GALLIUM_DRIVERS=virgl
         ARTIFACT=virtio_gpu_dri.so
-        OUT="$OUT_DIR/virtio_gpu_dri-$ARCH.so"
+        OUT="$OUT_DIR/virtio_gpu_dri-$MESA_VER-$ARCH.so"
         ;;
-    *) echo "ERROR: --arch must be arm64 or armhf." >&2; exit 1 ;;
+    *) echo "ERROR: --layout must be gallium or dri; see detect_mesa.sh." >&2; exit 1 ;;
 esac
+
 if [ -s "$OUT" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
     exit 0
@@ -95,7 +118,7 @@ fi
 # instead of hours. `docker run --platform` does not re-pull, so a tag already
 # cached for another architecture would be reused silently -- hence the explicit
 # pull, and the assertion inside.
-echo "--- building Mesa $MESA_VER ($MODE, drivers: $GALLIUM_DRIVERS) for $ARCH ---"
+echo "--- building Mesa $MESA_VER ($LAYOUT layout, drivers: $GALLIUM_DRIVERS) for $ARCH ---"
 docker pull -q --platform linux/amd64 debian:trixie >/dev/null
 
 STAGE="$(mktemp -d /tmp/build-virgl-dri.XXXXXX)"
@@ -178,7 +201,9 @@ EOF
         ninja -C build > /out/ninja.log 2>&1 || {
             echo "ERROR: mesa build failed" >&2; tail -30 /out/ninja.log >&2; exit 1; }
 
-        D=$(find build -name "$ARTIFACT" | head -n 1)
+        # awk, not head: head would exit at the first line and leave find killed
+        # by SIGPIPE, which under pipefail fails the assignment and aborts.
+        D=$(find build -name "$ARTIFACT" | awk 'NR==1')
         [ -n "$D" ] || { echo "ERROR: no $ARTIFACT was produced." >&2; find build -name "*.so" | head -n 10 >&2; exit 1; }
         cp "$D" "/out/$ARTIFACT"
     '
@@ -197,7 +222,7 @@ if ! strings -n 4 "$STAGE/$ARTIFACT" | grep -w virgl >/dev/null; then
     echo "ERROR: no virgl in the result; it would render in software." >&2
     exit 1
 fi
-case "$MODE" in
+case "$LAYOUT" in
 dri)
     if ! nm -D --defined-only "$STAGE/$ARTIFACT" 2>/dev/null |
             grep '__driDriverGetExtensions_virtio_gpu' >/dev/null; then

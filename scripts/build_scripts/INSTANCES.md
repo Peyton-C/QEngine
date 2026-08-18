@@ -130,10 +130,12 @@ only been run on arm64.
 
 The virgl display modes used to be arm64-only too, and are not any more — armhf
 renders through virgl on the host's GPU. It needs three things together: a GL display
-mode, a QEMU with virglrenderer built in, and the DRI driver `build_virgl_mesa.sh`
-produces. Ironically, arm64 is now the unproven one: an RMZ2 guest loads no DRI
-driver at all, so the driver `build_arm64_rootfs.sh` copies in is never consulted and
-that path wants investigating.
+mode, a QEMU with virglrenderer built in, and the virgl-capable Mesa
+`build_virgl_mesa.sh` produces. arm64 works too, and needed a different fix: its
+Mesa is a shared-gallium build with no plug-in slot, so the driver that builder used
+to copy into `/usr/lib/dri` was never consulted, and the whole `libgallium` is
+replaced instead. Which of the two layouts a guest uses follows its firmware rather
+than its architecture, so `detect_mesa.sh` reads it off the rootfs.
 
 One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
 boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is

@@ -1,17 +1,43 @@
-/* A virtual MIDI control surface for the emulated RANE SYSTEM ONE.
+/* A virtual MIDI control surface for an emulated inMusic player.
  *
- * SYSTEM ONE's transport controls (play, cue, load, sync, ...) are physical
- * buttons on the unit, not touchscreen elements — Engine's on-screen UI has
- * no way to start a deck playing. Under emulation that leaves no way to
- * trigger playback at all: touch works (see touchbridge_rmz2) but only
- * reaches the browse/deck views, never the transport. This creates an ALSA
- * sequencer client that Engine's MIDI device enumerator can discover and
- * bind to a preset assignment file, so the emulated unit can be driven
- * exactly the way the real control surface drives it.
+ * Transport controls (play, cue, load, sync, ...) on these units are physical
+ * buttons, not touchscreen elements — Engine's on-screen UI has no way to start
+ * a deck playing. Under emulation that leaves no way to trigger playback at
+ * all: touch works (see touchbridge_rmz2) but only reaches the browse/deck
+ * views, never the transport. This creates an ALSA sequencer client that
+ * Engine's MIDI device enumerator can discover and bind to a preset assignment
+ * file, so the emulated unit can be driven the way the real control surface
+ * drives it.
  *
- * The MIDI vocabulary comes from the rootfs's own preset assignment files
- * (/usr/Engine/AssignmentFiles/PresetAssignmentFiles/RMZ2/), which are
- * plain QML and readable directly — no reverse engineering needed:
+ * One binary serves every product, on both SoCs -- the RK3588 and RK3288 rootfs
+ * builders compile this same source -- which is why it lives outside shims/
+ * rk3588 and shims/rk3288 and why nothing here is named for a device or an
+ * architecture. Only dtshim is genuinely per-SoC. Engine does NOT bind an assignment file by device name — it
+ * identifies control surfaces with a MIDI Device Inquiry handshake, driven by
+ * a KnownDevices table it logs at startup (air.deviceidentifier). For RMZ2:
+ *
+ *   <IdRequest message="7E 7F 06 01"/>
+ *   <Device type="USB" realName="Controller">
+ *     <property name="DeviceInquiryResponse"
+ *               value="7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F"/>
+ *     <property name="AssignmentFileName" value="RMZ2 Controller"/>
+ *
+ * So Engine broadcasts the universal identity request F0 7E 7F 06 01 F7 and
+ * waits for a reply matching the pattern for some device it knows; only then
+ * does it load that device's assignment file and start treating incoming notes
+ * as control-surface input. A device that never answers is enumerated and
+ * connected but its MIDI is ignored — which looks exactly like "the buttons do
+ * nothing". This program answers the inquiry automatically, choosing which
+ * device to answer as from the guest's own product code (see
+ * DEVICE_IDENTITIES). The ALSA client name is cosmetic by comparison; it
+ * defaults to "RMZ2_Controller" and can be overridden with argv[1].
+ *
+ * WHAT IS NOT GENERIC: the transport vocabulary below. Engine's per-product
+ * assignment files disagree about which channel and note mean "play", so the
+ * play/cue/load/motor convenience commands are RMZ2's numbers, read out of the
+ * rootfs's own preset assignment files
+ * (/usr/Engine/AssignmentFiles/PresetAssignmentFiles/RMZ2/), which are plain
+ * QML and need no reverse engineering:
  *
  *   RMZ2_Controller_Assignments.qml
  *     Left deck  -> midiChannel 0x04, load note 0x1A
@@ -22,25 +48,10 @@
  *     SysEx identity: F0 00 00 17 <deviceId 7F> <productId 27> ... F7
  *     (manufacturer 00 00 17 = inMusic, product 0x27 = SYSTEM ONE)
  *
- * Engine does NOT bind an assignment file by device name — it identifies
- * control surfaces with a MIDI Device Inquiry handshake, driven by a
- * KnownDevices table it logs at startup (air.deviceidentifier):
- *
- *   <IdRequest message="7E 7F 06 01"/>
- *   <Device type="USB" realName="Controller">
- *     <property name="DeviceInquiryResponse"
- *               value="7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F"/>
- *     <property name="AssignmentFileName" value="RMZ2 Controller"/>
- *
- * So Engine broadcasts the universal identity request F0 7E 7F 06 01 F7 and
- * waits for a reply carrying inMusic's manufacturer id (00 00 17) and
- * product 0x27; only then does it load the assignment file and start
- * treating incoming notes as control-surface input. A device that never
- * answers is enumerated and connected but its MIDI is ignored — which looks
- * exactly like "the buttons do nothing". This program therefore answers the
- * inquiry automatically (see ID_RESPONSE), impersonating SYSTEM ONE's own
- * control surface. The client name is cosmetic by comparison; it defaults to
- * "RMZ2_Controller" and can be overridden with argv[1].
+ * On another product those commands will send something, and Engine will act
+ * on it, but it will not be the button named. The `sysex`, `on`, `off`, `cc`
+ * and `press` commands take raw numbers and are unaffected; read the target's
+ * own assignment file for its vocabulary.
  *
  * Commands are read from stdin, one per line, so this can be driven
  * interactively or fed from a script/fifo:

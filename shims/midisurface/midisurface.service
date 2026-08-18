@@ -8,7 +8,7 @@ After=controllermap.service
 [Service]
 Type=simple
 # The fifo keeps the surface driveable by hand while it runs as a service:
-#   echo 'play left' > /run/midisurface_rmz2.fifo
+#   echo 'play left' > /run/midisurface.fifo
 #
 # It lives in /run, not /root: this rootfs mounts / read-only, so creating it
 # under /root fails outright at boot ("mkfifo: Read-only file system") and the
@@ -17,8 +17,8 @@ Type=simple
 #
 # Held open read-write by the service itself so the surface never sees EOF when
 # an interactive writer disconnects.
-ExecStartPre=/bin/sh -c 'rm -f /run/midisurface_rmz2.fifo && mkfifo /run/midisurface_rmz2.fifo'
-ExecStart=/bin/sh -c 'exec 3<>/run/midisurface_rmz2.fifo; exec /root/midisurface_rmz2 RMZ2_Controller --motor-off < /run/midisurface_rmz2.fifo'
+ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface RMZ2_Controller --motor-off < /run/midisurface.fifo'
 Restart=on-failure
 RestartSec=2
 

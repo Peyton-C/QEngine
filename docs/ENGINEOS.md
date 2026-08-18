@@ -258,7 +258,7 @@ state.
 
 This is automatic on an image built by
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh):
-`midisurface_rmz2` runs as a service with `--motor-off`, which fires on
+`midisurface` runs as a service with `--motor-off`, which fires on
 Engine's identity inquiry — precisely when Engine has bound the surface, so it
 re-arms across Engine restarts without the surface restarting — and is
 debounced, since Engine sends the inquiry more than once per startup and the
@@ -287,7 +287,7 @@ a packed VFS blob.
 #### Driving the transport at all: the control surface
 
 SYSTEM ONE's transport controls are physical, so Engine's touchscreen UI has
-no way to start a deck. [shims/rk3588/midisurface_rmz2/](../shims/rk3588/midisurface_rmz2/)
+no way to start a deck. [shims/midisurface/](../shims/midisurface/)
 presents an ALSA sequencer client that Engine binds as its own control
 surface. Two non-obvious requirements:
 

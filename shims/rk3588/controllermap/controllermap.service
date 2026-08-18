@@ -3,7 +3,7 @@ Description=Select the Engine control-surface mapping for the connected USB cont
 # Must complete before Engine starts: Engine reads the assignment QML when it
 # binds the control surface during startup, so swapping the file afterwards has
 # no effect until the next bind.
-Before=engine.service midisurface_rmz2.service
+Before=engine.service midisurface.service
 After=systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 

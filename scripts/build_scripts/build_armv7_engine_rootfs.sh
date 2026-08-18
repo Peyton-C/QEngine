@@ -50,6 +50,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
+# Names the compiled output of shims shared by both builders, which are built
+# from one source into shims/midisurface/midisurface_$SHIM_ARCH rather than into
+# a per-SoC directory. Only this line differs between the two builders, so those
+# build and install steps stay byte-identical and can be diffed.
+SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
@@ -130,6 +135,7 @@ echo "--- building shims from source ---"
 # depends on pull order. The comment above pins intent; this pull makes it true.
 docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         # No apostrophes below, comments included: this whole block is one
@@ -174,12 +180,14 @@ docker run --rm --platform linux/arm/v7 \
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/rk3288/alsashim_jc11s.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
         gcc -O2 -Wall \
-            -o /shims/rk3288/midisurface_jc11s /shims/rk3588/midisurface_rmz2/midisurface_rmz2.c -lasound
+            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
 
-for artifact in rk3288/dtshim/dtshim_jc11s.so rk3288/dtshim/drmatomic_jc11s.so \
+for artifact in rk3288/dtshim/dtshim_jc11s.so \
+                rk3288/dtshim/drmatomic_jc11s.so \
                 rk3288/touchbridge_jc11s/touchbridge_jc11s \
-                rk3288/alsashim_jc11s.so rk3288/midisurface_jc11s; do
+                rk3288/alsashim_jc11s.so \
+                midisurface/midisurface_$SHIM_ARCH; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -287,10 +295,10 @@ cp -a /shims/rk3288/alsashim_jc11s.so /mnt/rootfs/root/alsashim_jc11s.so
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
-cp -a /shims/rk3288/midisurface_jc11s /mnt/rootfs/root/midisurface_jc11s
+cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
 chmod 755 /mnt/rootfs/root/dtshim_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so \
           /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim_jc11s.so \
-          /mnt/rootfs/root/midisurface_jc11s
+          /mnt/rootfs/root/midisurface
 
 # The devicetree properties dtshim_jc11s.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps
@@ -364,10 +372,10 @@ ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.ta
 
 # The virtual control surface. Written here rather than copied from shims/: the
 # committed unit is the arm64 one, which passes RMZ2_Controller explicitly and
-# points at /root/midisurface_rmz2. This build takes neither -- the binary works
+# points at /root/midisurface. This build takes neither -- the binary works
 # out which device to be from the guest's own product code, so the unit carries
 # no device-specific configuration at all.
-cat > /mnt/rootfs/etc/systemd/system/midisurface_jc11s.service <<'EOF'
+cat > /mnt/rootfs/etc/systemd/system/midisurface.service <<'EOF'
 [Unit]
 Description=Virtual MIDI control surface
 # Engine's MIDI enumerator binds devices during its own startup and does not
@@ -382,7 +390,7 @@ Type=simple
 # read-write for the service's whole life, so an interactive writer
 # disconnecting never gives the surface EOF on stdin.
 ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
-ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface_jc11s < /run/midisurface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface < /run/midisurface.fifo'
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal
@@ -391,7 +399,7 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-ln -sf ../midisurface_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface_jc11s.service
+ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 
 echo "--- disabling the tty1 getty (Engine's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
@@ -414,9 +422,9 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Unit]
-After=touchbridge_jc11s.service midisurface_jc11s.service
+After=touchbridge_jc11s.service midisurface.service
 Requires=touchbridge_jc11s.service
-Wants=midisurface_jc11s.service
+Wants=midisurface.service
 
 [Service]
 Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so:/root/alsashim_jc11s.so
@@ -461,6 +469,7 @@ docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-sli
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \

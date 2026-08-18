@@ -82,7 +82,7 @@
  * as unresolved), and never opens the device. snd_seq_client_info_get_card()
  * returns -1 for any client created with snd_seq_open() rather than by a
  * card driver, which is what a virtual control surface
- * (shims/rk3588/midisurface_rmz2/) necessarily is.
+ * (shims/midisurface/) necessarily is.
  *
  * Engine drives MIDI entirely through the sequencer API — it imports no
  * snd_rawmidi_* symbols at all — so the card number is only ever used to

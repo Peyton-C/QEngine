@@ -9,7 +9,7 @@
 #      prebuilt — see the build step below).
 #   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge_rmz2 shims +
 #      fake-dt files into /root.
-#   6. Wire touchbridge_rmz2.service, midisurface_rmz2.service (virtual control
+#   6. Wire touchbridge_rmz2.service, midisurface.service (virtual control
 #      surface, auto motor-off), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
 #      actually loads the shims and starts eglfs.
@@ -30,7 +30,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHIMS_DIR="$REPO_ROOT/shims/rk3588"
+SHIMS_DIR="$REPO_ROOT/shims"
+# Names the compiled output of shims shared by both builders, which are built
+# from one source into shims/midisurface/midisurface_$SHIM_ARCH rather than into
+# a per-SoC directory. Only this line differs between the two builders, so those
+# build and install steps stay byte-identical and can be diffed.
+SHIM_ARCH="arm64"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
@@ -114,6 +119,7 @@ echo "--- building shims from source ---"
 # depends on pull order. The comment above pins intent; this pull makes it true.
 docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm64 \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
@@ -133,17 +139,17 @@ docker run --rm --platform linux/arm64 \
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libgl1-mesa-dri >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/dtshim/dtshim_rmz2.so /shims/dtshim/dtshim_rmz2.c -ldl -lpthread
+            -o /shims/rk3588/dtshim/dtshim_rmz2.so /shims/rk3588/dtshim/dtshim_rmz2.c -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
-            -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
+            -o /shims/rk3588/dtshim/drmatomic_rmz2.so /shims/rk3588/dtshim/drmatomic_rmz2.c -ldl
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
+            -o /shims/rk3588/alsashim/alsashim_rmz2.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/teeshim/teeshim_rmz2.so /shims/teeshim/teeshim_rmz2.c
+            -o /shims/rk3588/teeshim/teeshim_rmz2.so /shims/rk3588/teeshim/teeshim_rmz2.c
         gcc -O2 -Wall \
-            -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
+            -o /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2 /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
         gcc -O2 -Wall \
-            -o /shims/midisurface_rmz2/midisurface_rmz2 /shims/midisurface_rmz2/midisurface_rmz2.c -lasound
+            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
 
         # Stage the arm64 virtio_gpu/virgl-capable Mesa DRI driver for the
         # rootfs. It has to be pulled *here*, in the arm64 container, rather
@@ -161,10 +167,11 @@ docker run --rm --platform linux/arm64 \
     exit 1
 }
 
-for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
-                alsashim/alsashim_rmz2.so teeshim/teeshim_rmz2.so \
-                touchbridge_rmz2/touchbridge_rmz2 \
-                midisurface_rmz2/midisurface_rmz2; do
+for artifact in rk3588/dtshim/dtshim_rmz2.so \
+                rk3588/dtshim/drmatomic_rmz2.so \
+                rk3588/alsashim/alsashim_rmz2.so rk3588/teeshim/teeshim_rmz2.so \
+                rk3588/touchbridge_rmz2/touchbridge_rmz2 \
+                midisurface/midisurface_$SHIM_ARCH; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -255,36 +262,36 @@ cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 
 echo "--- inserting shims into /root ---"
 mkdir -p /mnt/rootfs/root/fake-dt
-cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
-cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
-cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
-cp -a /shims/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
+cp -a /shims/rk3588/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
+cp -a /shims/rk3588/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
+cp -a /shims/rk3588/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
+cp -a /shims/rk3588/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
+cp -a /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
-cp -a /shims/midisurface_rmz2/midisurface_rmz2 /mnt/rootfs/root/midisurface_rmz2
+cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
 
 echo "--- installing controllermap (USB controller -> assignment mapping) ---"
 mkdir -p /mnt/rootfs/root/controllermap/mappings
-cp -a /shims/controllermap/controllermap.sh /mnt/rootfs/root/controllermap/controllermap.sh
-cp -a /shims/controllermap/manifest /mnt/rootfs/root/controllermap/manifest
-if [ -d /shims/controllermap/mappings ]; then
-    cp -a /shims/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
+cp -a /shims/rk3588/controllermap/controllermap.sh /mnt/rootfs/root/controllermap/controllermap.sh
+cp -a /shims/rk3588/controllermap/manifest /mnt/rootfs/root/controllermap/manifest
+if [ -d /shims/rk3588/controllermap/mappings ]; then
+    cp -a /shims/rk3588/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
 fi
 chmod 755 /mnt/rootfs/root/controllermap/controllermap.sh
-cp -a "/shims/dtshim/fake-dt-rmz2/inmusic,product-code" /mnt/rootfs/root/fake-dt/
-cp -a /shims/dtshim/fake-dt-rmz2/serial-number /mnt/rootfs/root/fake-dt/
-cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
+cp -a "/shims/rk3588/dtshim/fake-dt-rmz2/inmusic,product-code" /mnt/rootfs/root/fake-dt/
+cp -a /shims/rk3588/dtshim/fake-dt-rmz2/serial-number /mnt/rootfs/root/fake-dt/
+cp -a /shims/rk3588/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 # Raw big-endian <u32> devicetree cell, not text — 0 (no rotation), the
 # value confirmed working against RMZ2's real panel orientation.
 printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
 chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
           /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so \
           /mnt/rootfs/root/touchbridge_rmz2 \
-          /mnt/rootfs/root/midisurface_rmz2
+          /mnt/rootfs/root/midisurface
 
 echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
+cp -a /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
 ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2.service
 
 # Per-head touch, for the multi-display product.
@@ -298,7 +305,7 @@ ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.tar
 # cannot see. An instance whose head does not exist waits for its tablet, reports
 # that this guest has fewer displays, and exits 0 — so on a single-screen guest
 # they settle inactive instead of restart-looping.
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2@.service
+cp -a /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2@.service
 ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@1.service
 ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@2.service
 
@@ -359,9 +366,9 @@ fi
 # units themselves: controllermap picks the assignment file, then the surface
 # comes up, then Engine binds it. Both must precede engine.service because
 # Engine reads assignments and enumerates MIDI only during its own startup.
-cp -a /shims/midisurface_rmz2/midisurface_rmz2.service /mnt/rootfs/etc/systemd/system/midisurface_rmz2.service
-cp -a /shims/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
-ln -sf ../midisurface_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface_rmz2.service
+cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+cp -a /shims/rk3588/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
+ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 ln -sf ../controllermap.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/controllermap.service
 
 echo "--- disabling the tty1 getty (Engine's display) ---"
@@ -418,8 +425,8 @@ EOF
 # (its MIDI enumerator only scans during startup).
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/midisurface.conf <<'EOF'
 [Unit]
-After=midisurface_rmz2.service controllermap.service
-Wants=midisurface_rmz2.service
+After=midisurface.service controllermap.service
+Wants=midisurface.service
 EOF
 
 umount /mnt/rootfs
@@ -440,6 +447,7 @@ docker pull -q ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} debian:bookworm-sli
 docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
+    -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \

@@ -24,7 +24,7 @@
 # assigned as the input device, and the playback slot is left null. Engine then
 # drives capture only and never feeds playback, which shows up as a stuck XRUN and a
 # frozen "Audio_probe" watchdog rather than any error. Playback-only removes the
-# ambiguity. Requires alsashim_rmz2.so preloaded into engine.service (see
+# ambiguity. Requires alsashim.so preloaded into engine.service (see
 # build_arm64_rootfs.sh) — without it Engine rejects the card on name alone.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -85,12 +85,16 @@ else
     GPU="$GPU_DEV"
 fi
 
-# By default brew won't add e2fsprogs to the path.
-if command -v dumpe2fs >/dev/null 2>&1; then
-    DUMPE2FS="dumpe2fs"
-else
-    DUMPE2FS="/opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs"
-fi
+# dumpe2fs is an admin tool, so it is routinely off PATH: brew does not add
+# e2fsprogs at all, and on Linux it lives in /sbin, which a non-interactive shell
+# does not inherit -- so this resolved fine in a terminal and failed over ssh,
+# which is exactly how the emulator gets launched on a remote build host.
+DUMPE2FS=""
+for _candidate in dumpe2fs /sbin/dumpe2fs /usr/sbin/dumpe2fs \
+                  /opt/homebrew/opt/e2fsprogs/sbin/dumpe2fs; do
+    if command -v "$_candidate" >/dev/null 2>&1; then DUMPE2FS="$_candidate"; break; fi
+done
+[ -n "$DUMPE2FS" ] || { echo "ERROR: dumpe2fs not found (install e2fsprogs)." >&2; exit 1; }
 
 # Read the UUID off the image rather than hardcoding it: it is a property of the
 # particular extraction, so it changes with every firmware version.

@@ -1,43 +1,45 @@
 #!/bin/bash
-# Automates extraction and modifcation of stock Engine rootfs for QEngine
+# Automates extraction and modification of a stock *arm64 / RK3588* Engine OS rootfs
+# for QEngine.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
-#   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build alsashim_rmz2.so (the only shim built here rather than committed
+#   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
+#   4. Build alsashim (the only shim built here rather than committed
 #      prebuilt — see the build step below).
-#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge_rmz2 shims +
+#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge shims +
 #      fake-dt files into /root.
-#   6. Wire touchbridge_rmz2.service, midisurface.service (virtual control
-#      surface, auto motor-off), controllermap.service (USB controller ->
+#   6. Wire touchbridge.service, midisurface.service (virtual control
+#      surface), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
 #      actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
-#      shell behind Engine's fullscreen display.
+#      shell behind the fullscreen display.
 #   8. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
-#   --firmware  *-Update.img to extract from.
+#   --firmware  Firmware .img to extract from.
 #   --out       Output rootfs image path. Default: build/rootfs_out.img
 #   --size      Final image size in bytes. Default: 4294967296 (4GiB)
 #   --force     Overwrite --out if it already exists.
+#
+# Environment:
+#   PRODUCT_CODE  which of this image's device identities to spoof. Default RMZ2.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHIMS_DIR="$REPO_ROOT/shims/rk3588"
-# midisurface is shared with the armv7 builder and lives outside the per-SoC
-# directories, so it is mounted separately rather than by widening SHIMS_DIR --
-# which would mean reprefixing every rk3588 path in here for one shim. When the
-# rest of the shims are genericized, both builders can converge on one mount.
-SHARED_SHIMS_DIR="$REPO_ROOT/shims"
-# Names that shim's compiled output, so one source yields one artifact per
-# architecture: shims/midisurface/midisurface_$SHIM_ARCH.
+SHIMS_DIR="$REPO_ROOT/shims"
+# The builders mount the whole shims tree, so a shim shared between them is
+# reached at the same path in either: /shims/<name> for the shared ones,
+# /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
+# Names the compiled output of the shared shims, so one source yields one
+# artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
 SHIM_ARCH="arm64"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -103,7 +105,8 @@ echo "--- resizing image to $SIZE bytes ---"
 qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 
 ### 2b. Build the shims ######################################################
-# The shim binaries are .gitignored (*.so, plus touchbridge_rmz2 by name), so
+# The shim binaries are .gitignored (*.so, plus the shared shims' per-arch
+# outputs by name), so
 # a fresh clone has sources only — this step is what makes the install step
 # below work at all rather than silently depending on artifacts a previous
 # session happened to leave in the working tree. Building them here also
@@ -124,13 +127,11 @@ docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm64 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface" \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
-        # The shims and the staged DRI driver are copied straight into an arm64
-        # rootfs, so a wrong-architecture container here would graft foreign
-        # binaries in. Fail loudly instead.
+        # These shims and the staged DRI driver are copied straight into an arm64 rootfs, so a
+        # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
         case "$(uname -m)" in aarch64|arm64) ;; *)
             echo "ERROR: shim container is $(uname -m), expected aarch64." >&2; exit 1 ;;
         esac
@@ -143,17 +144,17 @@ docker run --rm --platform linux/arm64 \
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libgl1-mesa-dri >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/dtshim/dtshim_rmz2.so /shims/dtshim/dtshim_rmz2.c -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3588 -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
-            -o /shims/dtshim/drmatomic_rmz2.so /shims/dtshim/drmatomic_rmz2.c -ldl
-        gcc -shared -fPIC -O2 -Wall \
-            -o /shims/alsashim/alsashim_rmz2.so /shims/alsashim/alsashim_rmz2.c -ldl
-        gcc -shared -fPIC -O2 -Wall \
-            -o /shims/teeshim/teeshim_rmz2.so /shims/teeshim/teeshim_rmz2.c
+            -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
-            -o /shims/touchbridge_rmz2/touchbridge_rmz2 /shims/touchbridge_rmz2/touchbridge_rmz2.c
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/teeshim/teeshim_$SHIM_ARCH.so /shims/teeshim/teeshim.c
         gcc -O2 -Wall \
-            -o /shims-shared/midisurface/midisurface_$SHIM_ARCH /shims-shared/midisurface/midisurface.c -lasound
+            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
 
         # Stage the arm64 virtio_gpu/virgl-capable Mesa DRI driver for the
         # rootfs. It has to be pulled *here*, in the arm64 container, rather
@@ -171,15 +172,17 @@ docker run --rm --platform linux/arm64 \
     exit 1
 }
 
-for artifact in dtshim/dtshim_rmz2.so dtshim/drmatomic_rmz2.so \
-                alsashim/alsashim_rmz2.so teeshim/teeshim_rmz2.so \
-                touchbridge_rmz2/touchbridge_rmz2; do
+# The shared shims are checked separately: they live outside SHIMS_DIR, and each
+# one is named for the architecture it was built for rather than for a device.
+for artifact in alsashim/alsashim_$SHIM_ARCH.so \
+                drmatomic/drmatomic_$SHIM_ARCH.so \
+                touchbridge/touchbridge_$SHIM_ARCH \
+                midisurface/midisurface_$SHIM_ARCH \
+                teeshim/teeshim_$SHIM_ARCH.so \
+                dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
-# Checked separately: it is the one shim that does not live under SHIMS_DIR.
-[ -s "$SHARED_SHIMS_DIR/midisurface/midisurface_$SHIM_ARCH" ] || {
-    echo "ERROR: shim build produced no midisurface/midisurface_$SHIM_ARCH" >&2; exit 1; }
 
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
@@ -200,20 +203,12 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 
 IMG="/out/$OUT_NAME"
 
-echo "--- e2fsck (required before resize2fs) ---"
-set +e
-e2fsck -f -y "$IMG"
-FSCK_RC=$?
-set -e
-# 0 = clean, 1/2 = errors found and corrected — all fine to proceed from.
-# Anything higher means e2fsck couldn't fix it.
-if [ "$FSCK_RC" -gt 2 ]; then
-    echo "ERROR: e2fsck failed with exit code $FSCK_RC" >&2
-    exit 1
-fi
+# The steps the rootfs builders share, so a change to one lands in all of them.
+# Each file in rootfs_steps/ defines one function and explains what it is for. The
+# calls below read as the sequence they are.
+for _step in /steps/*.sh; do . "$_step"; done
 
-echo "--- resize2fs ---"
-resize2fs "$IMG"
+resize_filesystem "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
@@ -242,17 +237,13 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-aarch64.so.1 ]; then
     echo "       This builds arm64/RK3588 Engine OS firmware only." >&2
     exit 1
 fi
+if [ ! -d /mnt/rootfs/usr/Engine ]; then
+    echo "ERROR: no /usr/Engine in this rootfs, so it is not an Engine OS image." >&2
+    exit 1
+fi
 
-echo "--- blocking Sentry telemetry (docs/BLOCKING_TELEMETRY.md) ---"
-TELEMETRY_LINE="127.0.0.1 o230257.ingest.sentry.io"
-grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /mnt/rootfs/etc/hosts
-
-echo "--- blanking root password for serial-console login ---"
-sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
-
-# Shared with the other rootfs builder, which needs exactly the same edit --
-# see rootfs_steps/skip_firmware_update.sh for why Engine needs telling.
-. /steps/skip_firmware_update.sh
+block_telemetry /mnt/rootfs
+blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
@@ -266,38 +257,42 @@ mkdir -p /mnt/rootfs/usr/lib/dri
 cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
 
 echo "--- inserting shims into /root ---"
-mkdir -p /mnt/rootfs/root/fake-dt
-cp -a /shims/dtshim/dtshim_rmz2.so /mnt/rootfs/root/dtshim_rmz2.so
-cp -a /shims/dtshim/drmatomic_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so
-cp -a /shims/alsashim/alsashim_rmz2.so /mnt/rootfs/root/alsashim_rmz2.so
-cp -a /shims/teeshim/teeshim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2 /mnt/rootfs/root/touchbridge_rmz2
+cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
+cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
+cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
+cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
-cp -a /shims-shared/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+chmod 755 /mnt/rootfs/root/dtshim.so \
+          /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge \
+          /mnt/rootfs/root/alsashim.so \
+          /mnt/rootfs/root/midisurface
+
+# PRODUCT_CODE selects which device this pretends to be.
+write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-RMZ2}"
+
+# Only this build installs teeshim: it bypasses a TEE check that only Engine
+# 5.1.0+ on RK3588 makes, and there is no armv7 counterpart.
+cp -a /shims/teeshim/teeshim_$SHIM_ARCH.so /mnt/rootfs/root/teeshim.so
+chmod 755 /mnt/rootfs/root/teeshim.so
 
 echo "--- installing controllermap (USB controller -> assignment mapping) ---"
 mkdir -p /mnt/rootfs/root/controllermap/mappings
-cp -a /shims/controllermap/controllermap.sh /mnt/rootfs/root/controllermap/controllermap.sh
-cp -a /shims/controllermap/manifest /mnt/rootfs/root/controllermap/manifest
-if [ -d /shims/controllermap/mappings ]; then
-    cp -a /shims/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
+cp -a /shims/rk3588/controllermap/controllermap.sh /mnt/rootfs/root/controllermap/controllermap.sh
+cp -a /shims/rk3588/controllermap/manifest /mnt/rootfs/root/controllermap/manifest
+if [ -d /shims/rk3588/controllermap/mappings ]; then
+    cp -a /shims/rk3588/controllermap/mappings/. /mnt/rootfs/root/controllermap/mappings/
 fi
 chmod 755 /mnt/rootfs/root/controllermap/controllermap.sh
-cp -a "/shims/dtshim/fake-dt-rmz2/inmusic,product-code" /mnt/rootfs/root/fake-dt/
-cp -a /shims/dtshim/fake-dt-rmz2/serial-number /mnt/rootfs/root/fake-dt/
-cp -a /shims/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
-# Raw big-endian <u32> devicetree cell, not text — 0 (no rotation), the
-# value confirmed working against RMZ2's real panel orientation.
-printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
-chmod 755 /mnt/rootfs/root/dtshim_rmz2.so /mnt/rootfs/root/drmatomic_rmz2.so \
-          /mnt/rootfs/root/alsashim_rmz2.so /mnt/rootfs/root/teeshim_rmz2.so \
-          /mnt/rootfs/root/touchbridge_rmz2 \
-          /mnt/rootfs/root/midisurface
 
-echo "--- wiring touchbridge_rmz2.service + engine.service override ---"
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2.service
-ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2.service
+echo "--- wiring touchbridge.service + engine.service override ---"
+# The same unit either builder installs, each from its own SoC directory: the
+# binary is shared but the invocation is not -- RK3588 passes --head N and has a
+# templated unit per display, RK3288 is single-head and passes a resolution.
+cp -a /shims/rk3588/touchbridge/touchbridge.service /mnt/rootfs/etc/systemd/system/touchbridge.service
+ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge.service
 
 # Per-head touch, for the multi-display product.
 #
@@ -310,9 +305,9 @@ ln -sf ../touchbridge_rmz2.service /mnt/rootfs/etc/systemd/system/multi-user.tar
 # cannot see. An instance whose head does not exist waits for its tablet, reports
 # that this guest has fewer displays, and exits 0 — so on a single-screen guest
 # they settle inactive instead of restart-looping.
-cp -a /shims/touchbridge_rmz2/touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/touchbridge_rmz2@.service
-ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@1.service
-ln -sf ../touchbridge_rmz2@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_rmz2@2.service
+cp -a /shims/rk3588/touchbridge/touchbridge@.service /mnt/rootfs/etc/systemd/system/touchbridge@.service
+ln -sf ../touchbridge@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge@1.service
+ln -sf ../touchbridge@.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge@2.service
 
 echo "--- pointing JP22's screen configuration at what the guest actually has ---"
 # Only the output *names* and the touch devices are wrong for emulation; the
@@ -371,25 +366,23 @@ fi
 # units themselves: controllermap picks the assignment file, then the surface
 # comes up, then Engine binds it. Both must precede engine.service because
 # Engine reads assignments and enumerates MIDI only during its own startup.
-cp -a /shims-shared/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
-cp -a /shims/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
+cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+cp -a /shims/rk3588/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 ln -sf ../controllermap.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/controllermap.service
 
-echo "--- disabling the tty1 getty (Engine's display) ---"
+echo "--- disabling the tty1 getty (Application's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
 # lives on, and the getty keeps reading the keyboard underneath it. Every
-# keystroke therefore goes to *both* Engine and a root login shell you cannot
-# see — typing into Engine's search box also types into that shell, and it is
-# entirely possible to power the machine off by accident that way.
+# keystroke therefore goes to *both* the app and a root login shell you cannot
+# see.
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
 # allocation) stops anything bringing it back.
 #
 # The *serial* getty is deliberately left alone — serial-getty@ttyAMA0 is a
-# different template and remains the way in on -serial stdio. Engine's own
-# keyboard input is unaffected: eglfs reads evdev directly, not the VT.
+# different template and remains the way in on -serial stdio.
 rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
@@ -397,11 +390,11 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Unit]
-After=touchbridge_rmz2.service
-Requires=touchbridge_rmz2.service
+After=touchbridge.service
+Requires=touchbridge.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so:/root/alsashim_rmz2.so:/root/teeshim_rmz2.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/teeshim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
@@ -438,13 +431,7 @@ umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
 
-echo "--- final consistency check ---"
-e2fsck -f -y "$IMG" || true
-
-if [ ! -s "$IMG" ]; then
-    echo "ERROR: output image missing or empty — something failed silently above." >&2
-    exit 1
-fi
+verify_rootfs "$IMG"
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
@@ -453,9 +440,9 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
+    -e PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$STAGE_DIR:/stage:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \

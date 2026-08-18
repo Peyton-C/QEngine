@@ -8,7 +8,7 @@
 #
 # Sources live in shims/rk3588/az04-audio/ (az04_codec.c, az04_card.c,
 # Makefile) and are built in place there, matching this project's
-# existing shim convention (dtshim/drmatomic/touchbridge_rmz2 are also
+# existing shim convention (dtshim/drmatomic/touchbridge are also
 # co-located with their source, not written to build/). The three vendor
 # dependency modules are not this project's code, so they're kept
 # separate, under build/az04-audio/.

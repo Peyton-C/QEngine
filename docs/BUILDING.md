@@ -228,6 +228,18 @@ own `QVncServer`, translating `PointerEvent` messages into synthetic touch via
 else is relayed byte-for-byte. The uinput device is created once, upfront, at
 a fixed size, so its `/dev/input/eventN` path is known before Engine starts.
 
+[build_armv7_engine_rootfs.sh](../scripts/build_scripts/build_armv7_engine_rootfs.sh)
+compiles it in the armhf shim container and installs it to `/root/vnctouchbridge`,
+the name the `scripts/vm` launcher scripts invoke. It is the only builder that does:
+its whole job is proxying Engine's own Qt VNC server, and Qt dropped that platform
+plugin, so there is nothing to proxy on arm64 or on armv7 Engine from 5.0.4 on. No
+systemd unit — the launcher scripts start it by hand.
+
+Until recently a prebuilt ARM binary was committed next to the source and no builder
+produced one, so those scripts depended on a copy that had to be placed by hand and
+could silently drift from `vnctouchbridge.c`. The binary is gone from the tree and
+`.gitignore` now covers the per-arch artifact, matching every other shim.
+
 ```bash
 /root/vnctouchbridge <listen_port> <upstream_host> <upstream_port> <width> <height>
 # e.g.
@@ -452,7 +464,7 @@ host even though the exact same `rootfs_out.img` worked elsewhere:
   identical command line. Symptom: `Failed to set CPU affinity for IRQ
   ttyS0 to CPU 4` (or similar) crash-looping `engine.service`. Fix: compare
   against the real `/proc/interrupts`, remap to a currently-writable `Edge`
-  IRQ (see [shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)).
+  IRQ (see [shims/dtshim/README.md](../shims/dtshim/README.md)).
 - **Compressed kernel modules silently fail to load** if this rootfs's
   `kmod` lacks `zstd` support (`modprobe --version` shows `-ZSTD`) — first
   found blocking `nls_iso8859-1` (external media wouldn't mount), but hit
@@ -622,7 +634,7 @@ preset defaults, EDisks hotplug handling for the attached virtio disks).
 
 Getting from "Engine execs" to "real Qt/QML startup" took two rounds of
 the same `dtshim`-style fix, both landing in
-[shims/rk3588/dtshim/dtshim_rmz2.c](../shims/rk3588/dtshim/dtshim_rmz2.c) (cross-compiled
+[shims/dtshim/dtshim.c](../shims/dtshim/dtshim.c) (cross-compiled
 in a Debian 12 arm64 `podman`/`docker` container per
 [6.](#6-toolchain-for-cross-compiling-shims) above — `docker` itself
 needs a daemon that isn't always running/passwordless-startable; rootless
@@ -631,20 +643,23 @@ needs a daemon that isn't always running/passwordless-startable; rootless
 1. **Product identity crash** (`air.planck.config: Unable to find product
    "" in config map!`, `SIGABRT`) — `/sys/firmware/devicetree/base/inmusic,product-code`
    doesn't exist under QEMU's synthesized devicetree. Fixed the same way
-   as the RK3288 devices: `dtshim_rmz2.c` remaps that path (plus
+   as the RK3288 devices: `dtshim.c` remaps that path (plus
    `serial-number` and the `dsi@fde20000/panel@0/rotation` path — see
    [1.](#1-extracting-kernel--initrd--devicetree-from-the-signed-fit) for
-   where those values came from) to files under `/root/fake-dt/`. Fake
-   files and the updated shim source live in
-   [shims/rk3588/dtshim/fake-dt-rmz2/](../shims/rk3588/dtshim/fake-dt-rmz2/).
+   where those values came from). `inmusic,product-code` and `serial-number`
+   are served from files under `/root/fake-dt/`, which
+   [rootfs_steps/write_fake_dt.sh](../scripts/build_scripts/rootfs_steps/write_fake_dt.sh)
+   writes; the rotation cell is compiled into the shim. See
+   [shims/dtshim/](../shims/dtshim/).
 2. **Hardware IRQ-affinity crashes** — separately, Engine itself
    (compiled in, not a shell script) hard-throws
    (`std::runtime_error`, uncaught, aborts) if it can't find a
    `/proc/interrupts` line by name for six real-hardware components —
    `dwc3`, `fe210000.sata`, `fea10000.dma-controller`, `ff0c0000.dwmmc`,
    `ff0f0000.dwmmc`, `ttyS0` — none of which exist under QEMU. Fixed by
-   also remapping `/proc/interrupts` to a fake file
-   ([shims/rk3588/dtshim/fake-dt-rmz2/interrupts](../shims/rk3588/dtshim/fake-dt-rmz2/interrupts))
+   also answering `/proc/interrupts` from the shim — generated at runtime,
+   with `FALLBACK_INTERRUPTS` in
+   [shims/dtshim/dtshim.c](../shims/dtshim/dtshim.c) as the last resort —
    containing all six names, each reusing a real IRQ number already
    present in the guest — necessary because after finding each IRQ,
    Engine immediately writes its CPU affinity, which needs the number to
@@ -655,10 +670,10 @@ needs a daemon that isn't always running/passwordless-startable; rootless
 
 Deployed via an `engine.service` systemd drop-in
 (`/etc/systemd/system/engine.service.d/override.conf`, setting
-`Environment=LD_PRELOAD=/root/dtshim_rmz2.so:/root/drmatomic_rmz2.so` and
+`Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so` and
 `Environment=QT_QPA_PLATFORM=eglfs`) rather than editing the vendor
 `runengine`/`engine` scripts in place — see
-[shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)
+[shims/dtshim/README.md](../shims/dtshim/README.md)
 for the exact deployment steps and a couple of file-format gotchas
 (`printf` vs. plain file copy for the product-code/serial-number values;
 `rotation`'s raw big-endian binary cell).
@@ -698,7 +713,7 @@ incompatibility. This explains why the failure was identical whether
 `SETCRTC` was legacy or hand-rolled atomic — the framebuffer itself was
 never valid for that plane, regardless of which ioctl path submitted it.
 
-The fix, in [shims/rk3588/dtshim/drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c):
+The fix, in [shims/drmatomic/drmatomic.c](../shims/drmatomic/drmatomic.c):
 intercepts `DRM_IOCTL_MODE_ADDFB2` and rewrites `pixel_format` from
 `ARGB8888` to `XRGB8888` before it reaches the kernel, **and** separately
 replaces Qt's legacy `SETCRTC`/`PAGE_FLIP` calls with a real
@@ -771,7 +786,7 @@ VNC server. Here Engine uses `eglfs` (direct KMS/DRM scanout, no VNC QPA
 plugin at all — see [Qt6, and no VNC QPA plugin](ENGINEOS.md#qt6-and-no-vnc-qpa-plugin))
 and *QEMU* is the VNC server, already injecting real client clicks into
 the emulated `usb-tablet` as normal kernel evdev events. So there's no RFB
-protocol to parse at all — [shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c](../shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c)
+protocol to parse at all — [shims/touchbridge/touchbridge.c](../shims/touchbridge/touchbridge.c)
 is a much smaller program that just reads `/dev/input/event2` directly and
 re-emits it as a synthetic multitouch device via `uinput`
 (`ABS_MT_SLOT`/`TRACKING_ID`/`POSITION_X`/`Y` protocol B + `BTN_TOUCH`,
@@ -783,10 +798,10 @@ startup rather than assuming QEMU's current `0..32767` — self-adjusting if
 that ever changes, not hardcoded.
 
 Deployed as a systemd service
-([shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.service](../shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.service))
+([shims/rk3588/touchbridge/touchbridge.service](../shims/rk3588/touchbridge/touchbridge.service))
 ordered before `engine.service` (`Before=`/`WantedBy=multi-user.target` on
-the bridge; `After=touchbridge_rmz2.service` +
-`Requires=touchbridge_rmz2.service` added to `engine.service.d/override.conf`)
+the bridge; `After=touchbridge.service` +
+`Requires=touchbridge.service` added to `engine.service.d/override.conf`)
 — required because Qt's `evdevtouch` device discovery only scans for
 touch-capable devices once at its own startup, so the synthetic
 touchscreen has to already exist before Engine launches, not just before
@@ -848,8 +863,8 @@ scripts), and identical `/data`/`/factory` `PARTUUID`s
 from the 4.6.0 setup is reusable as-is, no rebuild needed.
 
 Brought up with **zero shim changes**: the exact same
-`dtshim_rmz2.so`/`drmatomic.so`/`touchbridge_rmz2` binaries and
-`fake-dt-rmz2` files from the working 4.6.0 setup, copied unmodified into a
+`dtshim.so`/`drmatomic.so`/`touchbridge` binaries and the fake-devicetree
+files as they were then from the working 4.6.0 setup, copied unmodified into a
 fresh 5.0.4 rootfs. For a transplant this size (several files across
 `/root`, `/etc/systemd/system/`, `/usr/Engine/ScreenConfiguration/`),
 bulk file operations in a real Linux environment beat repeating
@@ -908,7 +923,7 @@ in `XRUN` forever with `Audio_probe` frozen, and no error is printed. All of
 [scripts/qemu/](../scripts/qemu/)'s launch scripts already do this; the
 Linux-targeted ones use `pipewire` rather than the macOS-only `coreaudio`.
 
-**2. Preload `alsashim_rmz2.so`.** Built and installed by
+**2. Preload `alsashim.so`.** Built and installed by
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh), which
 adds it to `engine.service`'s `LD_PRELOAD` and sets `ALSASHIM_CARD=0`.
 Without it Engine rejects the emulated card on its *name* before ever
@@ -1042,13 +1057,59 @@ allocation, so disabling alone is not enough). `serial-getty@ttyAMA0` is left
 alone and remains the way in over `-serial stdio`. Engine's keyboard input is
 unaffected, since eglfs reads evdev directly rather than through the VT.
 
+#### Where the shims live, and how one source serves two SoCs
+
+Most shims are architecture-neutral: they interpose libc or ALSA calls, or talk to
+uinput, and nothing in them depends on the CPU. Those live at the top of `shims/` —
+`alsashim/`, `drmatomic/`, `dtshim/`, `midisurface/`, `teeshim/`, `touchbridge/` — one
+source each, compiled by whichever builders need them. Each builder sets `SHIM_ARCH`
+(`arm64` or `armhf`) once near the top, and the outputs are named for it:
+`shims/drmatomic/drmatomic_$SHIM_ARCH.so`. So the lines either builder spends on a
+shared shim are identical between them, and a diff of the two files shows only what
+genuinely differs.
+
+`dtshim` is the one shim whose behaviour is per-SoC, because the devicetree it fakes
+is: it takes `-DSOC_RK3588` or `-DSOC_RK3288`, which selects the `DT_REMAPS` table of
+properties it serves, and refuses to compile without one. Everything else in it — the
+`open`/`fopen`/`write` interposition, the runtime `/proc/interrupts` generation — is
+shared.
+
+What stays under `shims/rk3288/` and `shims/rk3588/` is what is genuinely tied to one
+SoC or one product: each SoC's `touchbridge/` service units — RK3588 instantiates a
+templated one per display where RK3288 is single-head — and `controllermap/`, which
+hardcodes RMZ2's assignment directory. `dtshim` carries its own per-SoC data now, so
+nothing of its remains there.
+
+The steps the rootfs builders perform identically live in
+[scripts/build_scripts/rootfs_steps/](../scripts/build_scripts/rootfs_steps/), one
+function per file, sourced into the privileged container: growing the filesystem,
+blocking telemetry, blanking the root password, writing the fake devicetree,
+telling Engine to skip firmware updates, and the final consistency check. They are
+there for the same reason `extract_rootfs.sh` is — the builders had already drifted
+into byte-identical copies once.
+
+All three builders use them, including MPC, which takes the four that are not
+Engine-specific and skips `skip_firmware_update` and `write_fake_dt` — an MPC rootfs
+has no `/usr/Engine` and no faked devicetree. MPC had open-coded three of the four,
+byte for byte, and claimed the fourth in a header comment without ever doing it: it
+reports crashes to the same Sentry organisation Engine does, `/usr/bin/MPC` carrying
+a DSN for `o230257.ingest.sentry.io` that differs only in project id.
+
+`block_telemetry` carries the list of hosts to point at localhost, one per line and
+annotated, so adding one is editing that list rather than any builder — see
+[BLOCKING_TELEMETRY.md](BLOCKING_TELEMETRY.md). It is split from
+`blank_root_password` because the two are unrelated jobs that happen to both be
+build-time `/etc` edits, and so that a builder can take either on its own.
+
 #### The shims are built from source now
 
-Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
+Every shim binary is `.gitignored` (`*.so`, plus `touchbridge` by name),
 so a fresh clone has sources only.
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
-all six — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
-`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface` — in one
+all six — `dtshim.so`, `teeshim.so`, `touchbridge`, and the
+three shared with the armv7 build, which carry the architecture they were built
+for rather than a device: `drmatomic_arm64.so`, `alsashim_arm64.so`,
+`midisurface_arm64` — in one
 `debian:bookworm` arm64 container before installing them. Previously it copied
 artifacts that nothing produced, which worked only if a previous session had
 left them in the tree.
@@ -1071,7 +1132,7 @@ writes `TestApp` into `/tmp/engine-quit-reason` and returns 0.
 execs `/usr/bin/test-app-launcher`. The guest boots straight into the factory
 test application and Engine is never seen.
 
-[teeshim_rmz2.so](../shims/rk3588/teeshim/teeshim_rmz2.c) is preloaded ahead of
+[teeshim.so](../shims/teeshim/teeshim.c) is preloaded ahead of
 `libteec.so.1` and answers the five `TEEC_*` entry points with success, writing
 the non-zero verdict Engine reads back out of the operation's output parameter.
 The shim's header comment carries the full reconstruction of the check, the
@@ -1125,7 +1186,7 @@ device and primary flag; it does not decide how many windows exist. Nothing in t
 rootfs needs patching for JP22, and the build no longer touches it.
 
 Booting three screens then exposed a second bug, in our own shim.
-[drmatomic_rmz2.c](../shims/rk3588/dtshim/drmatomic_rmz2.c) kept a *single* global
+[drmatomic.c](../shims/drmatomic/drmatomic.c) kept a *single* global
 `kms_state`, which was correct for as long as every product had one display. With
 three, `ensure_kms_state()` returned early after the first CRTC, so the second and
 third modesets reused the first CRTC's ids — and the `PAGE_FLIP` handler ignored
@@ -1152,8 +1213,8 @@ explicitly per output instead.
 **Touch.** One `usb-tablet` cannot serve three windows: they all drive the same
 absolute device and the guest cannot tell which screen a click came from. QEMU can
 bind an input device to a scanout (`display=`/`head=`), so `GPU_MAX_OUTPUTS>1` now
-emits one tablet per head, and one `touchbridge_rmz2` instance per head turns each
-into its own touchscreen — `touchbridge_rmz2@N.service`, with head 0 still served by
+emits one tablet per head, and one `touchbridge` instance per head turns each
+into its own touchscreen — `touchbridge@N.service`, with head 0 still served by
 the plain unit. Each publishes `/dev/input/qengine-touchN`, and the build points the
 matching output's `touchDevice` at it. That path must be a *symlink*: Engine resolves
 it and substitutes the target, and logs "Could not resolve symlink for:" otherwise —
@@ -1181,10 +1242,10 @@ Qt's multi-screen path — kept, and now genuinely in play.
 Two shims used to log unconditionally, and both were expensive enough to be
 felt:
 
-- `drmatomic_rmz2.so` logged every atomic commit — i.e. a synchronous write
+- `drmatomic.so` logged every atomic commit — i.e. a synchronous write
   to the journal on *every rendered frame*. Now behind `DRMATOMIC_DEBUG`;
   modesets and failures still log, since those are rare and useful.
-- `dtshim_rmz2.so`'s devicetree-access log (added to rule the devicetree out
+- `dtshim.so`'s devicetree-access log (added to rule the devicetree out
   of the audio investigation, which it did) took a mutex and did a separate
   `fopen`/`fprintf`/`fclose` per matching read, and `serial-number` is re-read
   dozens of times a session. Now behind `DTSHIM_DT_LOG`.
@@ -1572,20 +1633,21 @@ product code as `JC11S` (Prime 4+) via the same `inmusic,product-code`
 devicetree-property mechanism used throughout this doc, and getting a
 fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 
-**New shims** (`shims/rk3288/dtshim/dtshim_jc11s.c`,
-`shims/rk3288/drmatomic_jc11s/`, `shims/rk3288/touchbridge_jc11s/`):
-`drmatomic_rmz2.c` and `touchbridge_rmz2.c` from the arm64/RMZ2 work
+**New shims** (`shims/dtshim/dtshim.c`,
+`shims/drmatomic/`, `shims/rk3288/touchbridge/`):
+`drmatomic.c` and `touchbridge.c` from the arm64/RMZ2 work
 build for armhf from the same sources and work identically — neither
 depends on CPU architecture at all, only on the Linux DRM/uinput kernel
 UAPIs, which use fixed-width types specifically so 32- and 64-bit callers
-are both safe. (`drmatomic_rmz2.c` did need one addition to *interpose* on
+are both safe. (`drmatomic.c` did need one addition to *interpose* on
 a 32-bit guest, which is a property of the guest's libc rather than of the
 architecture — see the `__ioctl_time64` finding below.) Only
-`dtshim_jc11s.c` needed real changes: a fresh
-file (not a port of the old `shims/rk3288/dtshim/dtshim.c`, which carries
-Qt5-era EGL/GBM interception hacks already known to break Qt6's own
-GBM handling — see the arm64 section above) that keeps RK3288's real
-devicetree paths (product-code, serial-number, rotation, `/dev/mem`,
+`dtshim.c` needed real changes. It was written fresh for RK3588 rather than
+ported from the RK3288 file, which carried Qt5-era EGL/GBM interception hacks
+already known to break Qt6's own GBM handling — see the arm64 section above.
+The two have since been merged back into one `shims/dtshim/dtshim.c` that takes
+`-DSOC_RK3288` or `-DSOC_RK3588`, those hacks being in neither. It keeps each
+SoC's real devicetree paths (product-code, serial-number, rotation, `/dev/mem`,
 reused unchanged from the old file, since the underlying hardware layout
 doesn't change between Engine versions) plus a `/proc/interrupts` remap
 carried over from the RMZ2 shim, needed here too.
@@ -1674,9 +1736,9 @@ the integration pinned, `Engine` starts, registers the touchscreen,
 migrates its database and reaches its MIDI device inquiry — and the
 display stays black while the journal fills with `[W] Could not queue DRM
 page flip on screen Virtual1 (Invalid argument)`, once per frame. That is
-the exact symptom `drmatomic_rmz2.c` exists to fix (see its header
+the exact symptom `drmatomic.c` exists to fix (see its header
 comment: virtio-gpu's primary plane rejects Qt's `ARGB8888` framebuffer),
-and `drmatomic_jc11s.so` *was* built, *was* listed in `LD_PRELOAD`, and
+and `drmatomic.so` *was* built, *was* listed in `LD_PRELOAD`, and
 *was* mapped into the process per `/proc/<pid>/maps` — while printing not
 one of its `=== DRMATOMIC:` lines, which it emits on every modeset and on
 every failure. A loaded interposer that never interposes.
@@ -1689,7 +1751,7 @@ callers' relocations. `readelf -sW --dyn-syms` on the guest's own
 reference to plain `ioctl` at all. A shim exporting only `ioctl` therefore
 interposes nothing, silently, because it loads perfectly well and simply
 never runs. The same file on the arm64 rootfs imports `ioctl@GLIBC_2.17`,
-which is why this never came up on RK3588. `drmatomic_rmz2.c` now exports
+which is why this never came up on RK3588. `drmatomic.c` now exports
 `__ioctl_time64` as an alias of its `ioctl`, and resolves the real
 function preferring the `time64` entry point (which converts the
 timeval-carrying ioctls; plain `ioctl` does not). aarch64 glibc has no

@@ -1,0 +1,19 @@
+[Unit]
+Description=QEMU tablet -> synthetic multitouch bridge
+Before=engine.service
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# Resolution only: the shared touchbridge source scans for the QEMU tablet by
+# name rather than taking an evdev path. RK3288 guests are single-head, so there
+# is no --head here and no templated unit, unlike the RK3588 side.
+ExecStart=/root/touchbridge 1280 800
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -53,7 +53,7 @@ The steps individually, if you want them:
   and Engine dies in an EGL restart loop; see
   [../../docs/BUILDING.md](../../docs/BUILDING.md#engine-504-on-armv7-rk3288).
 
-- **The shims are shared with the arm64 build**, except `dtshim_jc11s.c`, which
+- **The shims are shared with the arm64 build**, except `dtshim.c`, which
   carries RK3288's devicetree paths. `drmatomic` and `touchbridge` build from the
   RK3588 sources. One 32-bit-specific catch is worth knowing before writing another
   shim here: this guest's glibc is a 64-bit-`time_t` build, so it imports
@@ -65,12 +65,16 @@ The steps individually, if you want them:
   Use an instance (see [INSTANCES.md](INSTANCES.md)) to keep several side by side.
 
 - **Touch works out of the box**, same mechanism as the MPC build: the rootfs build
-  installs `touchbridge_jc11s` and starts it before `engine.service`. Engine only
+  installs `touchbridge` and starts it before `engine.service`. Engine only
   responds to a real touchscreen, and QEMU's virtio tablet presents as an absolute
   pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
   the `sdl` display.
 
-- **What is not done yet:** audio and the control surface. The arm64 build's
-  `alsashim`, `midisurface` and `controllermap` are RMZ2-specific and were
-  deliberately left out here, so the guest boots and renders but has no sound card
-  Engine will accept.
+- **What is not done yet:** audio. `alsashim` and `midisurface` are carried over
+  from the arm64 build and are no longer RMZ2-specific -- they live in
+  `shims/alsashim/` and `shims/midisurface/`, build for either architecture, and
+  between them give Engine a control surface it will bind. Only `controllermap`
+  is left out, which exists to swap a real USB controller's assignment files in
+  and hardcodes RMZ2's directory. `alsashim` is preloaded for one job here, the
+  MIDI card-number gate; the sound card Engine will accept is still missing, and
+  the 32-bit virt machine has no PCI for the HDA device anyway.

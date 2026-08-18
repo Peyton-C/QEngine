@@ -1,21 +1,20 @@
 #!/bin/bash
 # Automates extraction and modification of a stock *armv7 / RK3288* Engine OS rootfs
-# for QEngine. The arm64 sibling is build_arm64_rootfs.sh; this file is a minimal
-# diff against it, and the differences are all consequences of the architecture and
-# of what this rootfs already ships.
+# for QEngine.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
-#   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
+#   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build the dtshim/drmatomic/touchbridge shims for armhf. Only dtshim is
 #      RK3288-specific; the other two compile from the RK3588 sources unmodified.
 #   5. Copy those shims + fake-dt files into /root.
-#   6. Wire touchbridge_jc11s.service and an engine.service.d override so
-#      engine.service loads the shims and starts eglfs.
+#   6. Wire touchbridge.service, midisurface.service (virtual control
+#      surface) and an engine.service.d override so
+#      engine.service actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
-#      shell behind Engine's fullscreen display.
+#      shell behind the fullscreen display.
 #
 # Nothing is staged into /usr/lib — this rootfs already ships everything the
 # graphics stack needs, and step 6's environment is what points Qt and Mesa at it.
@@ -25,18 +24,9 @@
 # Not carried over from the arm64 build: controllermap, which exists to swap a
 # real USB controller's assignment files in and hardcodes RMZ2's directory.
 #
-# alsashim and midisurface ARE carried over, because the control surface needs
-# both: midisurface is the virtual surface Engine binds, and alsashim is what
-# makes Engine willing to bind it at all -- its MIDI enumerator drops any
-# sequencer client with no card number, which a userspace client never has.
-# Only that one gate is wanted here. alsashim's other job, getting an emulated
-# sound card past Engine's card-name allowlist, is an audio concern and the
-# 32-bit virt machine has no PCI for the HDA device anyway, so no ALSASHIM_CARD
-# is set and audio stays out of scope.
-#
 # Usage: build_armv7_engine_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
-#   --firmware  *-Update.img to extract from.
+#   --firmware  Firmware .img to extract from.
 #   --out       Output rootfs image path. Default: build/rootfs_out.img
 #   --size      Final image size in bytes. Default: 4294967296 (4GiB)
 #   --force     Overwrite --out if it already exists.
@@ -50,15 +40,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
-# midisurface is shared with the arm64 builder and lives outside the per-SoC
-# directories, so it is mounted separately at the same place that builder mounts
-# it. Spelled out even though this build's SHIMS_DIR already spans the whole
-# shims tree: it keeps the shared-shim lines identical between the two files, and
-# it is what stays correct when the rest of the shims are genericized and this
-# SHIMS_DIR narrows to rk3288.
-SHARED_SHIMS_DIR="$REPO_ROOT/shims"
-# Names that shim's compiled output, so one source yields one artifact per
-# architecture: shims/midisurface/midisurface_$SHIM_ARCH.
+# The builders mount the whole shims tree, so a shim shared between them is
+# reached at the same path in either: /shims/<name> for the shared ones,
+# /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
+# Names the compiled output of the shared shims, so one source yields one
+# artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
 SHIM_ARCH="armhf"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
@@ -124,7 +110,8 @@ echo "--- resizing image to $SIZE bytes ---"
 qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 
 ### 2b. Build the shims ######################################################
-# The shim binaries are .gitignored (*.so, plus touchbridge_rmz2 by name), so
+# The shim binaries are .gitignored (*.so, plus the shared shims' per-arch
+# outputs by name), so
 # a fresh clone has sources only — this step is what makes the install step
 # below work at all rather than silently depending on artifacts a previous
 # session happened to leave in the working tree. Building them here also
@@ -134,6 +121,7 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
+
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
@@ -142,16 +130,10 @@ docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface" \
     debian:bookworm bash -c '
-        # No apostrophes below, comments included: this whole block is one
-        # single-quoted argument, and one would end it early and hand the rest to
-        # the host shell — which then runs the gcc lines against a /shims that does
-        # not exist there. The privileged container further down takes its script
-        # through a quoted heredoc instead and has no such restriction.
         set -e
         # These shims are copied straight into an armv7 rootfs, so a
-        # wrong-architecture container here would graft foreign binaries in.
+        # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
         case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
             echo "ERROR: shim container is $(uname -m), expected armv7l." >&2; exit 1 ;;
         esac
@@ -162,42 +144,36 @@ docker run --rm --platform linux/arm/v7 \
         # nothing foreign needs staging in. See the privileged container below.
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
 
-        # dtshim is the only genuinely RK3288-specific shim. drmatomic and
-        # touchbridge build from the RK3588 sources: neither depends on the CPU
-        # architecture, only on the DRM and uinput kernel UAPIs, whose fixed-width
-        # types make 32- and 64-bit callers equally correct (docs/BUILDING.md, the
-        # JC11S / Engine 5.0.4 section).
-        #
-        # What 32-bit did change is the *name* an LD_PRELOAD shim has to export.
-        # The glibc in this guest is a 64-bit-time_t build, so its headers redirect
-        # ioctl() to __ioctl_time64() and that is the name its libdrm imports;
-        # drmatomic_rmz2.c exports both, which is what makes it interpose here at
-        # all. Nothing in that is RK3288-specific, so it stays in the shared source.
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3288/dtshim/dtshim_jc11s.so /shims/rk3288/dtshim/dtshim_jc11s.c -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
-            -o /shims/rk3288/dtshim/drmatomic_jc11s.so /shims/rk3588/dtshim/drmatomic_rmz2.c -ldl
+            -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
-            -o /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /shims/rk3588/touchbridge_rmz2/touchbridge_rmz2.c
-
-        # The control surface, from the same RK3588 sources: neither is
-        # architecture-specific. alsashim resolves everything through dlsym so it
-        # needs no ALSA headers; midisurface links libasound directly.
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/rk3588/alsashim/alsashim_$SHIM_ARCH.so /shims/rk3588/alsashim/alsashim_rmz2.c -ldl
+            -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -O2 -Wall \
-            -o /shims-shared/midisurface/midisurface_$SHIM_ARCH /shims-shared/midisurface/midisurface.c -lasound
+            -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+        # -lpthread for its upstream relay thread. Only this builder compiles it:
+        # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
+        # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
+        # from 5.0.4 on. See docs/BUILDING.md section 8.
+        gcc -O2 -Wall \
+            -o /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
+               /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
 
-for artifact in rk3288/dtshim/dtshim_jc11s.so rk3288/dtshim/drmatomic_jc11s.so \
-                rk3288/touchbridge_jc11s/touchbridge_jc11s \
-                rk3588/alsashim/alsashim_$SHIM_ARCH.so; do
+# The shared shims are checked separately: they live outside SHIMS_DIR, and each
+# one is named for the architecture it was built for rather than for a device.
+for artifact in alsashim/alsashim_$SHIM_ARCH.so \
+                drmatomic/drmatomic_$SHIM_ARCH.so \
+                touchbridge/touchbridge_$SHIM_ARCH \
+                rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
+                midisurface/midisurface_$SHIM_ARCH \
+                dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
-# Checked separately: it is the one shim that does not live under SHIMS_DIR.
-[ -s "$SHARED_SHIMS_DIR/midisurface/midisurface_$SHIM_ARCH" ] || {
-    echo "ERROR: shim build produced no midisurface/midisurface_$SHIM_ARCH" >&2; exit 1; }
 
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
@@ -218,20 +194,12 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 
 IMG="/out/$OUT_NAME"
 
-echo "--- e2fsck (required before resize2fs) ---"
-set +e
-e2fsck -f -y "$IMG"
-FSCK_RC=$?
-set -e
-# 0 = clean, 1/2 = errors found and corrected — all fine to proceed from.
-# Anything higher means e2fsck couldn't fix it.
-if [ "$FSCK_RC" -gt 2 ]; then
-    echo "ERROR: e2fsck failed with exit code $FSCK_RC" >&2
-    exit 1
-fi
+# The steps the rootfs builders share, so a change to one lands in all of them.
+# Each file in rootfs_steps/ defines one function and explains what it is for. The
+# calls below read as the sequence they are.
+for _step in /steps/*.sh; do . "$_step"; done
 
-echo "--- resize2fs ---"
-resize2fs "$IMG"
+resize_filesystem "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
@@ -265,16 +233,8 @@ if [ ! -d /mnt/rootfs/usr/Engine ]; then
     exit 1
 fi
 
-echo "--- blocking Sentry telemetry (docs/BLOCKING_TELEMETRY.md) ---"
-TELEMETRY_LINE="127.0.0.1 o230257.ingest.sentry.io"
-grep -qxF "$TELEMETRY_LINE" /mnt/rootfs/etc/hosts || echo "$TELEMETRY_LINE" >> /mnt/rootfs/etc/hosts
-
-echo "--- blanking root password for serial-console login ---"
-sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
-
-# Shared with the other rootfs builder, which needs exactly the same edit --
-# see rootfs_steps/skip_firmware_update.sh for why Engine needs telling.
-. /steps/skip_firmware_update.sh
+block_telemetry /mnt/rootfs
+blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 # Nothing is staged into /usr/lib/dri. Unlike the RMZ2 rootfs, this one ships a
@@ -293,115 +253,59 @@ skip_firmware_update /mnt/rootfs
 # QT_QPA_EGLFS_INTEGRATION now settles.
 
 echo "--- inserting shims into /root ---"
-mkdir -p /mnt/rootfs/root/fake-dt
-cp -a /shims/rk3288/dtshim/dtshim_jc11s.so /mnt/rootfs/root/dtshim_jc11s.so
-cp -a /shims/rk3288/dtshim/drmatomic_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so
-cp -a /shims/rk3288/touchbridge_jc11s/touchbridge_jc11s /mnt/rootfs/root/touchbridge_jc11s
-# Landed without a device in the name, unlike the shims either builder has
-# carried since before this build existed. alsashim is architecture-neutral --
-# it resolves everything through dlsym -- so both builders will eventually
-# install one file from one source, and the guest-side path is the half of that
-# which costs nothing to settle now.
-cp -a /shims/rk3588/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
+cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
+cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
+cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # A service rather than a preload: it is a MIDI device Engine binds, not a
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
-cp -a /shims-shared/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
-chmod 755 /mnt/rootfs/root/dtshim_jc11s.so /mnt/rootfs/root/drmatomic_jc11s.so \
-          /mnt/rootfs/root/touchbridge_jc11s /mnt/rootfs/root/alsashim.so \
-          /mnt/rootfs/root/midisurface
+cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+# Not wired to a unit: it is started by hand from the prime4/primego launcher
+# scripts in scripts/vm, which invoke /root/vnctouchbridge by that name. Installed
+# unconditionally because it is 14KB and those scripts cannot work without it --
+# until now they expected a copy nothing in the build produced.
+cp -a /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH /mnt/rootfs/root/vnctouchbridge
+chmod 755 /mnt/rootfs/root/dtshim.so \
+          /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge \
+          /mnt/rootfs/root/alsashim.so \
+          /mnt/rootfs/root/midisurface \
+          /mnt/rootfs/root/vnctouchbridge
 
-# The devicetree properties dtshim_jc11s.c remaps. These are the real RK3288 paths;
+# The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps
 # unconditionally and a missing target turns a working read into ENOENT.
 #
-# PRODUCT_CODE selects which device this pretends to be. This one firmware image
-# serves JP07 (SC5000), JP08 (SC5000M) and JP11 (Prime GO), and /usr/Engine is shared across all of
-# them, so the code is the only thing that distinguishes them.
-printf '%s' "${PRODUCT_CODE:-JP07}" > "/mnt/rootfs/root/fake-dt/inmusic,product-code"
-printf '%s' 'QENGINE0001SIM' > /mnt/rootfs/root/fake-dt/serial-number
-printf '%s' 'B' > "/mnt/rootfs/root/fake-dt/inmusic,az01-pcb-rev"
-# Raw big-endian <u32> devicetree cells, not text.
-printf '\x00\x00\x00\x00' > /mnt/rootfs/root/fake-dt/rotation
-printf '\x00\x00\x00\x00' > "/mnt/rootfs/root/fake-dt/inmusic,internal-sd-fitted"
-# /dev/mem is remapped to a plain file so a mmap of it fails cleanly rather than
-# handing out real physical memory. Sparse, never read past its header.
-: > /mnt/rootfs/root/fake-dev-mem
-# A static /proc/interrupts, kept only as a last-resort fallback: dtshim_jc11s
-# generates this content at runtime from the real /proc/interrupts, and falls back
-# to this file only if that finds no usable IRQ at all.
-#
-# The affinity check it exists for is no longer hypothetical. Engine on RK3288 does
-# perform it, and hard-throws when a name is missing:
-#
-#     what():  No IRQ matching 'ttyS0' found in /proc/interrupts
-#
-# then aborts, is restarted, and loops forever without ever reaching a display. The
-# earlier version of this file listed only arch_timer and uart-pl011, so that lookup
-# could never succeed and armv7 never booted to a UI.
-#
-# The names have to be here, but the numbers cannot be right in a static file: IRQs
-# are assigned at boot from whichever devices are present, and Engine writes CPU
-# affinity to /proc/irq/<N>/smp_affinity straight after finding each name. That is
-# exactly why the shim generates this dynamically — this copy is a parseable floor,
-# not a working configuration.
-{
-    printf '           CPU0       CPU1       CPU2       CPU3\n'
-    printf '  1:      12345      11111      10000       9999     GIC-0  29 Level     arch_timer\n'
-    printf '  2:        512          0          0          0     GIC-0  33 Level     uart-pl011\n'
-    printf ' 32:       2508          0          0          0     GIC-0  74 Edge      dwc3\n'
-    printf ' 33:         23          0          0          0     GIC-0  77 Edge      fe210000.sata\n'
-    printf ' 34:          2          0          0          0     GIC-0  78 Edge      fea10000.dma-controller\n'
-    printf ' 35:       2902          0          0          0     GIC-0  75 Edge      ff0c0000.dwmmc\n'
-    printf ' 36:        107          0          0          0     GIC-0  73 Edge      ff0f0000.dwmmc\n'
-    printf ' 37:        283          0          0          0     GIC-0  79 Edge      ttyS0\n'
-} > /mnt/rootfs/root/fake-dt/interrupts
+# PRODUCT_CODE selects which device this pretends to be.
+write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-JP07}"
 
-echo "--- wiring touchbridge_jc11s.service + engine.service override ---"
-# Written here rather than copied from shims/: the committed unit still passes an
-# explicit /dev/input/event2, which the RK3588 touchbridge source this is now built
-# from does not take — it scans for the tablet by name and only wants a resolution.
-cat > /mnt/rootfs/etc/systemd/system/touchbridge_jc11s.service <<'EOF'
-[Unit]
-Description=JC11S QEMU tablet -> synthetic multitouch bridge
-Before=engine.service
-DefaultDependencies=no
-After=systemd-udevd.service
-
-[Service]
-Type=simple
-ExecStart=/root/touchbridge_jc11s 1280 800
-Restart=always
-RestartSec=1
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-ln -sf ../touchbridge_jc11s.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_jc11s.service
+echo "--- wiring touchbridge.service + engine.service override ---"
+# The same unit either builder installs, each from its own SoC directory: the
+# binary is shared but the invocation is not -- RK3588 passes --head N and has a
+# templated unit per display, RK3288 is single-head and passes a resolution.
+cp -a /shims/rk3288/touchbridge/touchbridge.service /mnt/rootfs/etc/systemd/system/touchbridge.service
+ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge.service
 
 # The virtual control surface. The same unit both builders install: it names
 # no device and passes no client name, because the binary works out which
 # product to be from the guest's own product code.
-cp -a /shims-shared/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
 
-echo "--- disabling the tty1 getty (Engine's display) ---"
+echo "--- disabling the tty1 getty (Application's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
 # lives on, and the getty keeps reading the keyboard underneath it. Every
-# keystroke therefore goes to *both* Engine and a root login shell you cannot
-# see — typing into Engine's search box also types into that shell, and it is
-# entirely possible to power the machine off by accident that way.
+# keystroke therefore goes to *both* the app and a root login shell you cannot
+# see.
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
 # allocation) stops anything bringing it back.
 #
 # The *serial* getty is deliberately left alone — serial-getty@ttyAMA0 is a
-# different template and remains the way in on -serial stdio. Engine's own
-# keyboard input is unaffected: eglfs reads evdev directly, not the VT.
+# different template and remains the way in on -serial stdio.
 rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
@@ -409,12 +313,12 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
 [Unit]
-After=touchbridge_jc11s.service midisurface.service
-Requires=touchbridge_jc11s.service
+After=touchbridge.service midisurface.service
+Requires=touchbridge.service
 Wants=midisurface.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim_jc11s.so:/root/drmatomic_jc11s.so:/root/alsashim.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device
@@ -442,13 +346,7 @@ umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
 
-echo "--- final consistency check ---"
-e2fsck -f -y "$IMG" || true
-
-if [ ! -s "$IMG" ]; then
-    echo "ERROR: output image missing or empty — something failed silently above." >&2
-    exit 1
-fi
+verify_rootfs "$IMG"
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
@@ -460,7 +358,6 @@ docker run --rm --privileged \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
-    -v "$SHARED_SHIMS_DIR/midisurface:/shims-shared/midisurface:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

@@ -1,14 +1,24 @@
-/* Forked from dtshim.c for RANE SYSTEM ONE (RMZ2, arm64/RK3588) — see
- * BUILDING.md's arm64/RK3588 section. Devicetree layout differs from the
- * RK3288 az01 lineup this file was originally written for:
- *   - product-code value is "RMZ2", not JC11/JP11
+/* Serves a fake devicetree, and a usable /proc/interrupts, to an emulated Engine.
+ *
+ * One source, two SoCs. Everything that matters here -- the open/openat/fopen and
+ * write interposition, the runtime /proc/interrupts generation and its IRQ
+ * affinity probing, the /dev/mem neutering -- is the same on both, which is why
+ * this was two files that had diverged rather than two different shims. Define
+ * SOC_RK3588 or SOC_RK3288 to pick which devicetree properties it serves; that
+ * choice is the whole of the difference, and it lives in DT_REMAPS below.
+ *
+ * How the two devicetrees differ, for the record:
+ *   - product-code is "RMZ2" on RK3588; JC11/JP11/JP14 and relatives on RK3288
  *   - no inmusic,az01-pcb-rev property exists in RMZ2's devicetree
- *   - the panel/rotation node lives at dsi@fde20000/panel@0, not mipi@ff960000
- *   - no chosen/inmusic,internal-sd-fitted property found
- *   - the Qt5-ABI stub symbols in the original file are gone: this build is
+ *   - the panel/rotation node lives at dsi@... or edp-panel on RK3588, and at
+ *     mipi@ff960000 on RK3288
+ *   - no chosen/inmusic,internal-sd-fitted property on RK3588
+ *
+ * Two things the RK3288 original carried that neither build wants any more:
+ *   - the Qt5-ABI stub symbols are gone: this build is
  *     Qt 6.7.2, a different ABI, and that missing-symbol issue was never
  *     observed here
- *   - the original file's eglCreateWindowSurface/eglSurfaceAttrib
+ *   - the eglCreateWindowSurface/eglSurfaceAttrib
  *     interception (a workaround for a RK3288-era fbdev_window/single-buffer
  *     quirk) is gone too: on this build it actively broke KMS scanout —
  *     eglSwapBuffers kept succeeding but nothing ever reached the screen,
@@ -75,6 +85,8 @@ typedef int (*open64_t)(const char *, int, ...);
 typedef FILE *(*fopen_t)(const char *, const char *);
 typedef FILE *(*fopen64_t)(const char *, const char *);
 typedef ssize_t (*write_t)(int, const void *, size_t);
+typedef int (*access_t)(const char *, int);
+typedef int (*faccessat_t)(int, const char *, int, int);
 
 /* Shared real-libc handles, resolved once and reused both by the wrapper
  * functions below and by the internal /proc/interrupts generation/probing
@@ -295,16 +307,88 @@ static char *build_fake_interrupts(void) {
     return out;
 }
 
+/* The fixed part of this SoC's devicetree, served straight from here.
+ *
+ * These describe the hardware the guest is pretending to be, so they belong with
+ * the DT_REMAPS table below that decides they are served at all, selected by the
+ * same -DSOC_* flag. They used to be printf lines in the rootfs builders and one
+ * committed fixture file, in two different styles.
+ *
+ * Identity is the exception and stays a written file: inmusic,product-code and
+ * serial-number are per-instance, Engine shows the serial in Settings as
+ * DeviceSerialNumber, and midisurface opens the product-code file directly to
+ * decide which device to answer Engine's inquiry as. rootfs_steps/write_fake_dt.sh
+ * writes those two.
+ *
+ * FALLBACK_INTERRUPTS is a last resort, not the normal path: build_fake_interrupts()
+ * below derives the real thing at runtime, and this is only reached when that finds
+ * no usable IRQ at all. It is plausible synthetic data captured from hardware. */
+
+/* Raw big-endian <u32> devicetree cells, not text -- these carry NULs, so every
+ * user passes an explicit length rather than relying on strlen. */
+static const char DT_U32_ZERO[4] = {0, 0, 0, 0};
+
+#if defined(SOC_RK3588)
+static const char FALLBACK_INTERRUPTS[] =
+    "           CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7\n"
+    " 11:      19583      17716      20155      23272      18371      22086      23997      18307 GICv3  27 Level     arch_timer\n"
+    " 13:          9          0          0          0          0          0          0          0 GICv3  33 Level     uart-pl011\n"
+    " 16:        788          0        171          0          0          0          0          0   ITS-MSI 81920 Edge      dwc3\n"
+    " 17:       3124          0          0          0          0          0          0         16   ITS-MSI 81921 Edge      fe210000.sata\n"
+    " 18:          0          0          0          0          0          0          0          0   ITS-MSI 81922 Edge      fea10000.dma-controller\n"
+    " 19:         30          0          0          0          0          0          0          0   ITS-MSI 81923 Edge      ff0c0000.dwmmc\n"
+    " 20:         93          0          0          0          0          0          0          0   ITS-MSI 81924 Edge      ff0f0000.dwmmc\n"
+    " 23:          0          0          0          0          0          0          0          0   ITS-MSI 49152 Edge      ttyS0\n"
+    "IPI0:       246        143        230        259        212        204        285        216       Rescheduling interrupts\n"
+    "Err:          0\n";
+#elif defined(SOC_RK3288)
+static const char FALLBACK_INTERRUPTS[] =
+    "           CPU0       CPU1       CPU2       CPU3\n"
+    "  1:      12345      11111      10000       9999     GIC-0  29 Level     arch_timer\n"
+    "  2:        512          0          0          0     GIC-0  33 Level     uart-pl011\n"
+    " 32:       2508          0          0          0     GIC-0  74 Edge      dwc3\n"
+    " 33:         23          0          0          0     GIC-0  77 Edge      fe210000.sata\n"
+    " 34:          2          0          0          0     GIC-0  78 Edge      fea10000.dma-controller\n"
+    " 35:       2902          0          0          0     GIC-0  75 Edge      ff0c0000.dwmmc\n"
+    " 36:        107          0          0          0     GIC-0  73 Edge      ff0f0000.dwmmc\n"
+    " 37:        283          0          0          0     GIC-0  79 Edge      ttyS0\n";
+static const char DT_PCB_REV[] = "B";
+#endif
+
 static pthread_mutex_t gen_lock = PTHREAD_MUTEX_INITIALIZER;
 static char *fake_interrupts_content = NULL;
 static int fake_interrupts_generation_failed = 0;
 
 /* Returns an fd (from an anonymous memfd, so nothing touches the real
  * filesystem) with freshly-seeked fake /proc/interrupts content, or -1 if
- * generation isn't possible this run (caller falls back to the static
- * fake-dt-rmz2/interrupts file). Content is generated once per process and
+ * generation isn't possible this run (in which case FALLBACK_INTERRUPTS
+ * above answers instead). Content is generated once per process and
  * cached — every caller gets its own independent fd/position over the same
  * cached text, matching normal open() semantics for multiple readers. */
+/* Hand the caller a read-only fd over content this process holds in memory.
+ *
+ * A memfd rather than a temp file: nothing lands on a read-only rootfs, it needs
+ * no cleanup, and it is mmap-able for callers that want that. len 0 means "take
+ * strlen", which is what every text property wants; the binary properties pass
+ * their own length because they contain NULs. */
+static int blob_fd(const char *name, const char *content, size_t len) {
+    if (!content) return -1;
+    if (len == 0) len = strlen(content);
+
+    int fd = memfd_create(name, MFD_CLOEXEC);
+    if (fd < 0) return -1;
+
+    if (len && get_real_write()(fd, content, len) != (ssize_t)len) {
+        close(fd);
+        return -1;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 static int get_fake_interrupts_fd(void) {
     pthread_mutex_lock(&gen_lock);
     if (!fake_interrupts_content && !fake_interrupts_generation_failed) {
@@ -314,21 +398,13 @@ static int get_fake_interrupts_fd(void) {
     char *content = fake_interrupts_content;
     pthread_mutex_unlock(&gen_lock);
 
-    if (!content) return -1;
-
-    int fd = memfd_create("fake-proc-interrupts", MFD_CLOEXEC);
-    if (fd < 0) return -1;
-
-    size_t len = strlen(content);
-    if (get_real_write()(fd, content, len) != (ssize_t)len) {
-        close(fd);
-        return -1;
-    }
-    if (lseek(fd, 0, SEEK_SET) < 0) {
-        close(fd);
-        return -1;
-    }
-    return fd;
+    /* Generation is what normally answers this read. FALLBACK_INTERRUPTS is the
+     * last resort, for when the real /proc/interrupts cannot be read at all or
+     * holds no IRQ that survives the affinity probe. It used to be a file the
+     * builders wrote; it is compiled in so it cannot drift from what the parser
+     * above expects, or be forgotten by a builder. */
+    if (!content) return blob_fd("fake-proc-interrupts", FALLBACK_INTERRUPTS, 0);
+    return blob_fd("fake-proc-interrupts", content, 0);
 }
 
 /* If path is "/proc/irq/<N>/smp_affinity" or ".../smp_affinity_list",
@@ -374,6 +450,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     return get_real_write()(fd, buf, count);
 }
 
+#if defined(SOC_RK3588)
 /* Devicetree-access logging. remap() below only special-cases the handful
  * of /sys/firmware/devicetree/base/... paths we already know Engine reads
  * (product-code, serial-number, rotation) — anything else under that tree
@@ -437,22 +514,148 @@ static void log_dt_access(const char *fn, const char *orig_path,
     pthread_mutex_unlock(&dt_log_lock);
     errno = saved_errno;
 }
+#else
+/* The logging above exists for the RK3588 bring-up, where it answered which
+ * devicetree properties Engine actually reads. Compiled out elsewhere rather
+ * than deleted: the call sites below stay identical for both SoCs, and
+ * `if (0) ...` costs nothing. */
+#define is_dt_path(p) 0
+#define log_dt_access(fn, orig, mapped, ok, err) ((void)0)
+#endif
 
+/* Which devicetree properties this shim serves from /root/fake-dt, per SoC.
+ *
+ * dtshim remaps unconditionally: if a path is listed here, the file it points at
+ * must exist in the guest, because a missing target turns a working read into
+ * ENOENT. That loudness is deliberate -- a silently-absent property is far harder
+ * to diagnose than a failed read -- so the builders write exactly this set, and
+ * the two lists are kept whole per SoC rather than factored into a common part
+ * plus differences. What each SoC remaps is then readable in one place.
+ *
+ * The RK3588 panel node lives at dsi@... or edp-panel; RK3288's at
+ * mipi@ff960000. RK3288 additionally has an az01-pcb-rev and a
+ * chosen/inmusic,internal-sd-fitted that RK3588 has no property for. */
+/* Exactly one of `to` and `blob` is set. `to` is a path to open instead; `blob`
+ * is content this process serves from memory, with `len` 0 meaning strlen. */
+struct dt_remap {
+    const char *from;
+    const char *to;
+    const char *blob;
+    size_t len;
+};
+
+static const struct dt_remap DT_REMAPS[] = {
+    /* Identity: written per build, so served from files. */
+    {"/sys/firmware/devicetree/base/inmusic,product-code",
+                                    "/root/fake-dt/inmusic,product-code", NULL, 0},
+    {"/sys/firmware/devicetree/base/serial-number",
+                                    "/root/fake-dt/serial-number",        NULL, 0},
+#if defined(SOC_RK3588)
+    /* Four nodes, one value: which panel node exists depends on the display this
+     * image is built for, and dtshim answers whichever Engine probes. */
+    {"/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation",  NULL, DT_U32_ZERO, 4},
+    {"/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation",  NULL, DT_U32_ZERO, 4},
+    {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", NULL, DT_U32_ZERO, 4},
+    {"/sys/firmware/devicetree/base/edp-panel/rotation",             NULL, DT_U32_ZERO, 4},
+#elif defined(SOC_RK3288)
+    {"/sys/firmware/devicetree/base/inmusic,az01-pcb-rev", NULL, DT_PCB_REV, 0},
+    {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", NULL, DT_U32_ZERO, 4},
+    {"/sys/firmware/devicetree/base/chosen/inmusic,internal-sd-fitted",
+                                                          NULL, DT_U32_ZERO, 4},
+#else
+# error "define SOC_RK3288 or SOC_RK3588 so dtshim knows which properties to serve"
+#endif
+    /* Not a devicetree property, and the same on every SoC: /dev/mem is remapped
+     * to a plain file so a mmap of it fails cleanly rather than handing out real
+     * physical memory, which is what the hardware anti-clone check probes. Left as
+     * a file rather than a blob so that failure mode does not move.
+     *
+     * /proc/interrupts is deliberately absent from this table: the wrappers answer
+     * it from get_fake_interrupts_fd() before remap() is consulted, generating it
+     * at runtime and falling back to FALLBACK_INTERRUPTS, so there is no path to
+     * remap it to. */
+    {"/dev/mem",         "/root/fake-dev-mem", NULL, 0},
+};
+
+static const struct dt_remap *dt_lookup(const char *path) {
+    if (!path) return NULL;
+    for (size_t i = 0; i < sizeof(DT_REMAPS) / sizeof(DT_REMAPS[0]); i++)
+        if (strcmp(path, DT_REMAPS[i].from) == 0)
+            return &DT_REMAPS[i];
+    return NULL;
+}
+
+/* The path to open for this request: a remap target, or the original. An entry
+ * served from a blob has no path, and callers check for that first. */
 static const char *remap(const char *path) {
     if (!path) return NULL;
-    if (strcmp(path, "/sys/firmware/devicetree/base/inmusic,product-code") == 0)
-        return "/root/fake-dt/inmusic,product-code";
-    if (strcmp(path, "/sys/firmware/devicetree/base/serial-number") == 0)
-        return "/root/fake-dt/serial-number";
-    if (strcmp(path, "/dev/mem") == 0)
-        return "/root/fake-dev-mem";
-    if (strcmp(path, "/sys/firmware/devicetree/base/dsi@fde20000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation") == 0 || strcmp(path, "/sys/firmware/devicetree/base/edp-panel/rotation") == 0)
-        return "/root/fake-dt/rotation";
-    /* Static fallback only — see get_fake_interrupts_fd() above, which is
-     * tried first and covers the normal case dynamically. */
-    if (strcmp(path, "/proc/interrupts") == 0)
-        return "/root/fake-dt/interrupts";
-    return path;
+    const struct dt_remap *e = dt_lookup(path);
+    return (e && e->to) ? e->to : path;
+}
+
+/* An fd over a blob entry's content, or -1 if this path is not served that way. */
+static int dt_blob_fd(const char *path) {
+    const struct dt_remap *e = dt_lookup(path);
+    if (!e || !e->blob) return -1;
+    return blob_fd("fake-dt-property", e->blob, e->len);
+}
+
+/* Existence checks, which a caller may do before ever opening the file.
+ *
+ * MPC does exactly that: it imports access() and, notably, no member of the stat
+ * family at all, so a guarded read of inmusic,product-code never reaches the open
+ * wrappers below -- the guard fails on the real sysfs path and the read is
+ * abandoned. That is invisible from Engine, which opens directly, and it is why an
+ * emulated MPC identified as <Unknown> despite the shim serving the property
+ * correctly to anything that asked for it by opening.
+ *
+ * Deliberately not interposing the stat family. Nothing needs it: MPC imports none
+ * of it and Engine opens directly. It is also the riskiest family to interpose --
+ * stat/stat64/__xstat/__xstat64/statx differ by glibc version and by
+ * _FILE_OFFSET_BITS, so getting it wrong breaks every caller rather than only the
+ * ones that wanted a devicetree. Add it when something demonstrably needs it.
+ */
+int access(const char *path, int mode) {
+    static access_t real_access = NULL;
+    if (!real_access) real_access = (access_t)dlsym(RTLD_NEXT, "access");
+    if (!path) return real_access(path, mode);
+
+    const struct dt_remap *e = dt_lookup(path);
+    /* A blob-backed property has no file anywhere to consult, so answer from the
+     * table: it is there and readable, and nothing the shim serves is writable or
+     * executable. */
+    if (e && e->blob) {
+        if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
+        if (is_dt_path(path)) log_dt_access("access", path, "<in-memory>", 1, 0);
+        return 0;
+    }
+    const char *mapped = remap(path);
+    int rc = real_access(mapped, mode);
+    if (is_dt_path(path)) log_dt_access("access", path, mapped, rc == 0, errno);
+    return rc;
+}
+
+/* Same remap for the at-relative form. Only AT_FDCWD with an absolute path can
+ * name a devicetree property -- every path the table holds is absolute -- so
+ * anything else goes straight through rather than being second-guessed. */
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    static faccessat_t real_faccessat = NULL;
+    if (!real_faccessat) real_faccessat = (faccessat_t)dlsym(RTLD_NEXT, "faccessat");
+    if (path && path[0] == '/') {
+        const struct dt_remap *e = dt_lookup(path);
+        if (e) {
+            if (e->blob) {
+                if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
+                if (is_dt_path(path)) log_dt_access("faccessat", path, "<in-memory>", 1, 0);
+                return 0;
+            }
+            const char *mapped = remap(path);
+            int rc = real_faccessat(dirfd, mapped, mode, flags);
+            if (is_dt_path(path)) log_dt_access("faccessat", path, mapped, rc == 0, errno);
+            return rc;
+        }
+    }
+    return real_faccessat(dirfd, path, mode, flags);
 }
 
 int open(const char *path, int flags, ...) {
@@ -464,6 +667,11 @@ int open(const char *path, int flags, ...) {
     if (path && strcmp(path, "/proc/interrupts") == 0) {
         int fd = get_fake_interrupts_fd();
         if (fd >= 0) return fd;
+    }
+    int blob = dt_blob_fd(path);
+    if (blob >= 0) {
+        if (is_dt_path(path)) log_dt_access("open", path, "<in-memory>", 1, 0);
+        return blob;
     }
     const char *mapped = remap(path);
     int fd = get_real_open()(mapped, flags, mode);
@@ -483,6 +691,11 @@ int open64(const char *path, int flags, ...) {
         int fd = get_fake_interrupts_fd();
         if (fd >= 0) return fd;
     }
+    int blob = dt_blob_fd(path);
+    if (blob >= 0) {
+        if (is_dt_path(path)) log_dt_access("open64", path, "<in-memory>", 1, 0);
+        return blob;
+    }
     const char *mapped = remap(path);
     int fd = real_open64(mapped, flags, mode);
     if (is_dt_path(path)) log_dt_access("open64", path, mapped, fd >= 0, errno);
@@ -497,6 +710,15 @@ FILE *fopen(const char *path, const char *mode) {
             if (f) return f;
             close(fd);
         }
+    }
+    int blob = dt_blob_fd(path);
+    if (blob >= 0) {
+        FILE *bf = fdopen(blob, mode);
+        if (bf) {
+            if (is_dt_path(path)) log_dt_access("fopen", path, "<in-memory>", 1, 0);
+            return bf;
+        }
+        close(blob);
     }
     const char *mapped = remap(path);
     FILE *f = get_real_fopen()(mapped, mode);
@@ -515,6 +737,15 @@ FILE *fopen64(const char *path, const char *mode) {
             if (f) return f;
             close(fd);
         }
+    }
+    int blob = dt_blob_fd(path);
+    if (blob >= 0) {
+        FILE *bf = fdopen(blob, mode);
+        if (bf) {
+            if (is_dt_path(path)) log_dt_access("fopen64", path, "<in-memory>", 1, 0);
+            return bf;
+        }
+        close(blob);
     }
     const char *mapped = remap(path);
     FILE *f = real_fopen64(mapped, mode);

@@ -27,8 +27,11 @@ falling back to TCG.
 scripts/build_scripts/new_instance.sh --name rmz2-4.6.0 --device engine \
     --firmware /path/to/SYSTEMONE-4.6.0-Update.img
 
+#    One image usually serves several products, so --product-code picks which one
+#    the guest claims to be. It is optional -- each builder has a default -- and it
+#    is recorded in instance.env, so a later --force rebuild keeps it.
 scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
-    --firmware /path/to/MPC-3.9.1-Gen1-update.img
+    --product-code ACV5 --firmware /path/to/MPC-3.9.1-Gen1-update.img
 
 # Engine OS also ships on armv7 (the RK3288 Prime/SC/Mixstream controllers). It is
 # the same --device engine, on a different architecture; which builder and disk
@@ -57,8 +60,12 @@ and `debian:trixie` tags at different architectures, and Docker caches a tag at 
 one architecture at a time, so building an arm64 and an armv7 target concurrently
 will fight over them. Sequentially is fine — each build pulls what it needs.
 
-In the MPC guest, failing units for LoadPin verity trustpoints, AZ0x system info
-logging and XMOS USB audio firmware are expected: none of that hardware exists here.
+In the MPC guest, failing units for LoadPin verity trustpoints and XMOS USB audio
+firmware are expected: none of that hardware exists here. `AZ0x system info logging`
+also fails, but for a different and fixable reason — it runs `az0x-info`, which reads
+the faked devicetree, and only `acvs.service` carries the `dtshim` preload that makes
+that readable. Run it by hand as `LD_PRELOAD=/root/dtshim.so az0x-info` to see what
+the application itself resolves.
 
 ## Engine OS Support Matrix
 |                         | 5.0.4 (arm64) | 5.0.4 (armv7) | 4.6.0 | 4.3.0 |
@@ -79,7 +86,7 @@ software (`kms_swrast` — virgl needs PCI, which the 32-bit `virt` machine lack
 `QT VNC Display` is N for the same reason as arm64: Qt 6.7.2 ships no `libqvnc.so`.
 Audio is N because the shim stack it needs was left out, not because it was tried
 and failed. Touch is confirmed end-to-end against the SDL display —
-`touchbridge_jc11s` re-emits QEMU's absolute tablet as a uinput multitouch device and
+`touchbridge` re-emits QEMU's absolute tablet as a uinput multitouch device and
 Engine responds to it. The remaining `?` rows are untried, not known-broken. See
 [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
 
@@ -110,10 +117,11 @@ version was never released for the device.
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –   | –   | ?   | ?       | ?     |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –   | –   | –   | 4.6.0   | 5.0.4 |
 
-SC5000 on 5.0.4 boots to a rendered UI but has no audio or control surface yet — see
-the support matrix above. Its image (`JP07-JP08-JP11`) also carries `JP08` and `JP11`;
-both are selectable with `PRODUCT_CODE=` on the rootfs build but neither has been
-booted. `!` on Prime GO 4.3.0 marks a known issue rather than a clean pass.
+SC5000 on 5.0.4 boots to a rendered UI and binds a virtual control surface; audio is
+what it still lacks — see the support matrix above. Its image (`JP07-JP08-JP11`) also
+carries `JP08` and `JP11`; both are selectable with `PRODUCT_CODE=` on the rootfs
+build but neither has been booted. `PRODUCT_CODE=` works on the arm64 builder too,
+defaulting to `RMZ2`. `!` on Prime GO 4.3.0 marks a known issue rather than a clean pass.
 
 ## Emulated MPCs
 
@@ -123,21 +131,26 @@ read here from the `model` and `inmusic,product-code` properties of the
 version booted, `?` for untested. The Gen 1 MPCs all ship from one image covering
 eight models, so a version column is the *image* version.
 
-|               | Code  | SOC    | Signed FW | Arch  | 2.x | 3.x     |
-|---------------|-------|--------|-----------|-------|-----|---------|
-| MPC X         | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC X SE      | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC Live      | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC Live Mk 2 | ACVB  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC One       | ACVA  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC One+      | ACVA2 | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC Key 61    | ACVM  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
-| MPC Key 37    | ACVR  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 * |
+|               | Code  | SOC    | Signed FW | Arch  | 2.x | 3.x   |
+|---------------|-------|--------|-----------|-------|-----|-------|
+| MPC X         | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC X SE      | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC Live      | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC Live Mk 2 | ACVB  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC One       | ACVA  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC One+      | ACVA2 | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC Key 61    | ACVM  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+| MPC Key 37    | ACVR  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
 
-`*` — the shared 3.9.1 image boots to a rendered UI, but no per-model identity is
-asserted: unlike Engine, the MPC build spoofs no product code (there is no `dtshim`
-in `build_mpc_rootfs.sh`, and `/usr/bin/az01-launch-MPC` selects nothing), so the
-pass covers the image all eight models ship from rather than an individual model.
+The MPC build spoofs a product code the same way the Engine builds do: `PRODUCT_CODE`
+(or `--product-code`) selects it, and the RK3288 `dtshim` is preloaded into
+`acvs.service` so MPC reads it. MPC resolves it through `libaz0x-info` and names
+itself accordingly — `ACV5` boots to a rendered UI that identifies as MPC X and shows
+its firmware version, which is why that cell carries no `*`.
+
+Two rows of MPC's own info screen stay unresolved on every model: the serial number
+and the control surface. Neither comes from the devicetree — both come from the
+control-surface MCU over USB at fixed bus positions, which nothing here emulates yet.
 
 **Signed FW is a version boundary here, not a per-model one.** Every 2.x image
 begins `d00dfeed` — a DTB wrapper around the whole file, which `binwalk` alone

@@ -17,7 +17,7 @@
  * bring-up). Rather than hardcode a number, find_tablet_device() scans
  * /dev/input/event* at startup and picks the one whose EVIOCGNAME matches
  * QEMU's tablet and which actually reports ABS_X/ABS_Y — self-healing
- * across device-list changes the same way dtshim_rmz2.c's dynamic
+ * across device-list changes the same way dtshim.c's dynamic
  * /proc/interrupts generation is. An explicit path can still be passed as
  * an override (see main()'s argument handling) for testing against
  * something else.
@@ -324,10 +324,10 @@ static void setup_uinput_device(void) {
      * udev rule, a debugging habit — should not break just because the program
      * learned to run more than one copy of itself. */
     if (opt_index == 0)
-        snprintf(usetup.name, sizeof(usetup.name), "RMZ2TouchBridge Virtual Touchscreen");
+        snprintf(usetup.name, sizeof(usetup.name), "TouchBridge Virtual Touchscreen");
     else
         snprintf(usetup.name, sizeof(usetup.name),
-                 "RMZ2TouchBridge Virtual Touchscreen %d", opt_index);
+                 "TouchBridge Virtual Touchscreen %d", opt_index);
     ioctl(uifd, UI_DEV_SETUP, &usetup);
 
     struct uinput_abs_setup abs_x = { .code = ABS_X, .absinfo = { .minimum = 0, .maximum = screen_w } };

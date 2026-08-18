@@ -60,8 +60,9 @@ dkms.conf
 build/
 
 # Built Files
-shims/rk3588/touchbridge_rmz2/touchbridge_rmz2
+shims/touchbridge/touchbridge_*
 shims/midisurface/midisurface_*
+shims/rk3288/vnctouchbridge/vnctouchbridge_*
 
 # AI
 .claude/

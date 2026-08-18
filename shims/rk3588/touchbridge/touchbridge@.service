@@ -1,7 +1,7 @@
 [Unit]
 # Per-head instance: %i is the virtio-gpu head number, 0-based.
 #
-# Head 0 is served by the non-templated touchbridge_rmz2.service, so in practice
+# Head 0 is served by the non-templated touchbridge.service, so in practice
 # only 1 and upwards are instantiated here. Both are enabled unconditionally by
 # the rootfs build because the head count is a *runtime* property (GPU_MAX_OUTPUTS
 # on the launcher) that the build cannot know.
@@ -13,14 +13,14 @@
 # The wait lives inside the program instead, which can tell "not enumerated yet"
 # from "this guest has fewer displays" and exits 0 for the latter, so
 # Restart=on-failure leaves it alone.
-Description=RMZ2 QEMU tablet -> synthetic multitouch bridge (head %i)
+Description=QEMU tablet -> synthetic multitouch bridge (head %i)
 Before=engine.service
 DefaultDependencies=no
 After=systemd-udevd.service
 
 [Service]
 Type=simple
-ExecStart=/root/touchbridge_rmz2 --head %i
+ExecStart=/root/touchbridge --head %i
 Restart=on-failure
 RestartSec=1
 StandardOutput=journal

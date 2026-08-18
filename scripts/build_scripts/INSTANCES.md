@@ -125,8 +125,9 @@ boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` 
 used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
 overrides the choice.
 
-armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one
-and it boots to a rendered UI, though without audio or a control surface yet. arm64
+armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one,
+and it boots to a rendered UI with a virtual control surface bound. Audio is what it
+still lacks. arm64
 MPC remains untried — no builder produces that rootfs, so the command line has never
 been booted, and `new_instance.sh` says so when it sees one. The virgl display modes
 additionally refuse armhf outright, since `virtio-gpu-gl` exists only as a PCI device,

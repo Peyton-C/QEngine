@@ -22,6 +22,11 @@
 #               the firmware still has to be looked at to tell which.
 #   --firmware  path to the firmware .img to extract
 #   --size      rootfs image size in bytes, passed through to the builder
+#   --product-code  which device identity to spoof, e.g. JP14, RMZ2, ACV5. Passed to
+#               the builder as PRODUCT_CODE and recorded in instance.env, so a later
+#               --force rebuild keeps it instead of silently reverting to the
+#               builder's default. Omit to keep what this instance already has, or
+#               to take the builder's default on a new instance.
 #   --force     rebuild the rootfs even if this instance already has one
 #
 # The kernel and initrd are deliberately *not* per-instance: they are generic
@@ -43,6 +48,8 @@ DEVICE=""
 FIRMWARE=""
 SIZE=""
 FORCE=0
+PRODUCT_CODE_ARG=""
+
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +57,7 @@ while [ $# -gt 0 ]; do
         --device) DEVICE="$2"; shift 2 ;;
         --firmware) FIRMWARE="$2"; shift 2 ;;
         --size) SIZE="$2"; shift 2 ;;
+        --product-code) PRODUCT_CODE_ARG="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -249,6 +257,23 @@ ROOTFS_ARGS=(--firmware "$FIRMWARE" --out "$ROOTFS_IMG")
 # after the builder exits successfully, and an unmarked image is rebuilt rather
 # than trusted. Without this, a failed build yields an instance that boots to a
 # login prompt with none of the shims, which looks like a working instance.
+# The product code has to survive a rebuild. It is a build-time property baked into
+# the rootfs, so without recording it a --force rebuild of an instance created as
+# JP14 would quietly come back as the builder's JP07 default -- a working guest
+# claiming to be the wrong device, which is exactly the kind of thing that is noticed
+# three debugging steps later.
+if [ -n "$PRODUCT_CODE_ARG" ]; then
+    PRODUCT_CODE="$PRODUCT_CODE_ARG"
+elif [ -f "$INSTANCE_DIR/instance.env" ]; then
+    PRODUCT_CODE="$(sed -n 's/^PRODUCT_CODE=//p' "$INSTANCE_DIR/instance.env")"
+else
+    PRODUCT_CODE=""
+fi
+# Exported rather than passed as a flag: that is the interface all three builders
+# already have, and it keeps this script out of the business of knowing which
+# defaults belong to which family.
+if [ -n "$PRODUCT_CODE" ]; then export PRODUCT_CODE; fi
+
 STAMP="$INSTANCE_DIR/.rootfs.complete"
 
 if [ -e "$ROOTFS_IMG" ] && [ -e "$STAMP" ] && [ "$FORCE" -ne 1 ]; then
@@ -376,6 +401,7 @@ ROOTFS_IMG=$ROOTFS_IMG
 DATA_IMG=$DATA_IMG
 ROOT_UUID=$ROOT_UUID
 ARCH=$ARCH
+PRODUCT_CODE=$PRODUCT_CODE
 KERNEL_IMG=$KERNEL_IMG
 INITRD_IMG=$INITRD_IMG
 SSH_PORT=$(( 2200 + OFFSET ))

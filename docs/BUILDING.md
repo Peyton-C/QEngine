@@ -452,7 +452,7 @@ host even though the exact same `rootfs_out.img` worked elsewhere:
   identical command line. Symptom: `Failed to set CPU affinity for IRQ
   ttyS0 to CPU 4` (or similar) crash-looping `engine.service`. Fix: compare
   against the real `/proc/interrupts`, remap to a currently-writable `Edge`
-  IRQ (see [shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)).
+  IRQ (see [shims/dtshim/README.md](../shims/dtshim/README.md)).
 - **Compressed kernel modules silently fail to load** if this rootfs's
   `kmod` lacks `zstd` support (`modprobe --version` shows `-ZSTD`) — first
   found blocking `nls_iso8859-1` (external media wouldn't mount), but hit
@@ -634,17 +634,20 @@ needs a daemon that isn't always running/passwordless-startable; rootless
    as the RK3288 devices: `dtshim.c` remaps that path (plus
    `serial-number` and the `dsi@fde20000/panel@0/rotation` path — see
    [1.](#1-extracting-kernel--initrd--devicetree-from-the-signed-fit) for
-   where those values came from) to files under `/root/fake-dt/`. Fake
-   files and the updated shim source live in
-   [shims/rk3588/dtshim/fake-dt-rmz2/](../shims/rk3588/dtshim/fake-dt-rmz2/).
+   where those values came from). `inmusic,product-code` and `serial-number`
+   are served from files under `/root/fake-dt/`, which
+   [rootfs_steps/write_fake_dt.sh](../scripts/build_scripts/rootfs_steps/write_fake_dt.sh)
+   writes; the rotation cell is compiled into the shim. See
+   [shims/dtshim/](../shims/dtshim/).
 2. **Hardware IRQ-affinity crashes** — separately, Engine itself
    (compiled in, not a shell script) hard-throws
    (`std::runtime_error`, uncaught, aborts) if it can't find a
    `/proc/interrupts` line by name for six real-hardware components —
    `dwc3`, `fe210000.sata`, `fea10000.dma-controller`, `ff0c0000.dwmmc`,
    `ff0f0000.dwmmc`, `ttyS0` — none of which exist under QEMU. Fixed by
-   also remapping `/proc/interrupts` to a fake file
-   ([shims/rk3588/dtshim/fake-dt-rmz2/interrupts](../shims/rk3588/dtshim/fake-dt-rmz2/interrupts))
+   also answering `/proc/interrupts` from the shim — generated at runtime,
+   with `FALLBACK_INTERRUPTS` in
+   [shims/dtshim/dtshim.c](../shims/dtshim/dtshim.c) as the last resort —
    containing all six names, each reusing a real IRQ number already
    present in the guest — necessary because after finding each IRQ,
    Engine immediately writes its CPU affinity, which needs the number to
@@ -658,7 +661,7 @@ Deployed via an `engine.service` systemd drop-in
 `Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so` and
 `Environment=QT_QPA_PLATFORM=eglfs`) rather than editing the vendor
 `runengine`/`engine` scripts in place — see
-[shims/rk3588/dtshim/fake-dt-rmz2/README.md](../shims/rk3588/dtshim/fake-dt-rmz2/README.md)
+[shims/dtshim/README.md](../shims/dtshim/README.md)
 for the exact deployment steps and a couple of file-format gotchas
 (`printf` vs. plain file copy for the product-code/serial-number values;
 `rotation`'s raw big-endian binary cell).
@@ -848,8 +851,8 @@ scripts), and identical `/data`/`/factory` `PARTUUID`s
 from the 4.6.0 setup is reusable as-is, no rebuild needed.
 
 Brought up with **zero shim changes**: the exact same
-`dtshim.so`/`drmatomic.so`/`touchbridge` binaries and
-`fake-dt-rmz2` files from the working 4.6.0 setup, copied unmodified into a
+`dtshim.so`/`drmatomic.so`/`touchbridge` binaries and the fake-devicetree
+files as they were then from the working 4.6.0 setup, copied unmodified into a
 fresh 5.0.4 rootfs. For a transplant this size (several files across
 `/root`, `/etc/systemd/system/`, `/usr/Engine/ScreenConfiguration/`),
 bulk file operations in a real Linux environment beat repeating
@@ -1060,10 +1063,10 @@ properties it serves, and refuses to compile without one. Everything else in it 
 shared.
 
 What stays under `shims/rk3288/` and `shims/rk3588/` is what is genuinely tied to one
-SoC or one product: `dtshim/fake-dt-rmz2/` (RK3588's static `/proc/interrupts`
-fallback), each SoC's `touchbridge/` service units — RK3588 instantiates a templated
-one per display where RK3288 is single-head — and `controllermap/`, which hardcodes
-RMZ2's assignment directory.
+SoC or one product: each SoC's `touchbridge/` service units — RK3588 instantiates a
+templated one per display where RK3288 is single-head — and `controllermap/`, which
+hardcodes RMZ2's assignment directory. `dtshim` carries its own per-SoC data now, so
+nothing of its remains there.
 
 The steps both rootfs builders perform identically live in
 [scripts/build_scripts/rootfs_steps/](../scripts/build_scripts/rootfs_steps/), one

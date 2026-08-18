@@ -1,5 +1,6 @@
 #!/bin/bash
-# Automates extraction and modifcation of stock Engine rootfs for QEngine
+# Automates extraction and modification of a stock *arm64 / RK3588* Engine OS rootfs
+# for QEngine.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
@@ -10,7 +11,7 @@
 #   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge shims +
 #      fake-dt files into /root.
 #   6. Wire touchbridge.service, midisurface.service (virtual control
-#      surface, auto motor-off), controllermap.service (USB controller ->
+#      surface), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
 #      actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
@@ -129,9 +130,8 @@ docker run --rm --platform linux/arm64 \
     -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
-        # The shims and the staged DRI driver are copied straight into an arm64
-        # rootfs, so a wrong-architecture container here would graft foreign
-        # binaries in. Fail loudly instead.
+        # These shims and the staged DRI driver are copied straight into an arm64 rootfs, so a
+        # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
         case "$(uname -m)" in aarch64|arm64) ;; *)
             echo "ERROR: shim container is $(uname -m), expected aarch64." >&2; exit 1 ;;
         esac
@@ -234,6 +234,10 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-aarch64.so.1 ]; then
     echo "       This builds arm64/RK3588 Engine OS firmware only." >&2
     exit 1
 fi
+if [ ! -d /mnt/rootfs/usr/Engine ]; then
+    echo "ERROR: no /usr/Engine in this rootfs, so it is not an Engine OS image." >&2
+    exit 1
+fi
 
 harden_for_emulation /mnt/rootfs
 skip_firmware_update /mnt/rootfs
@@ -256,18 +260,19 @@ cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
-chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
-          /mnt/rootfs/root/touchbridge /mnt/rootfs/root/alsashim.so \
+chmod 755 /mnt/rootfs/root/dtshim.so \
+          /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge \
+          /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/midisurface
+
+# PRODUCT_CODE selects which device this pretends to be.
 write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-RMZ2}"
+
 # Only this build installs teeshim: it bypasses a TEE check that only Engine
 # 5.1.0+ on RK3588 makes, and there is no armv7 counterpart.
 cp -a /shims/teeshim/teeshim_$SHIM_ARCH.so /mnt/rootfs/root/teeshim.so
 chmod 755 /mnt/rootfs/root/teeshim.so
-# A static /proc/interrupts, kept only as a last-resort fallback: dtshim generates
-# this content at runtime from the real /proc/interrupts and falls back to the file
-# only if that finds no usable IRQ at all.
-cp -a /shims/rk3588/dtshim/fake-dt-rmz2/interrupts /mnt/rootfs/root/fake-dt/
 
 echo "--- installing controllermap (USB controller -> assignment mapping) ---"
 mkdir -p /mnt/rootfs/root/controllermap/mappings

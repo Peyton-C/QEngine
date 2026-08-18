@@ -1,8 +1,6 @@
 #!/bin/bash
 # Automates extraction and modification of a stock *armv7 / RK3288* Engine OS rootfs
-# for QEngine. The arm64 sibling is build_arm64_rootfs.sh; this file is a minimal
-# diff against it, and the differences are all consequences of the architecture and
-# of what this rootfs already ships.
+# for QEngine.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
@@ -11,8 +9,9 @@
 #   4. Build the dtshim/drmatomic/touchbridge shims for armhf. Only dtshim is
 #      RK3288-specific; the other two compile from the RK3588 sources unmodified.
 #   5. Copy those shims + fake-dt files into /root.
-#   6. Wire touchbridge.service and an engine.service.d override so
-#      engine.service loads the shims and starts eglfs.
+#   6. Wire touchbridge.service, midisurface.service (virtual control
+#      surface) and an engine.service.d override so
+#      engine.service actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind Engine's fullscreen display.
@@ -24,15 +23,6 @@
 #
 # Not carried over from the arm64 build: controllermap, which exists to swap a
 # real USB controller's assignment files in and hardcodes RMZ2's directory.
-#
-# alsashim and midisurface ARE carried over, because the control surface needs
-# both: midisurface is the virtual surface Engine binds, and alsashim is what
-# makes Engine willing to bind it at all -- its MIDI enumerator drops any
-# sequencer client with no card number, which a userspace client never has.
-# Only that one gate is wanted here. alsashim's other job, getting an emulated
-# sound card past Engine's card-name allowlist, is an audio concern and the
-# 32-bit virt machine has no PCI for the HDA device anyway, so no ALSASHIM_CARD
-# is set and audio stays out of scope.
 #
 # Usage: build_armv7_engine_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
@@ -140,14 +130,9 @@ docker run --rm --platform linux/arm/v7 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
-        # No apostrophes below, comments included: this whole block is one
-        # single-quoted argument, and one would end it early and hand the rest to
-        # the host shell — which then runs the gcc lines against a /shims that does
-        # not exist there. The privileged container further down takes its script
-        # through a quoted heredoc instead and has no such restriction.
         set -e
         # These shims are copied straight into an armv7 rootfs, so a
-        # wrong-architecture container here would graft foreign binaries in.
+        # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
         case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
             echo "ERROR: shim container is $(uname -m), expected armv7l." >&2; exit 1 ;;
         esac
@@ -158,27 +143,12 @@ docker run --rm --platform linux/arm/v7 \
         # nothing foreign needs staging in. See the privileged container below.
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
 
-        # dtshim is the only genuinely RK3288-specific shim. drmatomic and
-        # touchbridge build from the RK3588 sources: neither depends on the CPU
-        # architecture, only on the DRM and uinput kernel UAPIs, whose fixed-width
-        # types make 32- and 64-bit callers equally correct (docs/BUILDING.md, the
-        # JC11S / Engine 5.0.4 section).
-        #
-        # What 32-bit did change is the *name* an LD_PRELOAD shim has to export.
-        # The glibc in this guest is a 64-bit-time_t build, so its headers redirect
-        # ioctl() to __ioctl_time64() and that is the name its libdrm imports;
-        # drmatomic.c exports both, which is what makes it interpose here at
-        # all. Nothing in that is RK3288-specific, so it stays in the shared source.
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
             -o /shims/drmatomic/drmatomic_$SHIM_ARCH.so /shims/drmatomic/drmatomic.c -ldl
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
-
-        # The control surface, from the same RK3588 sources: neither is
-        # architecture-specific. alsashim resolves everything through dlsym so it
-        # needs no ALSA headers; midisurface links libasound directly.
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -O2 -Wall \
@@ -274,64 +244,24 @@ echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
-# Landed without a device in the name, unlike the shims either builder has
-# carried since before this build existed. alsashim is architecture-neutral --
-# it resolves everything through dlsym -- so both builders will eventually
-# install one file from one source, and the guest-side path is the half of that
-# which costs nothing to settle now.
 cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
 # A service rather than a preload: it is a MIDI device Engine binds, not a
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
-chmod 755 /mnt/rootfs/root/dtshim.so /mnt/rootfs/root/drmatomic.so \
-          /mnt/rootfs/root/touchbridge /mnt/rootfs/root/alsashim.so \
+chmod 755 /mnt/rootfs/root/dtshim.so \
+          /mnt/rootfs/root/drmatomic.so \
+          /mnt/rootfs/root/touchbridge \
+          /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/midisurface
 
 # The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
 # only the values are ours. Every one of them must exist, because the shim remaps
 # unconditionally and a missing target turns a working read into ENOENT.
 #
-# PRODUCT_CODE selects which device this pretends to be. This one firmware image
-# serves JP07 (SC5000), JP08 (SC5000M) and JP11 (Prime GO), and /usr/Engine is shared across all of
-# them, so the code is the only thing that distinguishes them.
+# PRODUCT_CODE selects which device this pretends to be.
 write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-JP07}"
-printf '%s' 'B' > "/mnt/rootfs/root/fake-dt/inmusic,az01-pcb-rev"
-# Raw big-endian <u32> devicetree cell, not text.
-printf '\x00\x00\x00\x00' > "/mnt/rootfs/root/fake-dt/inmusic,internal-sd-fitted"
-# /dev/mem is remapped to a plain file so a mmap of it fails cleanly rather than
-# handing out real physical memory. Sparse, never read past its header.
-: > /mnt/rootfs/root/fake-dev-mem
-# A static /proc/interrupts, kept only as a last-resort fallback: dtshim_jc11s
-# generates this content at runtime from the real /proc/interrupts, and falls back
-# to this file only if that finds no usable IRQ at all.
-#
-# The affinity check it exists for is no longer hypothetical. Engine on RK3288 does
-# perform it, and hard-throws when a name is missing:
-#
-#     what():  No IRQ matching 'ttyS0' found in /proc/interrupts
-#
-# then aborts, is restarted, and loops forever without ever reaching a display. The
-# earlier version of this file listed only arch_timer and uart-pl011, so that lookup
-# could never succeed and armv7 never booted to a UI.
-#
-# The names have to be here, but the numbers cannot be right in a static file: IRQs
-# are assigned at boot from whichever devices are present, and Engine writes CPU
-# affinity to /proc/irq/<N>/smp_affinity straight after finding each name. That is
-# exactly why the shim generates this dynamically — this copy is a parseable floor,
-# not a working configuration.
-{
-    printf '           CPU0       CPU1       CPU2       CPU3\n'
-    printf '  1:      12345      11111      10000       9999     GIC-0  29 Level     arch_timer\n'
-    printf '  2:        512          0          0          0     GIC-0  33 Level     uart-pl011\n'
-    printf ' 32:       2508          0          0          0     GIC-0  74 Edge      dwc3\n'
-    printf ' 33:         23          0          0          0     GIC-0  77 Edge      fe210000.sata\n'
-    printf ' 34:          2          0          0          0     GIC-0  78 Edge      fea10000.dma-controller\n'
-    printf ' 35:       2902          0          0          0     GIC-0  75 Edge      ff0c0000.dwmmc\n'
-    printf ' 36:        107          0          0          0     GIC-0  73 Edge      ff0f0000.dwmmc\n'
-    printf ' 37:        283          0          0          0     GIC-0  79 Edge      ttyS0\n'
-} > /mnt/rootfs/root/fake-dt/interrupts
 
 echo "--- wiring touchbridge.service + engine.service override ---"
 # The same unit either builder installs, each from its own SoC directory: the

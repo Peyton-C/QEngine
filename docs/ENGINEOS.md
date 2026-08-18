@@ -258,13 +258,30 @@ state.
 
 This is automatic on an image built by
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh):
-`midisurface_rmz2` runs as a service with `--motor-off`, which fires on
+`midisurface` runs as a service with `--motor-off`, which fires on
 Engine's identity inquiry — precisely when Engine has bound the surface, so it
 re-arms across Engine restarts without the surface restarting — and is
 debounced, since Engine sends the inquiry more than once per startup and the
 control is a *toggle* (acting on each would turn the motor back on). The
 `motor left|right` command does the same thing on demand. See
 [BUILDING.md](BUILDING.md#audio-playback-working--build-and-launch-requirements).
+
+`play`, `cue` and `load` are not RMZ2-specific: each reads its channel and note
+from a per-device table built from every product's own
+`<CODE>_Controller_Assignments.qml`, so `play left` is correct on any of the
+fifteen products the shim knows, and the single-deck players (JP07, JP08, JP13,
+JP14) take `play` with no deck argument. A channel argument alone would not have
+been enough — JC11 and RMZ2 both put their decks on channels 4 and 5, but JC11
+plays with note 10 where RMZ2 plays with note 1.
+
+`motor` is the exception. The flag alone does not decide it: the toggle is
+Shift + Slip on RMZ2's deck channels, which is `Action.ToggleMotor` only in
+`RMZ2_Controller_Assignments.qml`, so on any other product those notes land on
+whatever that product maps them to. `midisurface` therefore checks the guest's
+own `inmusic,product-code` and ignores `--motor-off` with a warning unless it
+reads `RMZ2`. JP08 and JP14 are motorized too (SC5000M and SC6000M) and will
+need the same treatment with their own note numbers; the `motor` command still
+sends on demand, warning first, since typing it is explicit.
 
 Two mapping-level alternatives were tried and both failed (each reverted):
 
@@ -287,45 +304,53 @@ a packed VFS blob.
 #### Driving the transport at all: the control surface
 
 SYSTEM ONE's transport controls are physical, so Engine's touchscreen UI has
-no way to start a deck. [shims/rk3588/midisurface_rmz2/](../shims/rk3588/midisurface_rmz2/)
+no way to start a deck. [shims/midisurface/](../shims/midisurface/)
 presents an ALSA sequencer client that Engine binds as its own control
 surface. Two non-obvious requirements:
 
 - **Engine identifies control surfaces by a MIDI Device Inquiry handshake,
   not by name.** It broadcasts `F0 7E 7F 06 01 F7` and only binds an
-  assignment file if the reply matches its `KnownDevices` pattern
-  (`7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F`). A device that never
+  assignment file if the reply matches its `KnownDevices` pattern (RMZ2's is
+  `7E ?? 06 02 00 00 17 27 ?? ?? ?? ?? ?? ?? 7F`). A device that never
   answers is enumerated and connected, but its MIDI is silently ignored —
-  indistinguishable from "the buttons do nothing".
-- **The reply's version bytes must equal the shipped firmware version
-  exactly.** Engine compares them against
-  `/usr/Engine/Firmware/RMZ2 Controller/firmware.json` (`1.0.0.27`) and on
-  *any* mismatch tries to flash `UpdateImage.rbin`, putting the unit into a
-  full-screen `UPDATING... PLAYER WILL REBOOT AFTER UPDATE` state a virtual
-  device can never complete. The comparison is equality, not "older than" —
-  reporting all-`0x7F` (the largest 7-bit MIDI data bytes allow) still
-  triggered it, which makes sense given Engine OS supports official
-  downgrades. The version is the four bytes at index 11 of the reply
-  (counting the leading `F0`), rendered in *decimal*: sending `01 00 00 27`
-  made Settings > About/Update report `Controller Version: 1.0.0.39`
-  (`0x27` = 39), so `1.0.0.27` encodes as `01 00 00 1B`.
+  indistinguishable from "the buttons do nothing". The shim carries one reply
+  per product and picks between them using the product code the guest's
+  `fake-dt` reports, so one binary serves every device an image can be built
+  as; answering as the wrong product would bind the wrong control map, which
+  reads as a wiring fault rather than a configuration one.
+- **The reply's version bytes are ignored, because Engine is told not to look
+  at them.** Engine compares them against
+  `/usr/Engine/Firmware/<CODE> Controller/firmware.json` and on *any* mismatch
+  tries to flash the unit, putting it into a full-screen `UPDATING... PLAYER
+  WILL REBOOT AFTER UPDATE` state a virtual device can never complete. The
+  comparison is equality, not "older than" — reporting all-`0x7F` (the largest
+  7-bit MIDI data bytes allow) still triggered it, which makes sense given
+  Engine OS supports official downgrades.
 
-  The version is release-specific — 4.5.0 ships `1.0.0.26`, 5.0.4 ships
-  `1.0.0.27` — so `midisurface_rmz2` reads it from that `firmware.json` at
-  startup rather than carrying it as a constant. A build-time pin is an
-  update-loop trigger on the first rootfs built from a different
-  `*-Update.img`; the runtime read also survives an Engine update applied
-  inside the guest. Note that `/usr/Engine/Firmware` holds firmware for the
-  entire product family the release supports (~20 directories: `JC11
-  Controller`, `JP08 Motor`, `NH10 Controller`, ...), so the product directory
-  has to be named outright — there is nothing to infer from what is present.
-  Each `firmware.json` does carry a `"deviceToFlash"` (`Rane SYSTEM ONE`) if a
-  product-agnostic lookup is ever wanted. Anything unreadable, unparseable, or
-  carrying a field above 127 — which a MIDI data byte cannot express, so it
-  means the format is not what is assumed here — warns loudly and falls back
-  to the compiled-in `1.0.0.27`. For testing the response *shape* rather than
-  its version, `MIDISURFACE_ID_RESPONSE` still overrides the whole reply as raw
-  hex and skips the file entirely.
+  `midisurface` used to answer that comparison, reading the shipped version out
+  of `firmware.json` at startup and encoding it into the reply. That was
+  abandoned. It is not one version per device but a tree of them:
+  `KnownDevices.vfsb` declares sub-boards through an `AdditionalDevices`
+  property (`JP08` and `JP14` carry `<CODE> Motor,37,784`), and Engine reads
+  each board's version from a *different offset into the same inquiry reply* —
+  byte 37 for the motor where the controller is byte 11 — in one of two
+  encodings, chosen per product by an `RbinVersionFormat` property. Any board
+  that still mismatched would then need the flash protocol answered ack by ack.
+
+  Both rootfs builders instead patch `/usr/Engine/Scripts/engine` to launch
+  Engine with `-skipFirmwareUpdate`. It is a real `QCommandLineOption`, not a
+  debug leftover: Engine tests it at the top of its per-device "does this need
+  an update?" function and returns "no update needed" before `firmware.json` is
+  read, so the version path never reaches `quitAndStartFirmwareUpdate()`.
+  Present in every Engine major from 2.0.0 on (read on 2.4.0, 3.4.0, 4.3.4 and
+  5.0.4), absent from 1.x. It does not gate the separate DFU-mode path, which
+  fires only when `dfu-util -l` lists a device — nothing under emulation does.
+
+  The version bytes in each table entry are therefore left at zero, which every
+  `DeviceInquiryResponse` pattern wildcards. The only visible effect is
+  cosmetic: Settings > About reports a controller version of all zeros.
+  `MIDISURFACE_ID_RESPONSE` overrides the whole reply as raw hex, and
+  `MIDISURFACE_PRODUCT_CODE` overrides which table entry is chosen.
 
 Engine also needs the client to report a card number;
 `snd_seq_client_info_get_card()` returns -1 for any userspace client, which

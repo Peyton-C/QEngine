@@ -22,7 +22,7 @@
 # a MIDI implementation chart, but the vid:pid can only be read off the unit,
 # so every line here has to be filled in with the hardware in hand. With no
 # match, the vendor RMZ2 mapping stays installed, which is what
-# midisurface_rmz2 drives on its own.
+# midisurface drives on its own.
 #
 # mappings/denon-mc6000mk2 is written and ready to use — it only lacks the
 # product id below. See its README.md for what it maps and which of its

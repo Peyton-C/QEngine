@@ -1,0 +1,37 @@
+[Unit]
+Description=Virtual MIDI control surface
+# Engine's MIDI enumerator binds devices during its own startup and does not
+# pick one up afterwards, so the surface has to exist first.
+Before=engine.service
+# Both builders install this same unit, so it carries both architectures'
+# ordering. DefaultDependencies=no and the udev ordering come from the armv7
+# build; controllermap exists only on arm64, and After= on a unit that is not
+# installed is pure ordering, so it costs nothing where it is absent.
+DefaultDependencies=no
+After=systemd-udevd.service
+After=controllermap.service
+
+[Service]
+Type=simple
+# The fifo keeps the surface driveable by hand while it runs as a service:
+#   echo 'play left' > /run/midisurface.fifo
+#
+# It lives in /run, not /root: this rootfs mounts / read-only, so creating it
+# under /root fails outright at boot ("mkfifo: Read-only file system") and the
+# service restart-loops. /run is tmpfs, always writable, and is where runtime
+# state belongs anyway — it also means no stale fifo can survive a reboot.
+#
+# Held open read-write by the service itself so the surface never sees EOF when
+# an interactive writer disconnects.
+ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
+# No client name is passed: the surface names itself after the guest's own
+# product code. --motor-off is safe to pass on every product -- it refuses to
+# fire anywhere but RMZ2, whose Shift + Slip chord is the only thing it sends.
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface --motor-off < /run/midisurface.fifo'
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

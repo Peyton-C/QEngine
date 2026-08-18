@@ -10,7 +10,7 @@
 # never be bound directly, and this rootfs's KnownDevices table has exactly one
 # entry that maps to Engine's decks. That leaves one usable arrangement:
 #
-#   real controller --> midisurface_rmz2 --forward --> Engine
+#   real controller --> midisurface --forward --> Engine
 #                       (answers the handshake, relays MIDI unchanged)
 #
 # with the *mapping* — which note/CC means what — supplied by the assignment

@@ -34,7 +34,12 @@ case "$DISPLAY_MODE" in
         exit 1 ;;
 esac
 
+# Overridable, because the host's own audio stack is not something this can
+# infer: a headless build host has no pipewire, and QEMU there refuses to start
+# at all rather than falling back ("Unknown audio driver `pipewire'"). Set
+# AUDIODEV_BACKEND=none to run without a host sink -- Engine still gets its card,
+# so the guest side is unchanged.
 case "$(uname -s)" in
-    Darwin) AUDIODEV_BACKEND="coreaudio"; AUDIODEV_ID="mac" ;;
-    *)      AUDIODEV_BACKEND="pipewire";  AUDIODEV_ID="host" ;;
+    Darwin) AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-coreaudio}"; AUDIODEV_ID="mac" ;;
+    *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire}";  AUDIODEV_ID="host" ;;
 esac

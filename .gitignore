@@ -61,7 +61,7 @@ build/
 
 # Built Files
 shims/rk3588/touchbridge_rmz2/touchbridge_rmz2
-shims/rk3588/midisurface_rmz2/midisurface_rmz2
+shims/midisurface/midisurface_*
 
 # AI
 .claude/

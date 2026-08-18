@@ -918,14 +918,14 @@ allowlist is compiled into `Engine.bin`.
 **3. Playback control comes from the virtual control surface**, which the
 build installs and enables as a service. SYSTEM ONE's transport buttons are
 physical, so nothing on the touchscreen can start a deck. On an image built
-by the script this needs no setup — `midisurface_rmz2.service` starts before
+by the script this needs no setup — `midisurface.service` starts before
 Engine, answers the identity handshake, and disables motorized mode by
 itself. To drive it, write commands to its fifo:
 
 ```sh
-echo 'play left'  > /run/midisurface_rmz2.fifo
-echo 'cue right'  > /run/midisurface_rmz2.fifo
-echo 'press 0x0F 0x05' > /run/midisurface_rmz2.fifo   # Browse button
+echo 'play left'  > /run/midisurface.fifo
+echo 'cue right'  > /run/midisurface.fifo
+echo 'press 0x0F 0x05' > /run/midisurface.fifo   # Browse button
 ```
 
 The fifo lives in `/run`, not `/root`: this rootfs mounts `/` read-only, so
@@ -938,9 +938,9 @@ Running it manually instead (stop the service first — it holds the ALSA
 client name):
 
 ```sh
-systemctl stop midisurface_rmz2
+systemctl stop midisurface
 mkfifo /tmp/midififo
-/root/midisurface_rmz2 RMZ2_Controller --motor-off < /tmp/midififo &
+/root/midisurface --motor-off < /tmp/midififo &
 exec 3>/tmp/midififo
 # Engine must be (re)started while the surface already exists: its MIDI
 # enumerator binds devices at startup and won't pick one up later.
@@ -968,7 +968,7 @@ generic controller cannot be bound directly at all. The arrangement that
 does work:
 
 ```
-real controller --> midisurface_rmz2 --forward --> Engine
+real controller --> midisurface --forward --> Engine
                     (answers the handshake, relays MIDI unchanged)
 ```
 
@@ -1048,7 +1048,7 @@ Every shim binary is `.gitignored` (`*.so`, plus `touchbridge_rmz2` by name),
 so a fresh clone has sources only.
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh) builds
 all six — `dtshim_rmz2.so`, `drmatomic_rmz2.so`, `alsashim_rmz2.so`,
-`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface_rmz2` — in one
+`teeshim_rmz2.so`, `touchbridge_rmz2`, `midisurface` — in one
 `debian:bookworm` arm64 container before installing them. Previously it copied
 artifacts that nothing produced, which worked only if a previous session had
 left them in the tree.

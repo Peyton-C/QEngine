@@ -80,9 +80,33 @@ least one branch is unfinished in this build) — the same family as `midifirmup
 what the app sees, including whether `serial` came back empty. `az01-info` is a
 symlink to it.
 
-**The emulation gap:** no MPC build installs `dtshim`, so an emulated MPC reads
-QEMU's own devicetree and gets neither property. It boots and runs anyway, which is
-why this has never surfaced. If it is ever worth closing, the shim needs no work —
-an RK3288 `dtshim` already serves every property these dtbs declare, and
-`write_fake_dt` already takes a product code and a serial. See
+**What an emulated MPC gets.** A guest boots on QEMU's own devicetree, which has
+neither property, so the build installs `dtshim` — the same RK3288 shim the armv7
+Engine build uses, unchanged, because these dtbs declare nothing it does not already
+serve. It is preloaded into `acvs.service` through a drop-in, so the vendor unit
+stays as shipped, and the build fails rather than silently replacing an `LD_PRELOAD`
+if a future firmware sets one itself. `write_fake_dt` writes the identity:
+
+```sh
+PRODUCT_CODE=ACVA2 ./build_mpc_rootfs.sh --firmware <img> --force   # MPC One+
+```
+
+Default `ACV5`. Every build before this one shipped without it, and MPC ran fine
+identifying as nothing — so if a guest misbehaves in a way that correlates with the
+code, that is new territory and the code is the first thing to vary.
+
+To see what the app sees, on the guest:
+
+```sh
+LD_PRELOAD=/root/dtshim.so az0x-info
+```
+
+The preload is needed because a login shell has none — `acvs.service` gets it from
+the drop-in, an interactive command does not. Without it `serial` and
+`product-code` come back empty, which is also a quick way to confirm the shim is
+what supplies them.
+
+`serial-number` is left at `write_fake_dt`'s default. Nothing here varies by it and
+no shipped devicetree has one to match, but it is the second argument if a
+per-instance serial is ever wanted. See
 [../../shims/dtshim/README.md](../../shims/dtshim/README.md).

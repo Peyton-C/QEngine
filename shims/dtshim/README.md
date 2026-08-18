@@ -92,8 +92,10 @@ Those dtbs also line up with the RK3288 table property for property — `rotatio
 `mipi@ff960000/panel@0` in 14/14, `inmusic,internal-sd-fitted` in 10, and the
 `az01-pcb-rev` pinctrl node in 11 (the three `az05` dtbs lack it, exactly as the source
 audit predicted). So an RK3288 dtshim would serve an MPC guest correctly as-is. Nothing
-does that today — see BUILD_MPC.md's note on MPC identity — but if it is ever wanted, the
-shim is not what needs changing.
+is what the MPC build now does, with this shim unmodified — see BUILD_MPC.md. MPC is
+therefore a third consumer, and the first that wants only the identity half: it reads
+`inmusic,product-code` and `serial-number` through `libaz0x-info` and nothing else the
+table serves.
 
 ## `/proc/interrupts`, and why it is generated rather than stored
 

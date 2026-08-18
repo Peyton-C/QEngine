@@ -6,14 +6,14 @@
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
-#   3. Block telemetry, from the list the Engine builders share
-#      (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge for armhf (the shared source under shims/touchbridge is
-#      architecture-independent — see the build step below).
-#   5. Copy it into /root and wire touchbridge_mpc.service ahead of acvs.service.
+#   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
+#   4. Build touchbridge and dtshim for armhf (the shared sources under shims/
+#      are architecture-independent — see the build step below).
+#   5. Copy them into /root, wire touchbridge_mpc.service ahead of acvs.service,
+#      and preload dtshim into acvs.service so MPC can read a product code.
 #   6. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
-#      shell behind MPC's fullscreen display.
+#      shell behind the fullscreen display.
 #
 # Usage: build_mpc_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
@@ -21,6 +21,9 @@
 #   --out       Output rootfs image path. Default: build/rootfs_out.img
 #   --size      Final image size in bytes. Default: 4294967296 (4GiB)
 #   --force     Overwrite --out if it already exists.
+#
+# Environment:
+#   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
@@ -108,6 +111,7 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # — see docs/BUILDING.md's "Toolchain for
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
+
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
@@ -130,11 +134,13 @@ docker run --rm --platform linux/arm/v7 \
 
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
     '
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
-for artifact in touchbridge/touchbridge_$SHIM_ARCH; do
+for artifact in touchbridge/touchbridge_$SHIM_ARCH dtshim/dtshim_$SHIM_ARCH.so; do
   [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -160,9 +166,10 @@ IMG="/out/$OUT_NAME"
 
 # The steps the rootfs builders share, so a change to one lands in all of them.
 # Each file in rootfs_steps/ defines one function and explains what it is for.
-# MPC uses the device-agnostic ones; the Engine-specific steps in there
-# (skip_firmware_update, write_fake_dt) do not apply to an MPC rootfs, which has
-# no /usr/Engine and no faked devicetree to write.
+# MPC uses all but one: skip_firmware_update has no /usr/Engine to pass a flag
+# to. write_fake_dt does apply -- MPC reads inmusic,product-code and
+# serial-number through libaz0x-info, so an emulated one needs them faked just
+# as Engine does.
 for _step in /steps/*.sh; do . "$_step"; done
 
 resize_filesystem "$IMG"
@@ -191,13 +198,24 @@ trap cleanup EXIT
 # so its presence is an unambiguous check.
 if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
     echo "ERROR: this firmware's rootfs is not 32-bit ARM (no /lib/ld-linux-armhf.so.3)." >&2
-    echo "       This builds armv7/RK3288 MPC firmware (product codes ACV*) only;" >&2
-    echo "       the Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
+    echo "       This builds armv7/RK3288 MPC firmware only." >&2
+    echo "       The Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
     exit 1
 fi
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+
+echo "--- inserting shims into /root ---"
+cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
+chmod 755 /mnt/rootfs/root/dtshim.so
+
+# The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
+# only the values are ours. Every one of them must exist, because the shim remaps
+# unconditionally and a missing target turns a working read into ENOENT.
+#
+# PRODUCT_CODE selects which device this pretends to be.
+write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-ACV5}"
 
 echo "--- wiring touchbridge.service ---"
 # QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
@@ -210,10 +228,33 @@ chmod 755 /mnt/rootfs/root/touchbridge_mpc
 cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
 ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
 
+echo "--- preloading dtshim into acvs.service ---"
+# A drop-in rather than an edit, so the vendor unit stays as shipped. systemd
+# reads drop-ins after the main unit and last assignment wins for a given
+# variable, so this would silently replace an LD_PRELOAD the vendor unit set.
+# Nothing in this firmware sets one; the guard keeps that from becoming a silent
+# breakage if a future firmware does.
+for _unit in /mnt/rootfs/etc/systemd/system/acvs.service \
+             /mnt/rootfs/lib/systemd/system/acvs.service \
+             /mnt/rootfs/usr/lib/systemd/system/acvs.service; do
+    [ -f "$_unit" ] || continue
+    if grep -q 'LD_PRELOAD' "$_unit"; then
+        echo "ERROR: $_unit already sets LD_PRELOAD; this drop-in would replace it." >&2
+        echo "       Merge the two by hand rather than overriding blindly." >&2
+        exit 1
+    fi
+done
+mkdir -p /mnt/rootfs/etc/systemd/system/acvs.service.d
+cat > /mnt/rootfs/etc/systemd/system/acvs.service.d/override.conf <<'EOF'
+[Service]
+Environment=LD_PRELOAD=/root/dtshim.so
+EOF
+
 echo "--- disabling the tty1 getty (MPC's display) ---"
-# MPC renders fullscreen via KMS on the same VT the console getty lives on, and
-# the getty keeps reading the keyboard underneath it, so every keystroke goes to
-# both MPC and a root login shell you cannot see.
+# MPC renders fullscreen via KMS on the same VT the console getty
+# lives on, and the getty keeps reading the keyboard underneath it. Every
+# keystroke therefore goes to *both* MPC and a root login shell you cannot
+# see.
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
@@ -239,6 +280,7 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
+    -e PRODUCT_CODE="${PRODUCT_CODE:-ACV5}" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \

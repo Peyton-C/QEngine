@@ -5,7 +5,7 @@
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
-#   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
+#   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build alsashim (the only shim built here rather than committed
 #      prebuilt — see the build step below).
 #   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge shims +
@@ -16,7 +16,7 @@
 #      actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
-#      shell behind Engine's fullscreen display.
+#      shell behind the fullscreen display.
 #   8. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
@@ -200,8 +200,8 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 
 IMG="/out/$OUT_NAME"
 
-# The steps both rootfs builders share, so a change to one lands in both. Each
-# file in rootfs_steps/ defines one function and explains what it is for; the
+# The steps the rootfs builders share, so a change to one lands in all of them.
+# Each file in rootfs_steps/ defines one function and explains what it is for. The
 # calls below read as the sequence they are.
 for _step in /steps/*.sh; do . "$_step"; done
 
@@ -372,8 +372,7 @@ echo "--- disabling the tty1 getty (Engine's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
 # lives on, and the getty keeps reading the keyboard underneath it. Every
 # keystroke therefore goes to *both* Engine and a root login shell you cannot
-# see — typing into Engine's search box also types into that shell, and it is
-# entirely possible to power the machine off by accident that way.
+# see
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT

@@ -1068,20 +1068,26 @@ templated one per display where RK3288 is single-head — and `controllermap/`, 
 hardcodes RMZ2's assignment directory. `dtshim` carries its own per-SoC data now, so
 nothing of its remains there.
 
-The steps both rootfs builders perform identically live in
+The steps the rootfs builders perform identically live in
 [scripts/build_scripts/rootfs_steps/](../scripts/build_scripts/rootfs_steps/), one
 function per file, sourced into the privileged container: growing the filesystem,
 blocking telemetry, blanking the root password, writing the fake devicetree,
 telling Engine to skip firmware updates, and the final consistency check. They are
-there for the same reason `extract_rootfs.sh` is — the two builders had already
-drifted into byte-identical copies once.
+there for the same reason `extract_rootfs.sh` is — the builders had already drifted
+into byte-identical copies once.
+
+All three builders use them, including MPC, which takes the four that are not
+Engine-specific and skips `skip_firmware_update` and `write_fake_dt` — an MPC rootfs
+has no `/usr/Engine` and no faked devicetree. MPC had open-coded three of the four,
+byte for byte, and claimed the fourth in a header comment without ever doing it: it
+reports crashes to the same Sentry organisation Engine does, `/usr/bin/MPC` carrying
+a DSN for `o230257.ingest.sentry.io` that differs only in project id.
 
 `block_telemetry` carries the list of hosts to point at localhost, one per line and
 annotated, so adding one is editing that list rather than any builder — see
 [BLOCKING_TELEMETRY.md](BLOCKING_TELEMETRY.md). It is split from
 `blank_root_password` because the two are unrelated jobs that happen to both be
-build-time `/etc` edits, and because the MPC builder wants only the second of
-them.
+build-time `/etc` edits, and so that a builder can take either on its own.
 
 #### The shims are built from source now
 

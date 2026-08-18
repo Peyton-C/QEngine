@@ -1,12 +1,13 @@
 #!/bin/bash
-# Automates extraction and modifcation of a stock Akai MPC rootfs for QEngine.
+# Automates extraction and modification of a stock Akai MPC rootfs for QEngine.
 # The armv7/RK3288 sibling of build_arm64_rootfs.sh; MPC needs far less doing to
 # it than Engine does, because it drives KMS directly and links no Mali/EGL.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
-#   3. Block Sentry telemetry (docs/BLOCKING_TELEMETRY.md).
+#   3. Block telemetry, from the list the Engine builders share
+#      (docs/BLOCKING_TELEMETRY.md).
 #   4. Build touchbridge for armhf (the shared source under shims/touchbridge is
 #      architecture-independent — see the build step below).
 #   5. Copy it into /root and wire touchbridge_mpc.service ahead of acvs.service.
@@ -132,7 +133,7 @@ docker run --rm --platform linux/arm/v7 \
 [ -s "$SHIMS_DIR/touchbridge/touchbridge_$SHIM_ARCH" ] || {
     echo "ERROR: touch bridge build produced no binary" >&2; exit 1; }
 
-### 3-5. e2fsck/resize2fs + touch bridge + root password, via a
+### 3-5. e2fsck/resize2fs + telemetry block + touch bridge + root password, via a
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX.sh)"
@@ -151,20 +152,14 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 
 IMG="/out/$OUT_NAME"
 
-echo "--- e2fsck (required before resize2fs) ---"
-set +e
-e2fsck -f -y "$IMG"
-FSCK_RC=$?
-set -e
-# 0 = clean, 1/2 = errors found and corrected — all fine to proceed from.
-# Anything higher means e2fsck couldn't fix it.
-if [ "$FSCK_RC" -gt 2 ]; then
-    echo "ERROR: e2fsck failed with exit code $FSCK_RC" >&2
-    exit 1
-fi
+# The steps the rootfs builders share, so a change to one lands in all of them.
+# Each file in rootfs_steps/ defines one function and explains what it is for.
+# MPC uses the device-agnostic ones; the Engine-specific steps in there
+# (skip_firmware_update, write_fake_dt) do not apply to an MPC rootfs, which has
+# no /usr/Engine and no faked devicetree to write.
+for _step in /steps/*.sh; do . "$_step"; done
 
-echo "--- resize2fs ---"
-resize2fs "$IMG"
+resize_filesystem "$IMG"
 
 echo "--- mounting via loop device ---"
 LOOPDEV="$(losetup -f)"
@@ -195,8 +190,12 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
     exit 1
 fi
 
-echo "--- blanking root password for serial-console login ---"
-sed -i 's|^root:[^:]*:|root::|' /mnt/rootfs/etc/shadow
+# MPC reports crashes to the same Sentry organisation Engine does: /usr/bin/MPC
+# carries a DSN for o230257.ingest.sentry.io, differing only in project id. So the
+# shared list applies here unchanged, and the hosts on it that MPC does not
+# resolve cost nothing but an unused /etc/hosts line.
+block_telemetry /mnt/rootfs
+blank_root_password /mnt/rootfs
 
 echo "--- installing the touch bridge ---"
 # QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
@@ -227,13 +226,7 @@ umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
 
-echo "--- final consistency check ---"
-e2fsck -f -y "$IMG" || true
-
-if [ ! -s "$IMG" ]; then
-    echo "ERROR: output image missing or empty — something failed silently above." >&2
-    exit 1
-fi
+verify_rootfs "$IMG"
 DOCKER_SCRIPT
 
 echo "--- running e2fsck/resize2fs/shim-install in a privileged container ---"
@@ -244,6 +237,7 @@ docker run --rm --privileged \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh
 

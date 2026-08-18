@@ -34,3 +34,11 @@ To build and run several devices or firmware versions side by side, see
 - MPC drives KMS directly and links no Mali or EGL, which is why it needs none of
   the shim stack Engine does. `readelf -d <app-binary> | grep -iE 'mali|EGL'`
   coming back empty is a good predictor that a device will work here.
+- MPC needs none of the shim stack Engine does, but it does share the
+  device-agnostic build steps in
+  [rootfs_steps/](../../scripts/build_scripts/rootfs_steps/): growing the
+  filesystem, blocking telemetry, blanking the root password, and the final
+  consistency check. It reports crashes to the same Sentry organisation Engine
+  does — `/usr/bin/MPC` carries a DSN for `o230257.ingest.sentry.io`, differing
+  only in project id — so the shared host list applies here as-is. See
+  [../../docs/BLOCKING_TELEMETRY.md](../../docs/BLOCKING_TELEMETRY.md).

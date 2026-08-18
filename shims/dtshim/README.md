@@ -79,6 +79,22 @@ binary for it finds nothing on arm64.
 neither Engine binary. Served anyway on RK3288: it costs four bytes, and something
 outside Engine may read it.
 
+**Cross-checked against compiled dtbs, and against MPC.** The above is from DTS sources;
+the 14 dtbs in `/boot` of a shipped ACV5 3.9.1 MPC rootfs agree. All 14 carry
+`inmusic,product-code`, none contains `serial-number`, and the MPC update image ships no
+bootloader at all — only a rootfs partition — so the thing that creates that node is not
+in the image to be found. Nothing in the rootfs writes it either. That makes the
+u-boot-injection explanation the only one left standing, and means there is no "real"
+serial to match: on an emulated guest the node exists only because something fabricates
+it, which here is this shim.
+
+Those dtbs also line up with the RK3288 table property for property — `rotation` under
+`mipi@ff960000/panel@0` in 14/14, `inmusic,internal-sd-fitted` in 10, and the
+`az01-pcb-rev` pinctrl node in 11 (the three `az05` dtbs lack it, exactly as the source
+audit predicted). So an RK3288 dtshim would serve an MPC guest correctly as-is. Nothing
+does that today — see BUILD_MPC.md's note on MPC identity — but if it is ever wanted, the
+shim is not what needs changing.
+
 ## `/proc/interrupts`, and why it is generated rather than stored
 
 Engine hard-throws (`std::runtime_error`, aborts) if it cannot find IRQ lines for

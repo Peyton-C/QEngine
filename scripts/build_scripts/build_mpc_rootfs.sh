@@ -96,16 +96,19 @@ extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 echo "--- resizing image to $SIZE bytes ---"
 qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 
-### 2b. Build the touch bridge ###############################################
-# touchbridge is .gitignored, so a fresh clone has sources only — building it
-# here is what makes the install step below work rather than depending on
-# artifacts a previous session happened to leave in the working tree.
+### 2b. Build the shims ######################################################
+# The shim binaries are .gitignored (*.so, plus the shared shims' per-arch
+# outputs by name), so
+# a fresh clone has sources only — this step is what makes the install step
+# below work at all rather than silently depending on artifacts a previous
+# session happened to leave in the working tree. Building them here also
+# means an edited .c can never be shadowed by a stale .so.
 #
-# The source lives under shims/rk3588 but is architecture-independent: it only
-# uses the evdev/uinput UAPIs, which are fixed-width, so it compiles for armhf
-# unmodified. debian:bookworm for glibc 2.36, comfortably older than the guest's
-# — see docs/BUILDING.md's "Toolchain for cross-compiling shims".
-echo "--- building the touch bridge from source ---"
+# debian:bookworm for glibc 2.36, comfortably older than the guest's
+# — see docs/BUILDING.md's "Toolchain for
+# cross-compiling shims". One container for all of them, since the apt-get
+# dominates the cost.
+echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
 # depends on pull order. The comment above pins intent; this pull makes it true.
@@ -126,14 +129,17 @@ docker run --rm --platform linux/arm/v7 \
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
 
         gcc -O2 -Wall \
-            -o /shims/touchbridge/touchbridge_$SHIM_ARCH \
-               /shims/touchbridge/touchbridge.c
+            -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
     '
 
-[ -s "$SHIMS_DIR/touchbridge/touchbridge_$SHIM_ARCH" ] || {
-    echo "ERROR: touch bridge build produced no binary" >&2; exit 1; }
+# The shared shims are checked separately: they live outside SHIMS_DIR, and each
+# one is named for the architecture it was built for rather than for a device.
+for artifact in touchbridge/touchbridge_$SHIM_ARCH; do
+  [ -s "$SHIMS_DIR/$artifact" ] || {
+        echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
+done
 
-### 3-5. e2fsck/resize2fs + telemetry block + touch bridge + root password, via a
+### 3-5. e2fsck/resize2fs + telemetry block + shims + root password, via a
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX.sh)"
@@ -190,14 +196,10 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
     exit 1
 fi
 
-# MPC reports crashes to the same Sentry organisation Engine does: /usr/bin/MPC
-# carries a DSN for o230257.ingest.sentry.io, differing only in project id. So the
-# shared list applies here unchanged, and the hosts on it that MPC does not
-# resolve cost nothing but an unused /etc/hosts line.
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
 
-echo "--- installing the touch bridge ---"
+echo "--- wiring touchbridge.service ---"
 # QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
 # so no USB controller), and the virtio tablet that replaces them presents as an
 # absolute *mouse*. MPC only responds to a real touchscreen, so the bridge
@@ -215,7 +217,9 @@ echo "--- disabling the tty1 getty (MPC's display) ---"
 #
 # Removing the enablement symlink disables it; masking getty@tty1 and
 # autovt@tty1 (autovt@ is an alias of getty@, which logind spawns on VT
-# allocation) stops anything bringing it back. The *serial* getty is left alone
+# allocation) stops anything bringing it back.
+#
+# The *serial* getty is deliberately left alone
 # — serial-getty@ttyAMA0 is a different template and remains the way in on
 # -serial stdio.
 rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service

@@ -97,7 +97,7 @@ devices from `ARCH`:
 | net | `virtio-net-pci` | `virtio-net-pci` |
 | audio | `ich9-intel-hda` + `hda-output` | same |
 | RAM default | 4096 | 2048, and 3072 is a hard ceiling |
-| CPU / accel | `max` (`host` under HVF/KVM) | `cortex-a15`, always TCG |
+| CPU / accel | `max` (`host` under HVF/KVM) | `host,aarch64=off` under KVM on an arm64 Linux host, else `cortex-a15` + TCG |
 
 Only the first two rows really differ, and the second follows from the first. armhf
 used to attach everything over virtio-mmio because the Debian armmp kernel could not
@@ -107,6 +107,16 @@ which made every `-pci` device invisible, USB controllers included. That error i
 `highmem=on` the PCIe ECAM sits at `0x40_10000000`, beyond what the non-LPAE armmp
 kernel's 32-bit `resource_size_t` can hold. `highmem=off` moves it to `0x3f000000`
 and the bus enumerates normally, so both architectures now use the same devices.
+
+**A 32-bit guest is not stuck with TCG.** An arm64 Linux host whose cores implement
+AArch32 at EL1 — Cortex-A53 and A72 among them — can run one under KVM, and the
+difference is not small: a JP13 guest reaches a login prompt in 11-13s that way,
+against roughly two minutes emulated on an x86_64 workstation. Two details hide it.
+`qemu-system-arm` is packaged TCG-only, so checking *that* binary suggests the host
+cannot do it; the guest actually runs under `qemu-system-aarch64` with
+`-cpu host,aarch64=off`. `arch_devices.sh` picks this automatically when the host and
+the selected binary both allow it, so an armv7 instance on such a host needs no flags.
+Apple Silicon is excluded: M-series dropped AArch32 outright.
 
 The cost is that the guest's physical address space stops at 4GB, and since RAM
 starts at `0x40000000` that leaves 3072 as the most armhf can be given — past it

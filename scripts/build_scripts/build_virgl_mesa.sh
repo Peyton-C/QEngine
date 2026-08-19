@@ -218,6 +218,18 @@ EOF
 # a `grep -q` exits at the first match, the command feeding it dies of SIGPIPE,
 # and the pipeline reports failure -- so a match looks like a miss, and an
 # inverted test like the NEEDED one below looks like a pass.
+
+# on macOS brew doesn't add readelf to the PATH
+if [ -z "${READELF:-}" ]; then
+    for _candidate in readelf \
+                      /opt/homebrew/opt/binutils/bin/readelf; do
+        command -v "$_candidate" >/dev/null 2>&1 && { READELF="$_candidate"; break; }
+    done
+fi
+[ -n "${READELF:-}" ] || {
+    echo "ERROR: readelf not found." >&2
+    exit 1; }
+
 if ! strings -n 4 "$STAGE/$ARTIFACT" | grep -w virgl >/dev/null; then
     echo "ERROR: no virgl in the result; it would render in software." >&2
     exit 1
@@ -230,17 +242,17 @@ dri)
         exit 1
     fi
     # Any of these means a failed dlopen in a stripped rootfs, hence silent swrast.
-    if readelf -d "$STAGE/$ARTIFACT" | grep NEEDED |
+    if $READELF -d "$STAGE/$ARTIFACT" | grep NEEDED |
             grep -E 'libLLVM|libdrm_(radeon|amdgpu|nouveau)|libsensors|libxcb|libelf' >/dev/null; then
         echo "ERROR: it needs libraries a vendor rootfs does not have:" >&2
-        readelf -d "$STAGE/$ARTIFACT" | grep NEEDED | sed 's/^/       /' >&2
+        $READELF -d "$STAGE/$ARTIFACT" | grep NEEDED | sed 's/^/       /' >&2
         exit 1
     fi
     ;;
 gallium)
     # The guest's libEGL resolves against this file by soname and by a symbol
     # version node named after it, so a mismatch breaks GL outright.
-    if ! readelf -d "$STAGE/$ARTIFACT" | grep -i "soname.*$ARTIFACT" >/dev/null; then
+    if ! $READELF -d "$STAGE/$ARTIFACT" | grep -i "soname.*$ARTIFACT" >/dev/null; then
         echo "ERROR: soname does not match $ARTIFACT; the guest would not load it." >&2
         exit 1
     fi
@@ -256,6 +268,6 @@ esac
 mv "$STAGE/$ARTIFACT" "$OUT"
 echo ""
 echo "Built: $OUT ($(du -h "$OUT" | cut -f1))"
-readelf -d "$OUT" | grep NEEDED | grep -oE '\[[^]]+\]' | tr -d '[]' |
+$READELF -d "$OUT" | grep NEEDED | grep -oE '\[[^]]+\]' | tr -d '[]' |
     tr '\n' ' ' | sed 's/^/  needs: /'
 echo ""

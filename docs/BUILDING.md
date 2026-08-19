@@ -560,8 +560,9 @@ A few more things that bit during bring-up, worth calling out directly:
   Mesa loading, not vendor-neutral dispatch), so the vendor's own
   `libEGL`/`libgbm` just `dlopen()`s whatever `_dri.so` matches the
   requested driver name via the standard, fairly version-stable DRI driver
-  ABI — no need to replace the higher-level libraries too, and no need to
-  cross-compile Mesa from source. Not committed to this repo (23MB,
+  ABI — no need to replace the higher-level libraries too. (The "no need to
+  cross-compile Mesa from source" that used to follow here turned out to be wrong;
+  see the correction below.) Not committed to this repo (23MB,
   foreign-origin binary — regenerate with the recipe above rather than
   vendoring it) but freely redistributable (Debian's Mesa build is
   MIT/GPL). Confirmed working: no `MESA-LOADER` errors, no aborts, the
@@ -572,6 +573,51 @@ A few more things that bit during bring-up, worth calling out directly:
   client. Still not fast — TCG's own instruction-emulation overhead for
   everything else (Engine's C++/QML logic, not just rendering) is a
   separate cost this doesn't touch — but no longer double-software-limited.
+
+  **Correction, measured later: on arm64 this does not work, and the "confirmed
+  working" above was read off the wrong signals.** Checked on a booted RMZ2 with
+  `-display egl-vnc`, Engine has *no* `/usr/lib/dri/*_dri.so` mapped at all —
+  `grep dri /proc/$(pidof Engine)/maps` comes back empty — so that file is never
+  opened and nothing renders through virgl. The absence of `MESA-LOADER` errors, a
+  clean `MODESET`, and `+virgl` at the DRM level are all equally true when the
+  driver is silently unused, which is how this went unnoticed; the improved latency
+  was most likely the KMS-level fixes landing at the same time. Two things are
+  wrong. Debian's file is one megadriver holding every gallium driver, so it needs
+  `libLLVM`, `libdrm_radeon`, `libdrm_amdgpu`, `libdrm_nouveau`, `libsensors`,
+  `libxcb-dri3` and `libelf`, none of which this rootfs has — that alone makes the
+  `dlopen` fail. And nothing being mapped at all, not even a fallback, suggests this
+  guest's 324KB `libEGL` never consults a DRI driver in the first place.
+
+  On **armv7** the same single-file approach failed the same way and is now fixed:
+  `build_virgl_mesa.sh` builds a virgl-only Mesa at the guest's own version, whose
+  dependencies these images already satisfy, and the improvement on JP13 was two
+  orders of magnitude.
+
+  **RMZ2 needed something different, and the reason nothing dropped into
+  `/usr/lib/dri` ever helped is that its Mesa has no plug-in slot.** It is a
+  *shared-gallium* build: every driver is compiled inside
+  `/usr/lib/libgallium-<ver>.so`, and `libEGL` links that file directly, resolving
+  against a symbol version node named after it. There is no `/usr/lib/dri` in that
+  layout at all, and no `gallium-pipe` directory either. The vendor library carries
+  etnaviv, lima, panfrost, softpipe, swrast and zink — the right set for a Mali
+  device — and no virgl; the tell is `virtio_gpu: driver missing` in Engine's
+  journal. Adding virgl therefore means *replacing* the library, at exactly the
+  guest's version, which is what `--layout gallium` builds and
+  `install_virgl_mesa` installs, keeping the vendor file as `.vendor`. On either
+  architecture, verify with `grep -E 'dri|libgallium' /proc/$(pidof Engine)/maps`,
+  not logs.
+
+  **Which of the two layouts a guest uses follows its firmware, not its
+  architecture**, so `detect_mesa.sh` reads it off the rootfs instead of assuming.
+  Mesa 24.1 and earlier use the DRI layout, 24.3 and later the shared-gallium one,
+  and both the version and the layout move independently of the SoC: Engine OS
+  5.0.0–5.0.4 ships Mesa 24.0.7 on armv7 against 24.3.4 on arm64, while arm64
+  itself shipped 24.1.0 in the DRI layout at 4.5.0/4.6.0 before moving to 24.3.4.
+  armv7 before 5.0.0 has no Mesa whatsoever — GL comes from a proprietary Mali
+  blob providing `libEGL`/`libGLESv2` itself — and the split is by SoC rather than
+  by product, so the other 5.0.4 armv7 devices are 24.0.7 like JP13. Read the
+  version out of the megadriver, never out of `libEGL`: armv7's `libEGL` happens
+  to contain a bare version string and arm64's contains none at all.
 
   One cost: **`screendump` (the HMP command used throughout this doc and
   in `BUILDING.md`'s testing) stops working** once `-display egl-headless`
@@ -1084,9 +1130,16 @@ The steps the rootfs builders perform identically live in
 [scripts/build_scripts/rootfs_steps/](../scripts/build_scripts/rootfs_steps/), one
 function per file, sourced into the privileged container: growing the filesystem,
 blocking telemetry, blanking the root password, writing the fake devicetree,
-telling Engine to skip firmware updates, and the final consistency check. They are
-there for the same reason `extract_rootfs.sh` is — the builders had already drifted
-into byte-identical copies once.
+telling Engine to skip firmware updates, installing a virgl-capable Mesa, and the
+final consistency check. They are there for the same reason `extract_rootfs.sh` is —
+the builders had already drifted into byte-identical copies once.
+
+`install_virgl_mesa` is the newest of them and the one that was *not* a byte-identical
+copy: each builder had written its own against the driver layout its own guest
+happened to use, which is the assumption that kept RMZ2 rendering in software. It
+takes the layout as an argument, so neither builder can encode a guess about it, and
+handles the no-Mesa case by saying so rather than by leaving a file nothing will
+open.
 
 All three builders use them, including MPC, which takes the four that are not
 Engine-specific and skips `skip_firmware_update` and `write_fake_dt` — an MPC rootfs
@@ -1726,10 +1779,17 @@ ABRT` and a restart loop). Three environment variables in
 `QT_QPA_EGLFS_INTEGRATION=eglfs_kms` names the integration outright,
 `EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with
 `surfaceless` as its compiled-in default), and
-`MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` names a driver that is actually
-present. Software rendering is not a preference here: virgl needs
-`virtio-gpu-gl`, which is PCI-only, and the 32-bit `virt` machine has no
-usable PCI (see `scripts/qemu/arch_devices.sh`).
+`MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu` names the virgl driver
+`build_virgl_mesa.sh` puts in the image. That used to be `kms_swrast`, because virgl
+needs `virtio-gpu-gl` and the 32-bit `virt` machine had no usable PCI; PCI works
+since the machine moved to `highmem=off`, so rendering goes to the host's GPU now.
+A non-GL display mode still rasterizes on the guest CPU, and `kms_swrast` stays in
+the image for that. Naming the driver does **not** prevent that fallback, which is
+worth knowing before reading the override as a commitment: booted against a plain
+`virtio-gpu-pci`, Engine comes up with `kms_swrast_dri.so` mapped and zero restarts
+despite `MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`, and the arm64 guest falls back the
+same way inside its replaced `libgallium`. So GL degrades to software on either
+architecture rather than failing, which is what makes `--no-gl` safe to reach for.
 
 **Second blocker — a black screen with `Engine` running normally.** With
 the integration pinned, `Engine` starts, registers the touchscreen,

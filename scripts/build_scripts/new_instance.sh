@@ -74,9 +74,15 @@ esac
 # instance.env rather than resolved at boot so it stays visible and editable there:
 # switching an instance to VNC is a one-word edit, or --display for a single run.
 # The accelerator and audio backend follow the host at boot and need no key here.
+#
+# GL by default on Linux, because rendering on the host GPU is worth two orders of
+# magnitude of frame time. Recording sdl-gl is safe even for an instance that will run
+# somewhere without GL: display_modes.sh probes the QEMU binary at boot and drops to
+# plain sdl with a warning, and --no-gl forces that for a single run. macOS keeps
+# cocoa, which has no GL variant among these modes.
 case "$(uname -s)" in
     Darwin) DISPLAY_MODE="cocoa" ;;
-    *)      DISPLAY_MODE="sdl" ;;
+    *)      DISPLAY_MODE="sdl-gl" ;;
 esac
 
 # Device family registry. One row per family/architecture combination:

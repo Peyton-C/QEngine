@@ -97,7 +97,7 @@ devices from `ARCH`:
 | net | `virtio-net-pci` | `virtio-net-pci` |
 | audio | `ich9-intel-hda` + `hda-output` | same |
 | RAM default | 4096 | 2048, and 3072 is a hard ceiling |
-| CPU / accel | `max` (`host` under HVF/KVM) | `cortex-a15`, always TCG |
+| CPU / accel | `max` (`host` under HVF/KVM) | `host,aarch64=off` under KVM on an arm64 Linux host, else `cortex-a15` + TCG |
 
 Only the first two rows really differ, and the second follows from the first. armhf
 used to attach everything over virtio-mmio because the Debian armmp kernel could not
@@ -108,17 +108,34 @@ which made every `-pci` device invisible, USB controllers included. That error i
 kernel's 32-bit `resource_size_t` can hold. `highmem=off` moves it to `0x3f000000`
 and the bus enumerates normally, so both architectures now use the same devices.
 
+**A 32-bit guest is not stuck with TCG.** An arm64 Linux host whose cores implement
+AArch32 at EL1 — Cortex-A53 and A72 among them — can run one under KVM, and the
+difference is not small: a JP13 guest reaches a login prompt in 11-13s that way,
+against roughly two minutes emulated on an x86_64 workstation. Two details hide it.
+`qemu-system-arm` is packaged TCG-only, so checking *that* binary suggests the host
+cannot do it; the guest actually runs under `qemu-system-aarch64` with
+`-cpu host,aarch64=off`. `arch_devices.sh` picks this automatically when the host and
+the selected binary both allow it, so an armv7 instance on such a host needs no flags.
+Apple Silicon is excluded: M-series dropped AArch32 outright.
+
 The cost is that the guest's physical address space stops at 4GB, and since RAM
 starts at `0x40000000` that leaves 3072 as the most armhf can be given — past it
 QEMU refuses to start outright, so `arch_devices.sh` checks `MEM` and says why. If an
 armhf guest ever needs more, the alternative is `linux-image-armmp-lpae`, which has
 `CONFIG_PHYS_ADDR_T_64BIT=y` and can therefore keep `highmem=on`.
 
-Two things are still arm64-only in practice. The virgl display modes refuse armhf —
-`virtio-gpu-gl-pci` is attachable now, but virgl against a 32-bit guest is untested,
-so the GL modes fail up front instead of partway through boot. And `GPU_MAX_OUTPUTS`
-no longer *rejects* armhf, since per-head `usb-tablet`s need the USB that needed PCI,
-but multi-head has only been run on arm64.
+One thing is still arm64-only in practice: `GPU_MAX_OUTPUTS` no longer *rejects*
+armhf, since per-head `usb-tablet`s need the USB that needed PCI, but multi-head has
+only been run on arm64.
+
+The virgl display modes used to be arm64-only too, and are not any more — armhf
+renders through virgl on the host's GPU. It needs three things together: a GL display
+mode, a QEMU with virglrenderer built in, and the virgl-capable Mesa
+`build_virgl_mesa.sh` produces. arm64 works too, and needed a different fix: its
+Mesa is a shared-gallium build with no plug-in slot, so the driver that builder used
+to copy into `/usr/lib/dri` was never consulted, and the whole `libgallium` is
+replaced instead. Which of the two layouts a guest uses follows its firmware rather
+than its architecture, so `detect_mesa.sh` reads it off the rootfs.
 
 One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
 boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is
@@ -126,12 +143,10 @@ used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
 overrides the choice.
 
 armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one,
-and it boots to a rendered UI with a virtual control surface bound. Audio is what it
-still lacks. arm64
+and it boots to a rendered UI with a virtual control surface bound, rendering through
+virgl in a GL display mode. Audio is what it still lacks. arm64
 MPC remains untried — no builder produces that rootfs, so the command line has never
-been booted, and `new_instance.sh` says so when it sees one. The virgl display modes
-additionally refuse armhf outright, since `virtio-gpu-gl` exists only as a PCI device,
-which is also why armv7 Engine renders in software (`kms_swrast`).
+been booted, and `new_instance.sh` says so when it sees one.
 
 ## Run
 
@@ -139,11 +154,46 @@ which is also why armv7 Engine renders in software (`kms_swrast`).
 scripts/qemu/run_instance.sh --list
 scripts/qemu/run_instance.sh --name mpc-3.9.1
 scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display vnc
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl      # rasterize on the guest CPU
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --gl         # render on the host GPU
 ```
 
 `--display` overrides the `DISPLAY_MODE` recorded in `instance.env` for one run. The
 modes are `sdl`, `sdl-gl`, `cocoa`, `vnc`, `egl-vnc` and `none`; see
 [../qemu/display_modes.sh](../qemu/display_modes.sh).
+
+### GL is the default, and both directions are one flag
+
+The display modes come in pairs — `sdl`/`sdl-gl` and `vnc`/`egl-vnc` — differing only
+in whether rendering goes to the host GPU through virgl or is rasterized on the
+emulated guest CPU. That difference is worth two orders of magnitude of frame time, so
+**new instances are created with the GL mode** (`sdl-gl` on Linux; macOS keeps `cocoa`,
+which has no GL variant among these modes).
+
+`--gl` and `--no-gl` move within the pair for one run, and compose with `--display`:
+
+| | effect |
+|---|---|
+| `--gl` | promote to the GL member (`vnc` → `egl-vnc`, `sdl` → `sdl-gl`). Use it on an instance created before GL was the default, or one whose `instance.env` records a non-GL mode. |
+| `--no-gl` | demote to the non-GL member. The escape hatch when GL itself is what you are ruling out — a rendering artefact, a driver question, a host GPU you would rather not involve. |
+| neither | the recorded mode, honoured as recorded. |
+
+Equivalently, `VIRGL=on`/`VIRGL=off` in the environment, which is how `run_qemu.sh`
+takes it when run directly.
+
+**A GL mode this QEMU cannot serve is demoted rather than refused.** Debian's arm64
+QEMU has neither `virtio-gpu-gl-pci` nor `egl-headless`, so on such a host a GL mode
+would otherwise fail at startup with a message about an unknown device, which does not
+say that the binary is the problem. `display_modes.sh` probes `-device help` and
+`-display help`, drops to the non-GL member, and prints a warning naming what is
+missing. Guests handle their half the same way: Mesa falls back to software rendering,
+verified on both architectures — armv7 maps `kms_swrast_dri.so` despite
+`MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`, and arm64 falls back inside its replaced
+`libgallium`. So the guest still renders, just slowly, and the warning is the only
+thing that tells you which happened.
+
+Existing instances keep whatever `DISPLAY_MODE` they were created with — it is a
+one-word edit in `instance.env`, or `--gl` per run.
 
 ## Layout
 
@@ -168,7 +218,7 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 | Key | Meaning |
 |---|---|
 | `DEVICE` | the device family, detected from the rootfs (see above) |
-| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's (`cocoa` on macOS, `sdl` elsewhere) |
+| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's, GL where there is a GL variant (`cocoa` on macOS, `sdl-gl` elsewhere). Demoted at boot with a warning if this QEMU cannot serve GL |
 | `ROOTFS_IMG`, `DATA_IMG` | this instance's disks |
 | `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
 | `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |

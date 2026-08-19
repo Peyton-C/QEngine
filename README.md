@@ -44,6 +44,10 @@ scripts/build_scripts/new_instance.sh --name jp07-5.0.4 --device engine \
 scripts/qemu/run_instance.sh --name rmz2-4.6.0
 scripts/qemu/run_instance.sh --name mpc-3.9.1
 scripts/qemu/run_instance.sh --list
+
+# Rendering goes to the host GPU through virgl by default, where QEMU can serve it.
+# --no-gl rasterizes on the guest CPU instead, for when GL is what you are ruling out.
+scripts/qemu/run_instance.sh --name rmz2-4.6.0 --no-gl
 ```
 
 The serial console appears in the terminal you launched from and root has no
@@ -81,8 +85,12 @@ the application itself resolves.
 | MIDI                    | Y             | ?             | Y     | ~     |
 | External Media (USB/SD) | Y             | ?             | Y     | N     |
 
-For 5.0.4 (armv7): Engine boots to a rendered, animating UI on `eglfs`/KMS, in
-software (`kms_swrast` — virgl needs PCI, which the 32-bit `virt` machine lacks).
+For 5.0.4 (armv7): Engine boots to a rendered, animating UI on `eglfs`/KMS, and
+renders through virgl on the host's GPU. That needs a GL display mode (`egl-vnc` or
+`sdl-gl`, which is the default) and a QEMU built with virglrenderer; Debian Trixie's
+arm64 build has neither the device nor `egl-headless`, so an arm64 host may need a QEMU
+built from source. On a host that cannot serve GL the mode is demoted with a warning
+and the guest renders in software instead, so it still runs — slowly.
 `QT VNC Display` is N for the same reason as arm64: Qt 6.7.2 ships no `libqvnc.so`.
 Audio is N because the shim stack it needs was left out, not because it was tried
 and failed. Touch is confirmed end-to-end against the SDL display —

@@ -17,7 +17,8 @@
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind the fullscreen display.
-#   8. Copy in a real virtio_gpu/virgl-capable Mesa DRI drive
+#   8. Replace the vendor libgallium with one that has virgl in it, so GL goes to
+#      the host's GPU rather than being rasterized on an emulated CPU
 #
 # Usage: build_arm64_rootfs.sh [--firmware <path>] [--out <path>]
 #                               [--size <bytes>] [--force]
@@ -96,8 +97,15 @@ esac
 # between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
 # shellcheck source=extract_rootfs.sh
 . "$SCRIPT_DIR_SELF/extract_rootfs.sh"
+# Which Mesa this firmware ships, and in which layout. Read off the rootfs rather
+# than assumed from the architecture: both follow the firmware, and arm64 has
+# shipped each of the two layouts -- 4.5.0/4.6.0 in the DRI one, 5.0.x in the
+# gallium one. See detect_mesa.sh.
+# shellcheck source=detect_mesa.sh
+. "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
+detect_mesa "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -140,8 +148,7 @@ docker run --rm --platform linux/arm64 \
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h.
         # libasound2-dev: midisurface links libasound directly (alsashim does
         # not — it declares what it needs and resolves via dlsym).
-        # libgl1-mesa-dri: staged out for the rootfs, see the /stage copy below.
-        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libgl1-mesa-dri >/dev/null 2>&1
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3588 -ldl -lpthread
@@ -155,22 +162,32 @@ docker run --rm --platform linux/arm64 \
             -o /shims/teeshim/teeshim_$SHIM_ARCH.so /shims/teeshim/teeshim.c
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
-
-        # Stage the arm64 virtio_gpu/virgl-capable Mesa DRI driver for the
-        # rootfs. It has to be pulled *here*, in the arm64 container, rather
-        # than in the privileged container further down: that one deliberately
-        # runs the host architecture (it does e2fsck/resize2fs on a multi-GB
-        # image, which is far slower under qemu-user emulation), so on an
-        # x86_64 host its own Mesa package is x86_64 and the wrong ABI
-        # entirely. Staging it from the container that is already arm64 keeps
-        # both halves correct on any host architecture.
-        cp -a /usr/lib/aarch64-linux-gnu/dri/virtio_gpu_dri.so /stage/virtio_gpu_dri.so
     '
 
-[ -s "$STAGE_DIR/virtio_gpu_dri.so" ] || {
-    echo "ERROR: failed to stage an arm64 virtio_gpu_dri.so from the build container." >&2
-    exit 1
-}
+# The GL driver this guest actually loads, built to match what detect_mesa found.
+# A mismatched version is not a degradation but a break: in the gallium layout
+# libEGL resolves against a symbol version node named after the file. See
+# build_virgl_mesa.sh for the two layouts, and install_virgl_mesa.sh for what each
+# one does to the rootfs.
+if [ "$MESA_LAYOUT" = none ]; then
+    echo "--- no Mesa in this firmware, so there is no virgl driver to build ---"
+else
+    "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
+    case "$MESA_LAYOUT" in
+        gallium) VIRGL_ARTIFACT="libgallium-$MESA_VERSION.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/libgallium-$MESA_VERSION-$SHIM_ARCH.so" ;;
+        dri)     VIRGL_ARTIFACT="virtio_gpu_dri.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/virtio_gpu_dri-$MESA_VERSION-$SHIM_ARCH.so" ;;
+    esac
+    [ -s "$VIRGL_BUILT" ] || {
+        echo "ERROR: no $(basename "$VIRGL_BUILT") in build/." >&2
+        exit 1
+    }
+    # Staged under the name the guest will use, so the install step needs to know
+    # only the layout and version, not where the file came from.
+    cp -a "$VIRGL_BUILT" "$STAGE_DIR/$VIRGL_ARTIFACT"
+fi
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
@@ -198,8 +215,8 @@ apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
 # NOTE: this container intentionally runs the *host* architecture, not arm64 —
 # e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
 # So it must never be the source of anything that ends up inside the guest
-# rootfs. The one such file, virtio_gpu_dri.so, is staged into /stage by the
-# arm64 shim-build container instead.
+# rootfs. The one such file, the replacement libgallium, is cross-built for arm64
+# by build_virgl_mesa.sh and reaches this container through /stage instead.
 
 IMG="/out/$OUT_NAME"
 
@@ -246,15 +263,7 @@ block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
-echo "--- installing a virtio_gpu/virgl-capable Mesa DRI driver ---"
-# This rootfs has no /usr/lib/dri at all — real hardware only ever needed
-# Panthor (kernel-side, panthor.ko), so there's no userspace DRI driver on
-# disk for QEMU's virtio-gpu to dlopen. Drop in *only* the one file —
-# vendor libEGL/libgbm dlopen by filename via the standard DRI ABI, no
-# libglvnd indirection to worry about, so nothing else needs to change.
-# Comes from /stage, populated by the arm64 container (see the note above).
-mkdir -p /mnt/rootfs/usr/lib/dri
-cp -a /stage/virtio_gpu_dri.so /mnt/rootfs/usr/lib/dri/virtio_gpu_dri.so
+install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage
 
 echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
@@ -397,6 +406,11 @@ Requires=touchbridge.service
 Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/teeshim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
+# Select virgl, and put EGL on a platform that can reach it. Having the driver in
+# the library is not enough: left to choose, Mesa lands on the software path, which
+# is what this guest did until now. The armv7 builder sets the same pair.
+Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
+Environment=EGL_PLATFORM=gbm
 # teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
 # GUI. QEMU has no TrustZone secure world, so the real call fails and Engine
 # quits into /usr/bin/test-app-launcher instead of ever showing Engine. Harmless
@@ -441,6 +455,8 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}" \
+    -e MESA_LAYOUT="$MESA_LAYOUT" \
+    -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \

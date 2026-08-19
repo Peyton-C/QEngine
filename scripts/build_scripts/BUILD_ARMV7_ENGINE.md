@@ -22,8 +22,10 @@ The steps individually, if you want them:
 4. Make a /data disk with `make_disk.sh --family mpc` — see the note below on why it
    is not `--family engine`.
 5. Boot with `DEVICE=engine ARCH=armhf scripts/qemu/run_qemu.sh`.
-   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `none` — but not
-   `sdl-gl` or `egl-vnc`, see below).
+   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `none`, and the GL
+   modes `sdl-gl` and `egl-vnc` — which work here now, see below). `VIRGL=off` forces
+   the non-GL member of whichever pair is in play; `run_instance.sh` spells the same
+   thing `--no-gl`.
 
 ## Notes
 
@@ -39,16 +41,30 @@ The steps individually, if you want them:
   distinguishes them. `PRODUCT_CODE=JP11 build_armv7_engine_rootfs.sh ...` picks
   one; the default is `JP07`. Only `JP07` has actually been booted.
 
-- **Rendering is software.** The guest runs on `kms_swrast`, and the `sdl-gl` and
-  `egl-vnc` display modes refuse armhf outright. This is no longer a hard limit:
-  the machine gained working PCI when it moved to `highmem=off`, so
-  `virtio-gpu-gl-pci` can be attached (see `../qemu/arch_devices.sh`). It is simply
-  untested against a 32-bit guest, and the display modes stay closed until someone
-  tries it. Expect software rendering to be slow under TCG either way.
+- **Rendering goes through virgl to the host's GPU**, in a GL display mode
+  (`egl-vnc` or `sdl-gl`). It was software for a long time, and the difference is
+  not marginal — it is the difference between a slideshow and a usable UI. Two
+  things had to land — the machine gained a working PCI bus with `highmem=off`, so
+  `virtio-gpu-gl-pci` can be attached, and `build_virgl_mesa.sh` builds the DRI
+  driver the guest needs at the guest's own Mesa version, because the vendor Mesa has
+  no virgl in it and Debian's packaged driver cannot load here (see that script for
+  why). That version and the driver layout come from `detect_mesa.sh`, which reads
+  them off the rootfs rather than assuming: armv7 has shipped no Mesa at all
+  (pre-5.0.0 — GL came from a proprietary Mali blob) and Mesa 24.0.7 in the DRI
+  layout (5.0.x), while arm64 has shipped both layouts, so neither follows from the
+  architecture. A non-GL mode such as
+  `vnc` still rasterizes on the guest CPU.
+
+- **The host needs a QEMU with virglrenderer.** Debian's arm64 build has neither
+  `virtio-gpu-gl-pci` nor `egl-headless`, so the GL modes fail at startup there
+  even though the change above is in place. Building QEMU from source with
+  `--enable-virglrenderer --enable-opengl --enable-slirp` fixes it; `--enable-slirp`
+  is not optional, since without it `-netdev user` disappears and no instance can
+  boot.
 
 - **Engine needs its EGL device integration named explicitly** —
   `QT_QPA_EGLFS_INTEGRATION=eglfs_kms`, plus `EGL_PLATFORM=gbm` and
-  `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast`. The rootfs build writes all three into
+  `MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`. The rootfs build writes all three into
   `engine.service.d/override.conf`. Left to itself Qt picks no integration at all
   and Engine dies in an EGL restart loop; see
   [../../docs/BUILDING.md](../../docs/BUILDING.md#engine-504-on-armv7-rk3288).

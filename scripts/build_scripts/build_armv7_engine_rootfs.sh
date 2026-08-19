@@ -101,8 +101,16 @@ esac
 # between us. It sets EXTRACTED_ROOTFS_SIZE and cleans up its own scratch dir.
 # shellcheck source=extract_rootfs.sh
 . "$SCRIPT_DIR_SELF/extract_rootfs.sh"
+# Which Mesa this firmware ships, and in which layout. Read off the rootfs rather
+# than assumed from the architecture: armv7 had no Mesa at all before 5.0.0, where
+# GL came from a proprietary Mali blob, and 5.0.x ships 24.0.7 in the DRI layout
+# while the same firmware version on arm64 ships 24.3.4 in the gallium one. See
+# detect_mesa.sh.
+# shellcheck source=detect_mesa.sh
+. "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
+detect_mesa "$OUT_PATH"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -121,6 +129,8 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
 # cross-compiling shims". One container for all of them, since the apt-get
 # dominates the cost.
+STAGE_DIR="$(mktemp -d /tmp/build-armv7-engine-rootfs-stage.XXXXXX)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
@@ -130,6 +140,7 @@ docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -v "$SHIMS_DIR:/shims" \
+    -v "$STAGE_DIR:/stage" \
     debian:bookworm bash -c '
         set -e
         # These shims are copied straight into an armv7 rootfs, so a
@@ -163,6 +174,32 @@ docker run --rm --platform linux/arm/v7 \
                /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
 
+# The virgl driver, built to match what detect_mesa found and cached in build/ the
+# way get_kernel.sh caches a kernel. Not taken from Debian's libgl1-mesa-dri: that
+# package's driver is one megadriver holding every gallium driver, so it needs
+# libLLVM and the AMD/nouveau libdrms, none of which this rootfs has -- and Mesa
+# responds to the failed dlopen by falling back to swrast in total silence. Nor at a
+# version of our choosing: a driver from another release is an ABI gamble against
+# the loader the guest ships. See build_virgl_mesa.sh, and install_virgl_mesa.sh for
+# what each layout does to the rootfs.
+if [ "$MESA_LAYOUT" = none ]; then
+    echo "--- no Mesa in this firmware, so there is no virgl driver to build ---"
+else
+    "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
+    case "$MESA_LAYOUT" in
+        gallium) VIRGL_ARTIFACT="libgallium-$MESA_VERSION.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/libgallium-$MESA_VERSION-$SHIM_ARCH.so" ;;
+        dri)     VIRGL_ARTIFACT="virtio_gpu_dri.so"
+                 VIRGL_BUILT="$REPO_ROOT/build/virtio_gpu_dri-$MESA_VERSION-$SHIM_ARCH.so" ;;
+    esac
+    [ -s "$VIRGL_BUILT" ] || {
+        echo "ERROR: no $(basename "$VIRGL_BUILT") in build/." >&2
+        exit 1
+    }
+    cp -a "$VIRGL_BUILT" "$STAGE_DIR/$VIRGL_ARTIFACT"
+fi
+
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so \
@@ -179,7 +216,7 @@ done
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-armv7-engine-rootfs-inner.XXXXXX.sh)"
-trap 'rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail
@@ -237,12 +274,8 @@ block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
-# Nothing is staged into /usr/lib/dri. Unlike the RMZ2 rootfs, this one ships a
-# complete Mesa — /usr/lib/dri holds ~35 *_dri.so entries that are all the same 13MB
-# gallium megadriver — and MESA_LOADER_DRIVER_OVERRIDE=kms_swrast in the unit below
-# names one that is already there. An earlier version of this script also copied that
-# megadriver to virtio_gpu_dri.so, the name Mesa's loader would look for from the
-# kernel's device name; with the override set, that name is never used.
+install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage
+
 #
 # Nor is anything staged at Engine's hardcoded Mali eglfs-integration path,
 # /usr/lib/qt6/plugins/egldeviceintegrations/libqeglfs-mali-integration.so, which
@@ -331,15 +364,17 @@ Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms
 # eglfs_kms is the GBM variant, so EGL has to be on the gbm platform for it;
 # the vendor Mesa is built with "surfaceless" as its compiled-in default.
 Environment=EGL_PLATFORM=gbm
-# Software rendering, and not by preference: virgl needs virtio-gpu-gl, which the
-# launchers do not attach on armhf. Not because they cannot any more — the machine
-# has working PCI since it moved to highmem=off — but because virgl on a 32-bit
-# guest is untested, so arch_devices.sh leaves GPU_GL_DEV empty and the GL display
-# modes refuse this architecture. Revisit here too if that ever changes.
-# kms_swrast is therefore the only driver that can back GBM here. Named explicitly
-# rather than left to Mesa's loader, which otherwise probes for a virtio_gpu driver
-# matching the kernel's device name and finds nothing usable.
-Environment=MESA_LOADER_DRIVER_OVERRIDE=kms_swrast
+# virtio_gpu, so GL goes to the host's GPU through virgl rather than being
+# rasterized on an emulated CPU. Two things had to land first: the machine gained
+# working PCI when it moved to highmem=off, which is what lets virtio-gpu-gl-pci
+# attach, and the staged armhf virtio_gpu_dri.so above is the driver Mesa needs to
+# use it -- the vendor megadriver has no virgl in it.
+#
+# Named explicitly for the same reason kms_swrast was: Mesa's loader probes by the
+# kernel's device name, and being definite makes the failure obvious if the driver
+# ever goes missing. To go back to software, set this to kms_swrast -- still present
+# in the image -- and use a non-GL display mode.
+Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
 
 umount /mnt/rootfs
@@ -356,8 +391,11 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
+    -e MESA_LAYOUT="$MESA_LAYOUT" \
+    -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
+    -v "$STAGE_DIR:/stage:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh

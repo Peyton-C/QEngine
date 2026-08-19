@@ -80,11 +80,17 @@ case "$ARCH" in
         MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
-        # Still no GL. virtio-gpu-gl-pci is attachable now that the bus works, but
-        # virgl has never been tried against a 32-bit guest here, so the virgl
-        # display modes keep refusing armhf — they check for an empty value and say
-        # so — rather than failing in some less obvious way partway through boot.
-        GPU_GL_DEV=""
+        # GL works here. Two things had to be true: the machine gained a working PCI
+        # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the
+        # rootfs carries a virgl-capable DRI driver built by build_virgl_mesa.sh --
+        # the vendor Mesa has no virgl compiled in, and Debian's packaged driver
+        # cannot load in these images.
+        #
+        # Whether a *host* can serve it is separate. QEMU needs virglrenderer built
+        # in, and Debian's arm64 QEMU has neither virtio-gpu-gl-pci nor
+        # egl-headless, so on such a host the GL modes fail at startup no matter
+        # what this sets.
+        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
         # highmem=off caps the guest's physical address space at 32 bits, and RAM on
@@ -101,13 +107,60 @@ case "$ARCH" in
                    echo "       the armmp-lpae kernel and drop highmem=off." >&2
                    exit 1; } ;;
         esac
-        # A 32-bit guest cannot be accelerated by KVM or HVF on the hosts this
-        # project targets — Apple Silicon has no AArch32 at all — and `-cpu host`
-        # is accelerator-only. Set here rather than in each launcher's host check,
-        # which uses ${ACCEL:-...} defaults and so leaves these in place. Both stay
-        # overridable from the environment.
-        ACCEL="${ACCEL:-tcg}"
-        CPU="${CPU:-cortex-a15}"
+        # A 32-bit guest *can* be KVM-accelerated, on a host whose cores implement
+        # AArch32 at EL1 -- which is most arm64 Linux hardware, Cortex-A53/A72
+        # included. Two things make that easy to miss. It does not work through
+        # qemu-system-arm, which distributions build TCG-only, so `-accel help`
+        # there lists tcg alone and reads like a hardware limit when it is a
+        # packaging one. And the CPU has to be `host,aarch64=off` rather than plain
+        # `host`, because what runs the guest is qemu-system-aarch64 with 64-bit
+        # execution switched off.
+        #
+        # Apple Silicon stays on TCG deliberately: M-series cores dropped AArch32
+        # entirely, so HVF cannot run a 32-bit guest there at all.
+        #
+        # Asked of QEMU rather than inferred from uname, because which binary can
+        # use KVM is a packaging decision and distributions differ. `-accel help`
+        # answers it exactly: QEMU only compiles KVM into a target when the host
+        # can host it, so the same qemu-system-aarch64 lists "kvm tcg" on an arm64
+        # host and "tcg" alone on x86_64 -- verified on both. That also means a
+        # distribution shipping a KVM-enabled qemu-system-arm is picked up here
+        # without this needing to know about it.
+        #
+        # /dev/kvm is checked too: the binary advertising KVM says nothing about
+        # whether this kernel exposes a usable device (containers and hosts with
+        # virtualization disabled do not).
+        #
+        # The CPU model comes from the target the binary runs, which its name
+        # states outright. A 64-bit target needs AArch64 explicitly switched off to
+        # give a 32-bit vCPU; a 32-bit target is already 32-bit and has no such
+        # property, so asking for it there fails.
+        #
+        # Set here rather than in each launcher's host check, which uses
+        # ${ACCEL:-...} defaults and so leaves these in place. Both stay overridable
+        # from the environment.
+        _kvm_ok=0
+        if [ "$(uname -s)" = Linux ] &&
+           "$QEMU_BIN" -accel help 2>/dev/null | grep -qw kvm &&
+           [ -w /dev/kvm ] && [ -r /dev/kvm ]; then
+            _kvm_ok=1
+        fi
+        if [ "$_kvm_ok" = 1 ]; then
+            ACCEL="${ACCEL:-kvm}"
+            case "${QEMU_BIN##*/}" in
+                *aarch64*) CPU="${CPU:-host,aarch64=off}" ;;
+                *)         CPU="${CPU:-host}" ;;
+            esac
+        else
+            ACCEL="${ACCEL:-tcg}"
+            CPU="${CPU:-cortex-a15}"
+        fi
+        # One case this cannot see: an arm64 core that implements no AArch32 at all
+        # still advertises KVM, and a 32-bit guest on it fails at startup instead of
+        # being caught here. Graviton, Ampere Altra and Apple Silicon are all like
+        # this. There is no cheap way to ask -- KVM_CAP_ARM_EL1_32BIT is not exposed
+        # through any file -- so the failure is left to QEMU, which says so plainly.
+        # ACCEL=tcg is the way past it.
         ;;
     *)
         echo "ERROR: unsupported ARCH '$ARCH' (expected arm64 or armhf)." >&2

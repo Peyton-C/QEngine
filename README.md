@@ -82,8 +82,8 @@ the application itself resolves.
 | Fake Touch              | Y             | Y             | Y     | Y     |
 | Keyboard Navigation     | Y             | ?             | Y     | Y     |
 | Audio Playback          | Y             | N             | Y     | N     |
-| MIDI                    | Y             | ?             | Y     | ~     |
-| External Media (USB/SD) | Y             | ?             | Y     | N     |
+| MIDI                    | Y             | Y             | Y     | ~     |
+| External Media (USB/SD) | Y             | Y             | Y     | N     |
 
 For 5.0.4 (armv7): Engine boots to a rendered, animating UI on `eglfs`/KMS, and
 renders through virgl on the host's GPU. That needs a GL display mode (`egl-vnc` or

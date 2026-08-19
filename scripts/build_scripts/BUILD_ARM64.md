@@ -20,4 +20,8 @@ The steps individually, if you want them:
 3. Get the kernel and initrd with `get_kernel.sh --arch arm64`.
 4. Make a data disk for Engine with `make_disk.sh --family engine`.
 5. Boot with `scripts/qemu/run_qemu.sh`, whose defaults match what those steps wrote.
-   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `sdl-gl`, `egl-vnc`).
+   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `sdl-gl`, `egl-vnc`),
+   defaulting to the GL one where the platform has it. `VIRGL=off` forces the non-GL
+   member of the pair and `VIRGL=on` the GL one; `run_instance.sh` spells those
+   `--no-gl` and `--gl`. A GL mode this QEMU cannot serve is demoted with a warning
+   rather than refused.

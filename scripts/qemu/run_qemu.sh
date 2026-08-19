@@ -40,7 +40,9 @@ DEVICE="${DEVICE:-engine}"
 # shellcheck source=arch_devices.sh
 . "$QEMU_DIR/arch_devices.sh"
 
-# Resolves DISPLAY_ARGS, NEEDS_GL and the audio backend from DISPLAY_MODE.
+# Resolves DISPLAY_ARGS, NEEDS_GL and the audio backend from DISPLAY_MODE, and
+# downgrades a GL mode to its non-GL equivalent if this QEMU cannot serve it. Sourced
+# after arch_devices.sh because that probe needs QEMU_BIN.
 # shellcheck source=display_modes.sh
 . "$QEMU_DIR/display_modes.sh"
 

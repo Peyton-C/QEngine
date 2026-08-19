@@ -22,8 +22,10 @@ The steps individually, if you want them:
 4. Make a /data disk with `make_disk.sh --family mpc` — see the note below on why it
    is not `--family engine`.
 5. Boot with `DEVICE=engine ARCH=armhf scripts/qemu/run_qemu.sh`.
-   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `none` — but not
-   `sdl-gl` or `egl-vnc`, see below).
+   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `none`, and the GL
+   modes `sdl-gl` and `egl-vnc` — which work here now, see below). `VIRGL=off` forces
+   the non-GL member of whichever pair is in play; `run_instance.sh` spells the same
+   thing `--no-gl`.
 
 ## Notes
 

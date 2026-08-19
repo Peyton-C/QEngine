@@ -1784,7 +1784,12 @@ ABRT` and a restart loop). Three environment variables in
 needs `virtio-gpu-gl` and the 32-bit `virt` machine had no usable PCI; PCI works
 since the machine moved to `highmem=off`, so rendering goes to the host's GPU now.
 A non-GL display mode still rasterizes on the guest CPU, and `kms_swrast` stays in
-the image for that.
+the image for that. Naming the driver does **not** prevent that fallback, which is
+worth knowing before reading the override as a commitment: booted against a plain
+`virtio-gpu-pci`, Engine comes up with `kms_swrast_dri.so` mapped and zero restarts
+despite `MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`, and the arm64 guest falls back the
+same way inside its replaced `libgallium`. So GL degrades to software on either
+architecture rather than failing, which is what makes `--no-gl` safe to reach for.
 
 **Second blocker — a black screen with `Engine` running normally.** With
 the integration pinned, `Engine` starts, registers the touchscreen,

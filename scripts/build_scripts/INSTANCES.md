@@ -154,11 +154,46 @@ been booted, and `new_instance.sh` says so when it sees one.
 scripts/qemu/run_instance.sh --list
 scripts/qemu/run_instance.sh --name mpc-3.9.1
 scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display vnc
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl      # rasterize on the guest CPU
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --gl         # render on the host GPU
 ```
 
 `--display` overrides the `DISPLAY_MODE` recorded in `instance.env` for one run. The
 modes are `sdl`, `sdl-gl`, `cocoa`, `vnc`, `egl-vnc` and `none`; see
 [../qemu/display_modes.sh](../qemu/display_modes.sh).
+
+### GL is the default, and both directions are one flag
+
+The display modes come in pairs — `sdl`/`sdl-gl` and `vnc`/`egl-vnc` — differing only
+in whether rendering goes to the host GPU through virgl or is rasterized on the
+emulated guest CPU. That difference is worth two orders of magnitude of frame time, so
+**new instances are created with the GL mode** (`sdl-gl` on Linux; macOS keeps `cocoa`,
+which has no GL variant among these modes).
+
+`--gl` and `--no-gl` move within the pair for one run, and compose with `--display`:
+
+| | effect |
+|---|---|
+| `--gl` | promote to the GL member (`vnc` → `egl-vnc`, `sdl` → `sdl-gl`). Use it on an instance created before GL was the default, or one whose `instance.env` records a non-GL mode. |
+| `--no-gl` | demote to the non-GL member. The escape hatch when GL itself is what you are ruling out — a rendering artefact, a driver question, a host GPU you would rather not involve. |
+| neither | the recorded mode, honoured as recorded. |
+
+Equivalently, `VIRGL=on`/`VIRGL=off` in the environment, which is how `run_qemu.sh`
+takes it when run directly.
+
+**A GL mode this QEMU cannot serve is demoted rather than refused.** Debian's arm64
+QEMU has neither `virtio-gpu-gl-pci` nor `egl-headless`, so on such a host a GL mode
+would otherwise fail at startup with a message about an unknown device, which does not
+say that the binary is the problem. `display_modes.sh` probes `-device help` and
+`-display help`, drops to the non-GL member, and prints a warning naming what is
+missing. Guests handle their half the same way: Mesa falls back to software rendering,
+verified on both architectures — armv7 maps `kms_swrast_dri.so` despite
+`MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`, and arm64 falls back inside its replaced
+`libgallium`. So the guest still renders, just slowly, and the warning is the only
+thing that tells you which happened.
+
+Existing instances keep whatever `DISPLAY_MODE` they were created with — it is a
+one-word edit in `instance.env`, or `--gl` per run.
 
 ## Layout
 
@@ -183,7 +218,7 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 | Key | Meaning |
 |---|---|
 | `DEVICE` | the device family, detected from the rootfs (see above) |
-| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's (`cocoa` on macOS, `sdl` elsewhere) |
+| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's, GL where there is a GL variant (`cocoa` on macOS, `sdl-gl` elsewhere). Demoted at boot with a warning if this QEMU cannot serve GL |
 | `ROOTFS_IMG`, `DATA_IMG` | this instance's disks |
 | `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
 | `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |

@@ -8,6 +8,10 @@
 # Usage: run_instance.sh --name <name> [--display <mode>] [--list]
 #   --name      instance under build/instances/ to boot
 #   --display   override the display backend recorded in instance.env for this run
+#   --gl        render on the host GPU through virgl, promoting the display mode to
+#               its GL variant. Already the default where QEMU can serve it.
+#   --no-gl     render on the guest CPU, whatever the instance records. The escape
+#               hatch when GL itself is suspect.
 #               (sdl, sdl-gl, cocoa, vnc, egl-vnc, none — see display_modes.sh)
 #   --list      list the instances that exist and exit
 set -euo pipefail
@@ -18,11 +22,18 @@ QEMU_DIR="$REPO_ROOT/scripts/qemu"
 
 NAME=""
 DISPLAY_OVERRIDE=""
+VIRGL_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --name) NAME="$2"; shift 2 ;;
         --display) DISPLAY_OVERRIDE="$2"; shift 2 ;;
+        # --gl / --no-gl move within the display mode's pair (sdl <-> sdl-gl,
+        # vnc <-> egl-vnc), so they compose with --display and with whatever the
+        # instance recorded. --no-gl is the one to reach for when GL is what is being
+        # ruled out; --gl asks for it on an instance created without it.
+        --gl) VIRGL_OVERRIDE=on; shift ;;
+        --no-gl) VIRGL_OVERRIDE=off; shift ;;
         --list)
             if [ -d "$INSTANCES_DIR" ]; then
                 for d in "$INSTANCES_DIR"/*/; do
@@ -89,13 +100,17 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 echo "=== instance : $NAME (${DEVICE:-?}, from $(basename "${FIRMWARE_IMG:-unknown}"))"
-echo "=== display  : $DISPLAY_MODE"
+# What is printed here is what the instance asked for. display_modes.sh may promote
+# or demote it -- for --gl/--no-gl, or because this QEMU cannot serve GL -- and says
+# so on its own line when it does.
+echo "=== display  : $DISPLAY_MODE${VIRGL_OVERRIDE:+ (virgl $VIRGL_OVERRIDE)}"
 echo "=== rootfs   : $ROOTFS_IMG (${ARCH:-arch unrecorded})"
 echo "=== kernel   : ${KERNEL_IMG:-<launcher default>}"
 echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
 echo ""
 
+[ -n "$VIRGL_OVERRIDE" ] && export VIRGL="$VIRGL_OVERRIDE"
 export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 export DEVICE DISPLAY_MODE
 # Optional, and absent from most instance.envs. Exported only when the file set

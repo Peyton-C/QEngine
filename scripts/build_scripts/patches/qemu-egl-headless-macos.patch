@@ -1,0 +1,87 @@
+Subject: [PATCH] ui: make -display egl-headless work on macOS
+Applies-to: utmapp/qemu, branch utm-edition, commit
+            7311c3651c3a2cbc3d32e6eae262c60339f28d79 (QEMU 10.0.12)
+Modified-files: ui/egl-helpers.c   (LGPL-2.1-or-later, per its own header)
+                ui/meson.build     (no header; GPL-2.0-or-later, per QEMU's LICENSE)
+Modified-by: Peyton Cashin <66343323+Peyton-C@users.noreply.github.com>, 2026-08-18
+License: offered under the license of each file it modifies. QEMU as a whole is
+         GPL-2.0; this patch is NOT covered by the MIT LICENSE at the root of
+         this repository. See ./README.md.
+
+Two changes that together make `-display egl-headless` usable on macOS:
+
+  * ui/meson.build gated egl-headless on gbm, which is Linux-only. The source
+    does not need it -- every dmabuf path in egl-headless.c is already behind
+    #ifdef CONFIG_GBM. egl_init() likewise had branches only for WIN32 and gbm,
+    so macOS fell through to "not available on this platform"; it now brings up
+    ANGLE's EGL display with a surfaceless context, which is all egl-headless
+    needs.
+
+  * egl_fb_setup_new_tex_target() created its texture with internalformat
+    GL_RGBA and format GL_BGRA. Desktop GL allows the mismatch; GLES does not,
+    so the call failed with GL_INVALID_OPERATION, the texture was never
+    allocated, and every blit into the framebuffer backed by it failed with
+    GL_INVALID_FRAMEBUFFER_OPERATION -- a correctly sized, entirely black frame.
+    Upstream never hit this because egl-headless only ever ran on desktop GL.
+
+diff --git a/ui/egl-helpers.c b/ui/egl-helpers.c
+index 231a500e5..0520bf168 100644
+--- a/ui/egl-helpers.c
++++ b/ui/egl-helpers.c
+@@ -134,8 +134,17 @@ void egl_fb_setup_new_tex_target(egl_fb *fb, int width, int height, GLenum targe
+ 
+     glGenTextures(1, &texture);
+     glBindTexture(target, texture);
+-    glTexImage2D(target, 0, GL_RGBA, width, height,
+-                 0, GL_BGRA, GL_UNSIGNED_BYTE, 0);
++    /*
++     * Desktop GL happily takes a GL_RGBA internalformat with a GL_BGRA format,
++     * but GLES requires the two to match for an unsized internalformat. Getting
++     * this wrong fails with GL_INVALID_OPERATION, leaves the texture
++     * unallocated, and every later use of the framebuffer it backs then fails
++     * with GL_INVALID_FRAMEBUFFER_OPERATION. The contents are overwritten by a
++     * blit anyway, and readback still asks for GL_BGRA.
++     */
++    glTexImage2D(target, 0, GL_RGBA, width, height, 0,
++                 epoxy_is_desktop_gl() ? GL_BGRA : GL_RGBA,
++                 GL_UNSIGNED_BYTE, 0);
+ 
+     egl_fb_setup_for_tex_target(fb, width, height, texture, target, true);
+ }
+@@ -737,6 +746,23 @@ bool egl_init(const char *rendernode, DisplayGLMode mode, Error **errp)
+         error_setg(errp, "egl: egl_init_ctx failed");
+         return false;
+     }
++#elif defined(__APPLE__)
++    /*
++     * There is no render node on macOS; ANGLE's EGL display is the GPU. The
++     * context is surfaceless, which is all egl-headless needs -- it renders
++     * into an FBO and reads back into a DisplaySurface. ANGLE is a GLES
++     * implementation, so a plain "gl=on" means ES here.
++     */
++    if (qemu_egl_init_dpy_cocoa(mode == DISPLAY_GL_MODE_ON ?
++                                DISPLAY_GL_MODE_ES : mode) < 0) {
++        error_setg(errp, "egl: init failed");
++        return false;
++    }
++    qemu_egl_rn_ctx = qemu_egl_init_ctx();
++    if (!qemu_egl_rn_ctx) {
++        error_setg(errp, "egl: egl_init_ctx failed");
++        return false;
++    }
+ #elif defined(CONFIG_GBM)
+     if (egl_rendernode_init(rendernode, mode) < 0) {
+         error_setg(errp, "egl: render node init failed");
+diff --git a/ui/meson.build b/ui/meson.build
+index 10eea7e1d..4092ad6b0 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -70,7 +70,7 @@ endif
+ 
+ if opengl.found()
+   egl_headless_ss = ss.source_set()
+-  egl_headless_ss.add(when: [egl, opengl, gbm, pixman],
++  egl_headless_ss.add(when: [egl, opengl, pixman],
+                       if_true: files('egl-headless.c'))
+   ui_modules += {'egl-headless' : egl_headless_ss}
+ endif

@@ -1,0 +1,42 @@
+Subject: [PATCH] Fall back to lib<name>.dylib when ANGLE is not in a framework
+Applies-to: utmapp/WebKit, commit ed78ab6e1a37f4f11583a0bd038f22ec91f3ff10
+Modified-files: Source/ThirdParty/ANGLE/src/common/system_utils.cpp
+                (BSD-3-Clause, per Source/ThirdParty/ANGLE/LICENSE)
+Modified-by: Peyton Cashin <66343323+Peyton-C@users.noreply.github.com>, 2026-08-18
+License: offered under BSD-3-Clause, the license of the file it modifies. Not
+         covered by the MIT LICENSE at the root of this repository.
+
+WebKit's ANGLE only ever dlopen()s its GLES library as a macOS framework
+(GLESv2.framework/Versions/Current/GLESv2, SearchType::SystemDir), because UTM
+ships it inside an .app bundle. A standalone CLI build has no bundle, so libEGL
+fails to load its entry points at runtime ("Error loading EGL entry points").
+This adds a lib<name>.dylib fallback honouring the caller's search type --
+ModuleDir finds it next to libEGL.dylib.
+
+diff --git a/Source/ThirdParty/ANGLE/src/common/system_utils.cpp b/Source/ThirdParty/ANGLE/src/common/system_utils.cpp
+index 83beb4aff2e..d4acb38a01c 100644
+--- a/Source/ThirdParty/ANGLE/src/common/system_utils.cpp
++++ b/Source/ThirdParty/ANGLE/src/common/system_utils.cpp
+@@ -220,7 +220,21 @@ void *OpenSystemLibraryAndGetError(const char *libraryName,
+ {
+ #if defined(ANGLE_PLATFORM_MACOS)
+     std::string frameworkPath = std::string(libraryName) + ".framework/Versions/Current/" + std::string(libraryName);
+-    return OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);
++    void *frameworkHandle =
++        OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);
++    if (frameworkHandle != nullptr)
++    {
++        return frameworkHandle;
++    }
++    // WebKit builds ANGLE as frameworks inside an .app bundle. For a standalone
++    // build the libraries are plain dylibs, so fall back to "lib<name>.dylib"
++    // honouring the caller's search type (ModuleDir puts it next to libEGL).
++    if (errorOut != nullptr)
++    {
++        errorOut->clear();
++    }
++    std::string dylibPath = "lib" + std::string(libraryName) + ".dylib";
++    return OpenSystemLibraryWithExtensionAndGetError(dylibPath.c_str(), searchType, errorOut);
+ #elif defined(ANGLE_PLATFORM_IOS_FAMILY)
+     std::string frameworkPath = std::string(libraryName) + ".framework/" + std::string(libraryName);
+     return OpenSystemLibraryWithExtensionAndGetError(frameworkPath.c_str(), SearchType::SystemDir, errorOut);

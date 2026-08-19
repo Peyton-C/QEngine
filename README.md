@@ -9,6 +9,7 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 - [BLOCKING_TELEMETRY.md](docs/BLOCKING_TELEMETRY.md) — stopping Engine's crash/analytics reporting from reaching InMusic's real Sentry project
 - [BUILD_ARM64.md](scripts/build_scripts/BUILD_ARM64.md) / [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) / [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md) — what each target needs
 - [INSTANCES.md](scripts/build_scripts/INSTANCES.md) — running several emulated devices side by side
+- [MACOS_VIRGL.md.md](docs/MACOS_VIRGL.md.md) — Build QEMU w/ Virgl on macOS
 
 ## Quick setup
 

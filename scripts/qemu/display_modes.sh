@@ -30,14 +30,51 @@ case "$VIRGL" in
     *) echo "ERROR: VIRGL must be auto, on or off (got '$VIRGL')." >&2; exit 1 ;;
 esac
 
+# What this QEMU can actually serve. Asked twice -- once to pick the default mode,
+# once to check the mode that was asked for -- and each answer costs a QEMU process,
+# so the help text is read once and kept. Queried into variables and matched with a
+# case glob rather than piped into grep: a `grep -q` at the end of a pipeline exits
+# at the first match and kills the producer with SIGPIPE, which reports failure under
+# `set -o pipefail`, so a match reads as a miss.
+_qemu_help_read=0
+_qemu_dev_help=""
+_qemu_dpy_help=""
+_qemu_read_help () {
+    [ "$_qemu_help_read" -eq 1 ] && return 0
+    _qemu_help_read=1
+    [ -n "${QEMU_BIN:-}" ] || return 0
+    _qemu_dev_help="$("$QEMU_BIN" -device help 2>/dev/null || true)"
+    _qemu_dpy_help="$("$QEMU_BIN" -display help 2>/dev/null || true)"
+}
+# $1 is the -display backend a GL mode needs. Both halves have to be there: the
+# device that hands guest GL to virglrenderer, and the backend that puts the result
+# somewhere.
+_qemu_serves_gl () {
+    _qemu_read_help
+    case "$_qemu_dev_help" in *virtio-gpu-gl-pci*) ;; *) return 1 ;; esac
+    case "$_qemu_dpy_help" in *"$1"*) ;; *) return 1 ;; esac
+    return 0
+}
+
 # The default mode is GL where the platform has one, because rendering on the host
 # GPU is worth two orders of magnitude of frame time and the probe below turns it
 # back off on a host that cannot do it. An instance.env that records a mode overrides
 # this, which is why old instances keep whatever they were created with.
 if [ -z "${DISPLAY_MODE:-}" ]; then
     case "$(uname -s)" in
-        # cocoa has no GL variant here, so macOS defaults to it unchanged.
-        Darwin) DISPLAY_MODE=cocoa ;;
+        # macOS gets its GL through egl-vnc, not cocoa: UTM's ui/cocoa.m renders
+        # virgl correctly but sizes the GL layer from the guest scanout divided by a
+        # backingScaleFactor that can still read 1.0, so the image comes out
+        # magnified and cropped on a Retina display and updateScale declines to
+        # re-fit it. egl-vnc sidesteps that entirely -- the VNC client owns the
+        # window. It needs the QEMU that scripts/build_scripts/build_virgl_qemu_macos.sh
+        # builds, so a machine without it still gets a native cocoa window rather
+        # than being pushed into a VNC-only session it gains nothing from.
+        Darwin) if _qemu_serves_gl egl-headless; then
+                    DISPLAY_MODE=egl-vnc
+                else
+                    DISPLAY_MODE=cocoa
+                fi ;;
         *)      DISPLAY_MODE=sdl-gl ;;
     esac
 fi
@@ -45,7 +82,15 @@ fi
 # egl-headless renders on a specific DRM node. renderD128 is not always the card you
 # want — on a machine with an integrated and a discrete GPU it is usually the
 # integrated one — so it is overridable.
-RENDERNODE="${RENDERNODE:-/dev/dri/renderD128}"
+#
+# macOS has no DRM and no render nodes: there, egl-headless brings up ANGLE's EGL
+# display, which is the GPU. QEMU still accepts a rendernode= it will ignore, but
+# handing it a Linux device path that does not exist says something false about what
+# the build is doing, so the option is left off entirely.
+case "$(uname -s)" in
+    Darwin) RENDERNODE="${RENDERNODE:-}" ;;
+    *)      RENDERNODE="${RENDERNODE:-/dev/dri/renderD128}" ;;
+esac
 
 # Each mode carries the pair it belongs to, so switching GL on or off is a lookup
 # rather than a second table: GL_MODE is the GL member of the pair (empty when the
@@ -60,14 +105,19 @@ _resolve_display_mode() {
                  GL_MODE=sdl-gl;  NOGL_MODE=sdl ;;
         sdl-gl)  DISPLAY_ARGS="-display sdl,gl=on,show-cursor=on"; NEEDS_GL=1
                  GL_MODE=sdl-gl;  NOGL_MODE=sdl;  GL_BACKEND=sdl ;;
+        # GL_MODE=egl-vnc is what gives --gl somewhere to go on macOS. It is not
+        # cocoa's own GL path (-display cocoa,gl=es), which is the one that
+        # mis-scales; the pair here is "native window, software" against "VNC,
+        # virgl". --no-gl from egl-vnc lands on vnc rather than back on cocoa,
+        # because both halves of that pair are reached the same way.
         cocoa)   DISPLAY_ARGS="-display cocoa,show-cursor=on";     NEEDS_GL=0
-                 NOGL_MODE=cocoa ;;
+                 GL_MODE=egl-vnc; NOGL_MODE=cocoa ;;
         vnc)     DISPLAY_ARGS="-vnc :${VNC_DISPLAY:-1}";           NEEDS_GL=0
                  GL_MODE=egl-vnc; NOGL_MODE=vnc ;;
         # Renders with GL off-screen and serves the result over VNC. Note that HMP
         # `screendump` reports "no surface" under egl-headless, so take screenshots
         # with a VNC client rather than the monitor.
-        egl-vnc) DISPLAY_ARGS="-display egl-headless,rendernode=$RENDERNODE -vnc :${VNC_DISPLAY:-1}"
+        egl-vnc) DISPLAY_ARGS="-display egl-headless${RENDERNODE:+,rendernode=$RENDERNODE} -vnc :${VNC_DISPLAY:-1}"
                  NEEDS_GL=1
                  GL_MODE=egl-vnc; NOGL_MODE=vnc; GL_BACKEND=egl-headless ;;
         none)    DISPLAY_ARGS="-display none";                     NEEDS_GL=0
@@ -105,29 +155,31 @@ fi
 # equivalent non-GL mode and say so -- loudly, because this project has lost enough
 # time to software rendering that looked like hardware rendering.
 #
-# Queried into variables and matched with a case glob rather than piped into grep:
-# a `grep -q` at the end of a pipeline exits at the first match and kills the
-# producer with SIGPIPE, which reports failure under `set -o pipefail`. run_qemu.sh
-# does not set it today, and this way it does not matter if it ever does.
-if [ "$NEEDS_GL" -eq 1 ] && [ -n "${QEMU_BIN:-}" ]; then
-    _dev_help="$("$QEMU_BIN" -device help 2>/dev/null || true)"
-    _dpy_help="$("$QEMU_BIN" -display help 2>/dev/null || true)"
+# The help text itself is read by _qemu_serves_gl above, which also picked the
+# default mode; this repeats the check only to name which half is missing.
+if [ "$NEEDS_GL" -eq 1 ] && [ -n "${QEMU_BIN:-}" ] && ! _qemu_serves_gl "$GL_BACKEND"; then
     _missing=""
-    case "$_dev_help" in *virtio-gpu-gl-pci*) ;; *) _missing="virtio-gpu-gl-pci" ;; esac
-    case "$_dpy_help" in
+    case "$_qemu_dev_help" in *virtio-gpu-gl-pci*) ;; *) _missing="virtio-gpu-gl-pci" ;; esac
+    case "$_qemu_dpy_help" in
         *"$GL_BACKEND"*) ;;
         *) _missing="${_missing:+$_missing or }$GL_BACKEND" ;;
     esac
-    if [ -n "$_missing" ]; then
-        echo "WARNING: $QEMU_BIN has no $_missing, so DISPLAY_MODE=$DISPLAY_MODE" >&2
-        echo "         cannot render on the host GPU. Falling back to" >&2
-        echo "         DISPLAY_MODE=$NOGL_MODE, which rasterizes every frame on the" >&2
-        echo "         *guest* CPU -- correct, and slower by orders of magnitude." >&2
-        echo "         Build QEMU with virglrenderer and OpenGL to get GL here; see" >&2
-        echo "         docs/BUILDING.md. Pass --no-gl to silence this." >&2
-        DISPLAY_MODE="$NOGL_MODE"
-        _resolve_display_mode
-    fi
+    echo "WARNING: $QEMU_BIN has no $_missing, so DISPLAY_MODE=$DISPLAY_MODE" >&2
+    echo "         cannot render on the host GPU. Falling back to" >&2
+    echo "         DISPLAY_MODE=$NOGL_MODE, which rasterizes every frame on the" >&2
+    echo "         *guest* CPU -- correct, and slower by orders of magnitude." >&2
+    # The fix differs by host, and pointing macOS at BUILDING.md sent people to a
+    # page that does not mention any of what they need.
+    case "$(uname -s)" in
+        Darwin)
+            echo "         Build one with:  scripts/build_scripts/build_virgl_qemu_macos.sh" >&2
+            echo "         (see docs/MACOS_VIRGL.md). Pass --no-gl to silence this." >&2 ;;
+        *)
+            echo "         Build QEMU with virglrenderer and OpenGL to get GL here; see" >&2
+            echo "         docs/BUILDING.md. Pass --no-gl to silence this." >&2 ;;
+    esac
+    DISPLAY_MODE="$NOGL_MODE"
+    _resolve_display_mode
 fi
 
 # Overridable, because the host's own audio stack is not something this can

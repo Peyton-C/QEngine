@@ -78,10 +78,21 @@ esac
 # GL by default on Linux, because rendering on the host GPU is worth two orders of
 # magnitude of frame time. Recording sdl-gl is safe even for an instance that will run
 # somewhere without GL: display_modes.sh probes the QEMU binary at boot and drops to
-# plain sdl with a warning, and --no-gl forces that for a single run. macOS keeps
-# cocoa, which has no GL variant among these modes.
+# plain sdl with a warning, and --no-gl forces that for a single run.
+#
+# macOS reaches GL through egl-vnc rather than cocoa: virgl renders off-screen and
+# the result is served over VNC, because cocoa's own GL path mis-scales on a Retina
+# display. That needs the QEMU built by build_virgl_qemu_macos.sh, so it is recorded
+# only when that binary is actually there -- an instance created on a machine
+# without it records cocoa and still opens a native window, rather than defaulting
+# into a VNC session with nothing to show for it. Either way this is one word to
+# edit in instance.env afterwards, or --display for a single run.
 case "$(uname -s)" in
-    Darwin) DISPLAY_MODE="cocoa" ;;
+    Darwin) if [ -x "$REPO_ROOT/build/qemu-virgl/prefix/bin/qemu-system-aarch64" ]; then
+                DISPLAY_MODE="egl-vnc"
+            else
+                DISPLAY_MODE="cocoa"
+            fi ;;
     *)      DISPLAY_MODE="sdl-gl" ;;
 esac
 

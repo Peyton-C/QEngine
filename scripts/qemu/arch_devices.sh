@@ -24,8 +24,26 @@ ARCH="${ARCH:-arm64}"
 # and boots a 32-bit zImage (verified against the armv7 MPC rootfs). Prefer it, and
 # fall back to qemu-system-arm only for a 32-bit guest on a host that packages just
 # the 32-bit build. brew's prefix is not always on PATH.
+# The repo's own build comes first. On macOS it is the only QEMU here that can serve
+# virgl at all -- Homebrew's has neither virglrenderer nor a GL display backend, so
+# with it every GL mode is demoted to software below. Built by
+# scripts/build_scripts/build_virgl_qemu_macos.sh; absent on a machine that has not
+# run it, which is why this is a candidate list and not a requirement. Set QEMU_BIN
+# to override, as always.
+# run_qemu.sh always exports REPO_ROOT before sourcing this; the BASH_SOURCE fallback
+# is for sourcing it by hand. If neither resolves -- BASH_SOURCE does not exist
+# outside bash -- the candidate is dropped rather than guessed at, because a wrongly
+# derived path is not a missing binary: it silently selects a different QEMU.
+_qemu_repo_root="${REPO_ROOT:-}"
+if [ -z "$_qemu_repo_root" ] && [ -n "${BASH_SOURCE[0]:-}" ]; then
+    _qemu_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
+_qemu_virgl_build=""
+[ -n "$_qemu_repo_root" ] &&
+    _qemu_virgl_build="${BUILD_DIR:-$_qemu_repo_root/build}/qemu-virgl/prefix/bin/qemu-system-aarch64"
 if [ -z "${QEMU_BIN:-}" ]; then
-    for _candidate in qemu-system-aarch64 \
+    for _candidate in ${_qemu_virgl_build:+"$_qemu_virgl_build"} \
+                      qemu-system-aarch64 \
                       /opt/homebrew/bin/qemu-system-aarch64 \
                       /usr/local/bin/qemu-system-aarch64; do
         command -v "$_candidate" >/dev/null 2>&1 && { QEMU_BIN="$_candidate"; break; }

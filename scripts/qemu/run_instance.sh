@@ -108,6 +108,22 @@ echo "=== rootfs   : $ROOTFS_IMG (${ARCH:-arch unrecorded})"
 echo "=== kernel   : ${KERNEL_IMG:-<launcher default>}"
 echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
+
+# 5900 + N
+_vnc_display="${VNC_DISPLAY:-1}"
+case "$_vnc_display" in
+    ''|*[!0-9]*) _vnc_port="" ;;
+    *)           _vnc_port="$((5900 + _vnc_display))" ;;
+esac
+# Only print the VNC port if the current display backend is vnc
+case "$DISPLAY_MODE" in
+    vnc|egl-vnc) ;;
+    cocoa)       [ "$VIRGL_OVERRIDE" = on ] || _vnc_port="" ;;
+    *)           _vnc_port="" ;;
+esac
+if [ -n "$_vnc_port" ]; then
+    echo "=== vnc      : localhost:$_vnc_port (display :$_vnc_display)"
+fi
 echo ""
 
 [ -n "$VIRGL_OVERRIDE" ] && export VIRGL="$VIRGL_OVERRIDE"

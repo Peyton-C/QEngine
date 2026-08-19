@@ -13,10 +13,6 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 
 ## Quick setup
 
-Verified from an empty `build/` on x86_64 Linux. The same commands work on an arm64
-Linux host or an Apple Silicon Mac, where the launchers pick up KVM/HVF instead of
-falling back to TCG.
-
 **Prerequisites:** `docker`, `qemu-system-aarch64` and `qemu-system-arm`, `binwalk`
 3.1.x, `e2fsprogs` (for `dumpe2fs`, `debugfs`, `resize2fs`), `file`.
 
@@ -52,18 +48,17 @@ scripts/qemu/run_instance.sh --name rmz2-4.6.0 --no-gl
 ```
 
 The serial console appears in the terminal you launched from and root has no
-password. On x86_64 the guest is emulated rather than virtualized — KVM cannot
-accelerate a foreign architecture — so allow roughly two minutes to a login prompt.
-
-**Picking the right firmware.** `--device mpc` means the armv7 / RK3288 MPC family
-(product codes `ACV*`). Akai also ships an arm64 "Gen 2" MPC image; that one belongs
-to a different pipeline, and the build now rejects it up front rather than producing
-an image that panics partway into boot.
+password.
 
 **Build one architecture at a time.** Both pipelines use the same `debian:bookworm`
 and `debian:trixie` tags at different architectures, and Docker caches a tag at only
 one architecture at a time, so building an arm64 and an armv7 target concurrently
 will fight over them. Sequentially is fine — each build pulls what it needs.
+
+**Picking the right firmware.** `--device mpc` refers to the armv7 / RK3288 MPC family
+(product codes `ACV*`). Akai also ships an arm64 "Gen 2" MPC image; that one belongs
+to a different pipeline, and the build now rejects it up front rather than producing
+an image that panics partway into boot.
 
 In the MPC guest, failing units for LoadPin verity trustpoints and XMOS USB audio
 firmware are expected: none of that hardware exists here. `AZ0x system info logging`
@@ -73,31 +68,18 @@ that readable. Run it by hand as `LD_PRELOAD=/root/dtshim.so az0x-info` to see w
 the application itself resolves.
 
 ## Engine OS Support Matrix
-|                         | 5.0.4 (arm64) | 5.0.4 (armv7) | 4.6.0 | 4.3.0 |
-|-------------------------|---------------|---------------|-------|-------|
-| Rootfs Extraction       | Y             | Y             | Y     | Y     |
-| Engine                  | Y             | Y             | Y     | Y     |
-| SoundSwitch             | Y             | ?             | Y     | N     |
-| Native Display          | Y             | Y             | Y     | N     |
-| QT VNC Display          | N             | N             | N     | Y     |
-| Fake Touch              | Y             | Y             | Y     | Y     |
-| Keyboard Navigation     | Y             | ?             | Y     | Y     |
-| Audio Playback          | Y             | N             | Y     | N     |
-| MIDI                    | Y             | Y             | Y     | ~     |
-| External Media (USB/SD) | Y             | Y             | Y     | N     |
-
-For 5.0.4 (armv7): Engine boots to a rendered, animating UI on `eglfs`/KMS, and
-renders through virgl on the host's GPU. That needs a GL display mode (`egl-vnc` or
-`sdl-gl`, which is the default) and a QEMU built with virglrenderer; Debian Trixie's
-arm64 build has neither the device nor `egl-headless`, so an arm64 host may need a QEMU
-built from source. On a host that cannot serve GL the mode is demoted with a warning
-and the guest renders in software instead, so it still runs — slowly.
-`QT VNC Display` is N for the same reason as arm64: Qt 6.7.2 ships no `libqvnc.so`.
-Audio is N because the shim stack it needs was left out, not because it was tried
-and failed. Touch is confirmed end-to-end against the SDL display —
-`touchbridge` re-emits QEMU's absolute tablet as a uinput multitouch device and
-Engine responds to it. The remaining `?` rows are untried, not known-broken. See
-[BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
+|                         | 4.4.0+ (arm64) | 5.0.0+ (armv7) | 4.3.0 |
+|-------------------------|----------------|----------------|-------|
+| Rootfs Extraction       | Y              | Y              | Y     |
+| Engine                  | Y              | Y              | Y     |
+| SoundSwitch             | Y              | ?              | N     |
+| Display                 | Y              | Y              | Y     |
+| Virgl                   | Y              | Y              | N     |
+| Fake Touch              | Y              | Y              | Y     |
+| Keyboard Navigation     | Y              | ?              | Y     |
+| Audio Playback          | Y              | N              | N     |
+| MIDI                    | Y              | Y              | N     |
+| External Media (USB/SD) | Y              | Y              | N     |
 
 ## Emulated Controllers
 
@@ -108,31 +90,27 @@ them (see [ENGINEOS.md](docs/ENGINEOS.md#product-identity-spoofing)). Version ce
 hold the exact firmware version booted, `?` for untested, `–` where that major
 version was never released for the device.
 
-|                         | Code  | SOC    | Signed FW | Arch  | 1.x | 2.x | 3.x | 4.x     | 5.x   |
-|-------------------------|-------|--------|-----------|-------|-----|-----|-----|---------|-------|
-| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?       | ?     |
-| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0   | ?     |
-| Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –   | –   | ?   | ?       | ?     |
-| Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0 ! | ?     |
-| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –   | –   | –   | ?       | ?     |
-| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?       | 5.0.4 |
-| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?       | ?     |
-| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?       | ?     |
-| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?       | ?     |
-| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?       | ?     |
-| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?       | ?     |
-| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?       | ?     |
-| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –   | ?   | ?   | ?       | ?     |
-| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –   | –   | ?   | ?       | ?     |
-| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –   | –   | –   | 4.6.0   | 5.0.4 |
+|                         | Code  | SOC    | Signed FW | Arch  | 1.x | 2.x | 3.x | 4.x           | 5.x   |
+|-------------------------|-------|--------|-----------|-------|-----|-----|-----|---------------|-------|
+| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?     |
+| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0         | ?     |
+| Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –   | –   | ?   | ?             | ?     |
+| Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0 !       | ?     |
+| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –   | –   | –   | ?             | ?     |
+| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | 5.0.4 |
+| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?     |
+| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?     |
+| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?     |
+| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?     |
+| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?     |
+| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?     |
+| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?     |
+| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –   | –   | ?   | ?             | ?     |
+| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –   | –   | –   | 4.5.0-4.6.0   | 5.0.4 |
 
-SC5000 on 5.0.4 boots to a rendered UI and binds a virtual control surface; audio is
-what it still lacks — see the support matrix above. Its image (`JP07-JP08-JP11`) also
-carries `JP08` and `JP11`; both are selectable with `PRODUCT_CODE=` on the rootfs
-build but neither has been booted. `PRODUCT_CODE=` works on the arm64 builder too,
-defaulting to `RMZ2`. `!` on Prime GO 4.3.0 marks a known issue rather than a clean pass.
+## Other inMusic devices
 
-## Emulated MPCs
+### Emulated MPCs
 
 Same shape as the table above. **Code** is again the `inmusic,product-code` value,
 read here from the `model` and `inmusic,product-code` properties of the
@@ -182,7 +160,7 @@ so on). The `az01`/`az05` platform split the dtb filenames show is dropped here 
 keep the columns parallel with the controllers table; `ACVA2`, `ACVR` and a second
 `ACVM` variant are az05, the rest az01.
 
-## Other inMusic devices
+### Emulated Akai and HeadRush Oroducts
 
 The same `az0x` base distribution carries several product lines this project has
 **no rootfs builder for yet** — `new_instance.sh` rejects them, since it matches on

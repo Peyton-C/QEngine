@@ -16,7 +16,9 @@
 # That is a memory-map problem, not a missing driver, and `highmem=off` fixes it
 # (see the armhf branch below), so both architectures now use the same PCI devices.
 # What still differs is the machine's highmem flag, the amount of RAM that flag
-# allows, the CPU, and the accelerator.
+# allows, the CPU, the accelerator, and the sound card -- that last one because of
+# what Debian builds for each architecture rather than because of the machine; see
+# arch_audio_devices at the bottom.
 
 ARCH="${ARCH:-arm64}"
 
@@ -268,10 +270,25 @@ fi
 # it with the -audiodev id it generated.
 #   $1 = the -audiodev id to attach to
 arch_audio_devices() {
-    # ${ARCH:-}: this runs long after the file was sourced, under set -u.
-    if [ "${ARCH:-}" = armhf ]; then
-        printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1"
-    else
+    # ${ARCH:-} rather than $ARCH: this runs long after the file was sourced, and
+    # under the launchers' `set -u` an unset ARCH would abort the boot here rather
+    # than fall through to the architecture this file already defaulted to.
+    if [ "${ARCH:-}" != armhf ]; then
         printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+        return 0
     fi
+
+    # virtio-sound-pci arrived in QEMU 8.2. Asking an older binary for it is a
+    # startup failure whose message names the device but not the requirement, and
+    # audio is not worth refusing to boot over -- so say what is missing and go on
+    # without a card.
+    case "$("${QEMU_BIN:-}" -device help 2>/dev/null)" in
+        *virtio-sound-pci*)
+            printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1" ;;
+        *)
+            echo "WARNING: $QEMU_BIN has no virtio-sound-pci (QEMU 8.2+), which is" >&2
+            echo "         the only sound card a 32-bit guest can use here --" >&2
+            echo "         linux-image-armmp has no snd_hda_intel. Booting without" >&2
+            echo "         audio." >&2 ;;
+    esac
 }

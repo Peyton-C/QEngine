@@ -257,6 +257,8 @@ for name in ${MODULES[@]} ${ON_DEMAND_MODULES[@]}; do
     #   Packet / MIDI 2.0 support, not needed for the MC6000MK2's classic
     #   USB MIDI 1.0 class-compliant interface (snd_seq_midi/
     #   snd_usbmidi_lib handle that fine without it) — expected too.
+    # Anything EXPECTED_ABSENT added is a module this architecture's kernel
+    # genuinely does not build, and is expected here for the same reason.
     case "\$name" in
         ecc|snd_ump$EXPECTED_ABSENT) continue ;;
     esac

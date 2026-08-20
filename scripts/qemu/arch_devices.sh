@@ -16,7 +16,9 @@
 # That is a memory-map problem, not a missing driver, and `highmem=off` fixes it
 # (see the armhf branch below), so both architectures now use the same PCI devices.
 # What still differs is the machine's highmem flag, the amount of RAM that flag
-# allows, the CPU, and the accelerator.
+# allows, the CPU, the accelerator, and the sound card -- that last one because of
+# what Debian builds for each architecture rather than because of the machine; see
+# arch_audio_devices at the bottom.
 
 ARCH="${ARCH:-arm64}"
 
@@ -247,14 +249,58 @@ fi
 # default and leave playback null, which presents as a stuck XRUN rather than an
 # error (see the note in each engine launcher).
 #
-# hda is PCI, which is why armhf used to get the mmio virtio-sound device instead.
-# It no longer has to, and it should not: Engine's ALSA shim spoofs a specific card
-# name and was only ever written against hda, so the shared card is the pairing more
-# likely to work. Neither has been run on armhf yet — if hda turns out to be the
-# wrong bet there, virtio-sound-device is still reachable through QEMU_EXTRA_ARGS.
+# The card differs by architecture, and not by choice: Debian builds
+# snd_hda_intel for linux-image-arm64 but not for linux-image-armmp. The armhf
+# kernel ships the whole HDA codec family (snd_hda_core, snd_hda_codec,
+# snd_hda_codec_generic, even snd_hda_tegra) without the Intel/PCI controller
+# driver, so nothing in a 32-bit guest can ever bind ich9-intel-hda. The card
+# simply never appears: snd_card_next() returns nothing, alsashim's name spoof is
+# never called because there is no card to ask about, and the visible symptoms are
+# a step removed from the cause -- Engine failing to resolve
+# /sys/class/sound/card0/device, and alsa-lib reporting "Cannot get card index for
+# 0". This is not a highmem/PCI problem; PCI works here now, and an ich9-intel-hda
+# is enumerated on the bus with no driver to claim it.
+#
+# So armhf gets virtio-sound instead, whose driver (virtio_snd) *is* built for both
+# architectures and is in the initrd get_kernel.sh builds. arm64 keeps hda, which
+# is what its audio was developed and confirmed against; there is no reason to move
+# a working guest onto a second device model.
+#
+# streams=1 is the virtio-sound equivalent of pairing hda with hda-output rather
+# than hda-duplex, and it is required for the same reason: Engine takes the first
+# device of each enumeration pass as its default, the capture pass runs second, so
+# any capture PCM wins the default and leaves playback unassigned and silent.
+# QEMU assigns directions by index -- `stream_id < streams / 2 + (streams & 1)` is
+# output, the rest input (hw/audio/virtio-snd.c) -- so the default streams=2 gives
+# one of each, and streams=1 gives a single playback stream and no capture.
+#
+# virtio-sound advertises S8/U8/S16/U16/S32/U32/FLOAT at every rate from 5512 to
+# 384000, which is a superset of what the emulated HDA card offered, so alsashim's
+# hw: -> plughw: rewrite has less to convert here rather than more.
+#
 # Kept as a function, rather than folded into a variable, because run_qemu.sh calls
 # it with the -audiodev id it generated.
 #   $1 = the -audiodev id to attach to
 arch_audio_devices() {
-    printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+    # ${ARCH:-} rather than $ARCH: this runs long after the file was sourced, and
+    # under the launchers' `set -u` an unset ARCH would abort the boot here rather
+    # than fall through to the architecture this file already defaulted to.
+    if [ "${ARCH:-}" != armhf ]; then
+        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+        return 0
+    fi
+
+    # virtio-sound-pci arrived in QEMU 8.2. Asking an older binary for it is a
+    # startup failure whose message names the device but not the requirement, and
+    # audio is not worth refusing to boot over -- so say what is missing and go on
+    # without a card.
+    case "$("${QEMU_BIN:-}" -device help 2>/dev/null)" in
+        *virtio-sound-pci*)
+            printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1" ;;
+        *)
+            echo "WARNING: $QEMU_BIN has no virtio-sound-pci (QEMU 8.2+), which is" >&2
+            echo "         the only sound card a 32-bit guest can use here --" >&2
+            echo "         linux-image-armmp has no snd_hda_intel. Booting without" >&2
+            echo "         audio." >&2 ;;
+    esac
 }

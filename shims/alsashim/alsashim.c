@@ -158,7 +158,12 @@
  * Env vars:
  *   ALSASHIM_AS     card name to report (default "RMZ2", System One's real
  *                   simple-audio-card name, which is what its allowlist
- *                   contains)
+ *                   contains). RK3288 products need this set: there the name
+ *                   is the ASoC card name their vendor machine driver
+ *                   registers ("JP07", "JP11", ...), and it is not always the
+ *                   product code -- JP08 shares JP07's devicetree compatible
+ *                   and so comes up as "JP07". scripts/build_scripts/
+ *                   detect_audio_card.sh works it out per firmware.
  *   ALSASHIM_CARD   only spoof this card index; default -1 = every card
  *   ALSASHIM_NOPLUG non-empty to leave PCM device names alone (skip the
  *                   plughw rewrite), e.g. against a card that already

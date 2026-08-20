@@ -969,12 +969,47 @@ in `XRUN` forever with `Audio_probe` frozen, and no error is printed. All of
 [scripts/qemu/](../scripts/qemu/)'s launch scripts already do this; the
 Linux-targeted ones use `pipewire` rather than the macOS-only `coreaudio`.
 
+**On armhf the card is different**, and not by preference — Debian builds
+`snd_hda_intel` for `linux-image-arm64` but not for `linux-image-armmp`. A
+32-bit guest ships the whole HDA codec family with no Intel/PCI controller
+driver, so `ich9-intel-hda` is enumerated on the bus and never bound, and *no
+card exists at all*. That fails a step removed from its cause: the shim's
+card-name spoof never runs (there is no card to ask about), Engine cannot
+resolve `/sys/class/sound/card0/device`, and alsa-lib reports `Cannot get card
+index for 0`. armhf uses virtio-sound instead, whose driver is built for both
+architectures:
+
+```
+-device virtio-sound-pci,streams=1,audiodev=host -audiodev pipewire,id=host
+```
+
+`streams=1` is the playback-only requirement above, expressed for this device:
+QEMU assigns stream directions by index (`stream_id < streams / 2 + (streams &
+1)` is output), so the default `streams=2` gives one playback and one capture
+stream, and `streams=1` gives playback alone.
+[arch_devices.sh](../scripts/qemu/arch_devices.sh) picks between the two.
+
 **2. Preload `alsashim.so`.** Built and installed by
 [build_arm64_rootfs.sh](../scripts/build_scripts/build_arm64_rootfs.sh), which
 adds it to `engine.service`'s `LD_PRELOAD` and sets `ALSASHIM_CARD=0`.
 Without it Engine rejects the emulated card on its *name* before ever
 touching its PCMs, and there is no configuration route around that — the
 allowlist is compiled into `Engine.bin`.
+
+[build_armv7_engine_rootfs.sh](../scripts/build_scripts/build_armv7_engine_rootfs.sh)
+does the same, and additionally sets `ALSASHIM_AS`, because the name to report
+is not the same on RK3288. The shim's built-in default is `RMZ2`, which is
+SYSTEM ONE's `simple-audio-card` name and is in no RK3288 product's allowlist.
+There the name comes from the vendor ASoC machine driver
+(`snd-soc-rockchip-inmusic-jp07.ko`), whose per-variant table pairs a
+devicetree compatible with a card name — and several products share one entry,
+so it is not always the product code: JP08's devicetree asks for
+`"inmusic,jp08-audio", "inmusic,jp07-audio"`, nothing implements the first, and
+its card comes up as `JP07`.
+[detect_audio_card.sh](../scripts/build_scripts/detect_audio_card.sh) works that
+out per build by reading the product's devicetree out of the rootfs's `/boot`
+and intersecting its audio compatibles with `modules.alias`, rather than
+carrying a table that would be wrong for the next product added.
 
 **3. Playback control comes from the virtual control surface**, which the
 build installs and enables as a service. SYSTEM ONE's transport buttons are

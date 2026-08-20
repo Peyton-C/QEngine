@@ -86,11 +86,43 @@ The steps individually, if you want them:
   pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
   the `sdl` display.
 
-- **What is not done yet:** audio. `alsashim` and `midisurface` are carried over
-  from the arm64 build and are no longer RMZ2-specific -- they live in
-  `shims/alsashim/` and `shims/midisurface/`, build for either architecture, and
-  between them give Engine a control surface it will bind. Only `controllermap`
-  is left out, which exists to swap a real USB controller's assignment files in
-  and hardcodes RMZ2's directory. `alsashim` is preloaded for one job here, the
-  MIDI card-number gate; the sound card Engine will accept is still missing, and
-  the 32-bit virt machine has no PCI for the HDA device anyway.
+- **Audio is wired up, but has not been heard yet.** `alsashim` and `midisurface`
+  are carried over from the arm64 build and are no longer RMZ2-specific -- they
+  live in `shims/alsashim/` and `shims/midisurface/`, build for either
+  architecture, and between them give Engine a control surface it will bind. Only
+  `controllermap` is left out, which exists to swap a real USB controller's
+  assignment files in and hardcodes RMZ2's directory.
+
+  Three things stopped this short of audio. The machine had no working PCI to
+  hang a sound card off; it does now, for the same `highmem=off` reason virgl
+  does.
+
+  `alsashim` was preloaded for one job only, the MIDI card-number gate, because
+  the name Engine would accept for a sound card was unknown. It is the ASoC card
+  name the vendor machine driver registers -- `JP07` for JP07, and also for JP08,
+  which shares its `inmusic,jp07-audio` compatible -- so the rootfs build now
+  detects it (`detect_audio_card.sh`) and sets `ALSASHIM_AS` alongside
+  `ALSASHIM_CARD=0`. Engine's ALSA calls are identical to the arm64 build's,
+  symbol for symbol, so the rest of the shim -- the `plughw` rewrite and the
+  ring-depth scaling -- applies unchanged.
+
+  **And the card itself had to change.** Debian builds `snd_hda_intel` for
+  `linux-image-arm64` but not for `linux-image-armmp`: the armhf kernel ships
+  `snd_hda_core`, `snd_hda_codec`, `snd_hda_codec_generic` and even
+  `snd_hda_tegra`, but no Intel/PCI controller driver, so `ich9-intel-hda`
+  enumerates on the bus and nothing ever binds it. No card is registered at all,
+  which fails one step removed from its cause -- the shim's name spoof never
+  runs, and what you see instead is Engine failing to resolve
+  `/sys/class/sound/card0/device` plus alsa-lib's `Cannot get card index for 0`.
+  armhf therefore gets `virtio-sound-pci,streams=1`, whose driver is built for
+  both architectures; `streams=1` is how this device expresses the playback-only
+  requirement that `hda-output` expresses on arm64. This needs a QEMU 8.2 or
+  newer, and an initrd built after `virtio_snd` was added to `get_kernel.sh` --
+  rerun `get_kernel.sh --arch armhf` if yours predates that.
+
+  What has *not* happened is a boot with sound coming out. Run with
+  `ALSASHIM_DEBUG=1` and `QT_LOGGING_RULES=air.devicemanager.*=true`: the shim
+  should log `reporting card name "..." as "JP07"` (if it does not, there is
+  still no card -- check `/proc/asound/cards` and `dmesg | grep virtio_snd`), and
+  Engine should get past `Get card info for hw:0` to `Query device 0` /
+  `Device name hw:0`.

@@ -35,6 +35,7 @@ case "$ARCH" in
         EXPECTED_UNAME="aarch64|arm64"
         EXPECTED_NAME="aarch64"
         EXTRA_MODULES=()
+        ARCH_EXPECTED_ABSENT=""
         ;;
     armhf)
         KERNEL_PKG="linux-image-armmp"
@@ -57,6 +58,12 @@ case "$ARCH" in
             # devices usable from QEMU_EXTRA_ARGS.
             virtio_input
         )
+        # snd_hda_intel is not built for armhf, so this guest's sound card cannot
+        # be the emulated HDA controller the arm64 guest uses -- see the note on
+        # virtio_snd in MODULES below, and scripts/qemu/arch_devices.sh. Named
+        # here, as extra alternatives for the verification pass's case, so it
+        # reports them as expected rather than as a build problem.
+        ARCH_EXPECTED_ABSENT="|snd_hda_intel|snd_intel_dspcfg"
         ;;
     *)
         echo "ERROR: --arch must be 'arm64' or 'armhf' (got '${ARCH:-}')." >&2
@@ -86,9 +93,17 @@ MODULES=(
     # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio
-    # Onboard HDA
+    # Onboard HDA. arm64 only in practice: Debian builds snd_hda_intel for
+    # linux-image-arm64 but not for linux-image-armmp, which ships the whole HDA
+    # codec family and snd_hda_tegra without the Intel/PCI controller driver. The
+    # names stay in the shared list because the rest of the chain is shared; the
+    # two that do not exist on armhf are declared expected-absent above.
     snd snd_timer snd_pcm snd_hda_core snd_hda_codec snd_hda_codec_generic
     snd_intel_dspcfg snd_hda_intel
+    # The card armhf actually gets, for exactly that reason. Built for both
+    # architectures, so it costs arm64 one unused module and keeps
+    # virtio-sound-pci reachable there from QEMU_EXTRA_ARGS.
+    virtio_snd
     # Bluetooth stack
     ecc ecdh_generic bluetooth btintel btrtl btmtk btbcm btusb
     # Display (virtio-gpu-pci under QEMU)
@@ -191,8 +206,10 @@ for name in ${MODULES[@]}; do
     #   Packet / MIDI 2.0 support, not needed for the MC6000MK2's classic
     #   USB MIDI 1.0 class-compliant interface (snd_seq_midi/
     #   snd_usbmidi_lib handle that fine without it) — expected too.
+    # Anything ARCH_EXPECTED_ABSENT added is a module this architecture's kernel
+    # genuinely does not build, and is expected here for the same reason.
     case "\$name" in
-        ecc|snd_ump) continue ;;
+        ecc|snd_ump$ARCH_EXPECTED_ABSENT) continue ;;
     esac
     pattern=\$(echo "\$name" | sed 's/[_-]/[-_]/g')
     if ! find /tmp/verify -regextype posix-extended -regex ".*/\${pattern}\.ko(\.xz)?" | grep -q .; then

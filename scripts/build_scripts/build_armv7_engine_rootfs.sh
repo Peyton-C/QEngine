@@ -108,9 +108,17 @@ esac
 # detect_mesa.sh.
 # shellcheck source=detect_mesa.sh
 . "$SCRIPT_DIR_SELF/detect_mesa.sh"
+# Which ALSA card name this product's real hardware registers, which is the name
+# alsashim has to spoof the emulated card as. Read off the rootfs for the same
+# reason Mesa is: on RK3288 it is the ASoC card name of whichever devicetree
+# compatible a driver in this image actually claims, and that is not always the
+# product code -- JP08 comes up as "JP07". See detect_audio_card.sh.
+# shellcheck source=detect_audio_card.sh
+. "$SCRIPT_DIR_SELF/detect_audio_card.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 detect_mesa "$OUT_PATH"
+detect_audio_card "$OUT_PATH" "${PRODUCT_CODE:-JP07}"
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -377,6 +385,40 @@ Environment=EGL_PLATFORM=gbm
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
 
+# The audio half, appended separately because it is the one part of this unit
+# that varies with the firmware: AUDIO_CARD_NAME is detected per product and so
+# has to be expanded here, while everything above is fixed text written by a
+# quoted heredoc.
+#
+# alsashim was already preloaded above for the MIDI card-number gate; these two
+# variables are what additionally get the emulated sound card accepted as an
+# audio device.
+#
+# ALSASHIM_AS: Engine's ALSADeviceEnumerator rejects any card whose name is not
+# in its compiled-in per-product allowlist, before it looks at the card's PCM
+# devices at all -- so QEMU's "HDA Intel" is skipped on its name alone and Engine
+# ends up with no audio device to select. The shim reports the name the real
+# hardware's ASoC driver registers instead. Left unset it would default to RMZ2,
+# which is the RK3588 product's name and in no RK3288 product's list.
+# ALSASHIM_CARD: restrict that spoof to card 0, QEMU's emulated HDA controller,
+# so a USB controller plugged in later keeps its own name.
+#
+# The card must be attached playback-only (-device ich9-intel-hda -device
+# hda-output, never hda-duplex): Engine takes the first device of each
+# enumeration pass as its default and the capture pass runs second, so a capture
+# PCM wins the default, the playback slot is left null, and playback never runs.
+# scripts/qemu/arch_devices.sh does this for both architectures.
+#
+# The shim also rewrites hw:N to plughw:N so ALSA converts between the format
+# Engine asks for and the S16_LE/2ch the emulated card offers, and deepens the
+# PCM ring (ALSASHIM_BUFFER_SCALE, default 8) so that a 5.8ms buffer is not being
+# serviced by QEMU's 10ms audio timer. Both are on by default; see
+# shims/alsashim/alsashim.c and docs/ENGINEOS.md.
+cat >> /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<EOF
+Environment=ALSASHIM_AS=$AUDIO_CARD_NAME
+Environment=ALSASHIM_CARD=0
+EOF
+
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
@@ -393,6 +435,7 @@ docker run --rm --privileged \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
+    -e AUDIO_CARD_NAME="$AUDIO_CARD_NAME" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$STAGE_DIR:/stage:ro" \

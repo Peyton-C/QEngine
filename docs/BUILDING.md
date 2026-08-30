@@ -1695,6 +1695,16 @@ product code as `JC11S` (Prime 4+) via the same `inmusic,product-code`
 devicetree-property mechanism used throughout this doc, and getting a
 fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 
+The Prime 4+ image (`PRIME4PLUS-5.0.4-Update.img`) is a **signed AZ0x**
+container, not a FIT. `binwalk -e` handles it only by brute-force carving
+— it expands the 474 MB image to ~8.3 GB and, on a WSL host, can exhaust
+the guest's resources before finishing. So rootfs extraction goes through
+`scripts/build_scripts/extract_az0x_rootfs.py` instead: it parses the AZ0x
+descriptor table, finds the named `rootfs` payload, verifies its SHA-256,
+and streams the XZ decompression to a raw ext image — bounded in both disk
+and memory. `extract_rootfs.sh` dispatches to it when the image magic is
+`AZ0x` and keeps the binwalk path for the older, unsigned formats.
+
 **New shims** (`shims/dtshim/dtshim.c`,
 `shims/drmatomic/`, `shims/rk3288/touchbridge/`):
 `drmatomic.c` and `touchbridge.c` from the arm64/RMZ2 work
@@ -1772,18 +1782,45 @@ separate things happen in that window:
    (driver binding, `modalias`, etc.) at runtime rather than checking a
    fixed name, which `strings` can't reveal.
 
-Both of those turned out to be red herrings. The `/sys/devices/platform`
-walk is something `Engine` does on every startup, including the ones that
-now render fine, and the Mali `access()` is a check whose result it
-ignores — the rootfs the UI renders from has an *empty*
+Only the Mali `access()` is a red herring: its result is ignored, and the
+rootfs the UI renders from has an *empty*
 `/usr/lib/qt6/plugins/egldeviceintegrations`, so neither the file nor a
-`getdents64()` shim is needed. What actually made `Engine` quit was Qt
-choosing no EGL device integration at all: it enumerates `eglfs_kms` and
-`eglfs_emu`, logs `Using base device integration`, and the base
-integration has no native window to hand EGL, so config selection fails
-`EGL_BAD_CONFIG` and `eglCreateWindowSurface` fails `EGL_BAD_NATIVE_WINDOW`
-(`Could not create the egl surface: error = 0x300b`, then `Crash with:
-ABRT` and a restart loop). Three environment variables in
+shim is needed for it. The `/sys/devices/platform` walk is the *actual*
+gate, and is not a red herring. It is Engine's board validation: it
+enumerates that directory looking for the RK3288 secure eFuse device
+(`ffb10000.efuse`), reads its nvmem, and `exit_group(0)`s cleanly when
+the device is absent or the nvmem is empty — the same clean-exit-on-empty
+board check the RK3288 emulator traced to `Engine+0x38ccb8` on 5.0.2. The
+generic `virt` machine models no such platform device, so the check always
+failed here.
+
+The fix is `dtshim` + `write_fake_dt`, no firmware change:
+
+1. `write_fake_dt` writes two nvmem fixtures under `/root/fake-dt/`:
+   `ffb10000.efuse/rockchip-efuse/nvmem` seeded with the product code
+   (`JC11S`) and `ffb40000.efuse/rockchip-efuse/nvmem` seeded with the
+   CPU id (`RK3288AZ01JC11S` at offset 7) — the two eFuse devices the
+   RK3288 DTB declares but QEMU does not model.
+2. `dtshim` (SOC_RK3288) makes those paths visible and readable. It
+   injects `ffb10000.efuse` and `ffb40000.efuse` into `readdir64()` while
+   `/sys/devices/platform` is listed, and remaps the
+   `/sys/devices/platform/ffb10000.efuse` and
+   `/sys/devices/platform/ffb40000.efuse` prefixes through `open`/`openat`/
+   `statx`/`__stat64_time64`/`__lstat64_time64`/`__fstatat64_time64`/
+   `__realpath_chk`/`readlink` to those files. The stat-family
+   interposition is required because Engine (via `std::filesystem`) stats
+   the path before opening it, and glibc ≥ 2.34 routes `stat()`/`lstat()`/
+   `fstatat()` through the `time64` symbols rather than `statx()` — the
+   same `__ioctl_time64`-class naming trap already documented below.
+
+With the board validation satisfied, `Engine` reaches Qt, where a
+*separate* blocker appeared — unrelated to the eFuse — Qt choosing no EGL
+device integration at all: it enumerates `eglfs_kms` and `eglfs_emu`,
+logs `Using base device integration`, and the base integration has no
+native window to hand EGL, so config selection fails `EGL_BAD_CONFIG` and
+`eglCreateWindowSurface` fails `EGL_BAD_NATIVE_WINDOW` (`Could not create
+the egl surface: error = 0x300b`, then `Crash with: ABRT` and a restart
+loop). Three environment variables in
 `engine.service.d/override.conf` settle it, and the builder writes them:
 `QT_QPA_EGLFS_INTEGRATION=eglfs_kms` names the integration outright,
 `EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with

@@ -207,9 +207,12 @@ MidiAssignment {
 			}
 
 			// The fader sends Pitch Bend; midisurface re-sends it as this pair.
+			// Inverted because the MC6000MK2's fader counts the other way from
+			// the G2's: uninverted, pushing it away from you sped the deck up.
 			SpeedSlider {
 				ccUpper: 0x05
 				ccLower: 0x06
+				invert: true
 			}
 		}
 	}

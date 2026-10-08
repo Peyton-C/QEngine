@@ -27,9 +27,8 @@
 // ---------------------------------------------------------------------------
 // DELIBERATELY UNMAPPED
 //
-//   LOOP IN/OUT, AUTO LOOP, the CH1/CH2 strips, FX -- the Prime 4 G2 has
-//       components for these, but with different shapes or numbers that have
-//       not been captured.
+//   The CH1/CH2 strips, FX -- the Prime 4 G2 has components for these, but
+//       with different shapes or numbers that have not been captured.
 //   Deck layers -- DECK CHG. changes the MIDI channel the deck section sends on,
 //       which Engine's DeckSelect cannot follow. Stay on decks 3 and 4.
 //   Microphones -- the G2 mixes them in software and the MC6000MK2 in hardware.
@@ -173,6 +172,22 @@ MidiAssignment {
 
 			Shift {
 				note: model.shiftNote
+			}
+
+			// Captured on the left deck; the right is assumed to mirror it, as
+			// every other deck control does.
+			ManualLoop {
+				inNote: 0x37  // LOOP IN
+				outNote: 0x39 // LOOP OUT
+			}
+
+			// The G2's own auto loop is an encoder. The component also takes
+			// three buttons, which is what the MC6000MK2 has: LOOP CUT -/+ halve
+			// and double the running loop.
+			AutoLoop {
+				onOffNote: 0x1D  // AUTO LOOP
+				halveNote: 0x69  // LOOP CUT -
+				doubleNote: 0x6A // LOOP CUT +
 			}
 
 			// The four HOT CUE buttons pick the pad mode and the four SAMP

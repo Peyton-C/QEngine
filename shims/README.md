@@ -4,6 +4,9 @@ Shims used to allow running unmodified Engine in QEMU
 ## alsashim
 Allow for adding QEMU's fake audio card to Engine's audio card allowlist.
 
+## cursorshim
+Allows for a regular cursor to be displayed in Engine.
+
 ## drmatomic
 Converts the ARGB8888 format frames from Qt to XRGB8888 for use with the virtio gpu.
 

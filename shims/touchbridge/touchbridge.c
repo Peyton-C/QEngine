@@ -27,6 +27,13 @@
  * DJ touchscreen UI's QML may only wire up TapHandler/MouseArea for touch
  * semantics rather than a real mouse pointer.
  *
+ * The grab also means nothing else can read where the pointer is, which matters
+ * on a display that hides the host pointer (UTM): there is then no cursor at
+ * all. `--pointer` adds a second uinput device carrying the tablet's motion and
+ * nothing else, for shims/cursorshim/cursorshim.c to follow when it draws one.
+ * It has axes and no buttons, so udev does not classify it as a mouse and Qt
+ * never opens it -- Engine still receives touch only.
+ *
  * Screen resolution is auto-detected from /sys/class/drm at startup
  * (detect_screen_size_from_sysfs()) rather than hardcoded, so it doesn't
  * need to be kept in sync by hand with whatever xres/yres a qemu launch
@@ -67,6 +74,8 @@ static const char *opt_connector = NULL;
 static int opt_index = 0;
 static int opt_check = 0;
 static int opt_wait = 0;
+static int opt_pointer = 0;
+static int ptrfd = -1;
 
 /* Defined below main()'s helpers but called from the uinput setup above them. */
 static void publish_symlink(const char *link_path);
@@ -353,6 +362,57 @@ static void setup_uinput_device(void) {
     fprintf(stderr, "Virtual touchscreen created (%dx%d).\n", screen_w, screen_h);
 }
 
+/* The motion-only companion device behind --pointer. Deliberately no buttons:
+ * absolute axes plus a mouse button is what makes udev call something a mouse,
+ * and this must stay invisible to Qt. cursorshim finds it by name. */
+static void setup_pointer_device(void) {
+    ptrfd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if (ptrfd < 0) {
+        fprintf(stderr, "open /dev/uinput for the pointer failed (continuing "
+                        "without one): %s\n", strerror(errno));
+        return;
+    }
+    ioctl(ptrfd, UI_SET_EVBIT, EV_ABS);
+    ioctl(ptrfd, UI_SET_ABSBIT, ABS_X);
+    ioctl(ptrfd, UI_SET_ABSBIT, ABS_Y);
+
+    struct uinput_setup usetup;
+    memset(&usetup, 0, sizeof(usetup));
+    usetup.id.bustype = BUS_VIRTUAL;
+    usetup.id.vendor = 0x1234;
+    usetup.id.product = 0x5681;
+    if (opt_index == 0)
+        snprintf(usetup.name, sizeof(usetup.name), "TouchBridge Virtual Pointer");
+    else
+        snprintf(usetup.name, sizeof(usetup.name),
+                 "TouchBridge Virtual Pointer %d", opt_index);
+    ioctl(ptrfd, UI_DEV_SETUP, &usetup);
+
+    struct uinput_abs_setup abs_x = { .code = ABS_X, .absinfo = { .minimum = 0, .maximum = screen_w } };
+    struct uinput_abs_setup abs_y = { .code = ABS_Y, .absinfo = { .minimum = 0, .maximum = screen_h } };
+    ioctl(ptrfd, UI_ABS_SETUP, &abs_x);
+    ioctl(ptrfd, UI_ABS_SETUP, &abs_y);
+
+    if (ioctl(ptrfd, UI_DEV_CREATE) < 0) {
+        fprintf(stderr, "UI_DEV_CREATE for the pointer failed (continuing without "
+                        "one): %s\n", strerror(errno));
+        close(ptrfd);
+        ptrfd = -1;
+        return;
+    }
+    fprintf(stderr, "Virtual pointer created (motion only).\n");
+}
+
+static void pointer_move(int x, int y) {
+    struct input_event ie[3];
+    memset(ie, 0, sizeof(ie));
+    ie[0].type = EV_ABS; ie[0].code = ABS_X; ie[0].value = x;
+    ie[1].type = EV_ABS; ie[1].code = ABS_Y; ie[1].value = y;
+    ie[2].type = EV_SYN; ie[2].code = SYN_REPORT;
+    if (write(ptrfd, ie, sizeof(ie)) < 0)
+        fprintf(stderr, "pointer write failed: %s\n", strerror(errno));
+}
+
 /* Publishes a stable path for the uinput device just created.
  *
  * Engine's Hardware::updateTouchDevicePathsInConfig() resolves each output's
@@ -420,6 +480,8 @@ int main(int argc, char **argv) {
      *   --index N        use the Nth matching tablet (0-based, event order)
      *   --connector NAME take the size from that DRM connector ("Virtual-2")
      *   --symlink PATH   publish a stable path for Engine's touchDevice
+     *   --pointer        also create a motion-only pointer device for cursorshim
+     *                    to follow (see the header)
      */
     const char *src_path = NULL;
     char *discovered = NULL;
@@ -435,6 +497,7 @@ int main(int argc, char **argv) {
             strcmp(argv[argi], "--symlink") != 0) {
             /* --check takes no value, so it is handled before the pairing rule. */
             if (strcmp(argv[argi], "--check") == 0) { opt_check = 1; argi++; continue; }
+            if (strcmp(argv[argi], "--pointer") == 0) { opt_pointer = 1; argi++; continue; }
             fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[argi]);
             return 1;
         }
@@ -548,6 +611,7 @@ int main(int argc, char **argv) {
     }
 
     setup_uinput_device();
+    if (opt_pointer) setup_pointer_device();
 
     struct input_event ev;
     int have_x = 0, have_y = 0;
@@ -584,6 +648,8 @@ int main(int argc, char **argv) {
                 if (cur_y < 0) cur_y = 0;
                 if (cur_y >= screen_h) cur_y = screen_h - 1;
             }
+
+            if (ptrfd >= 0) pointer_move(cur_x, cur_y);
 
             if (btn_down && !touch_active) {
                 touch_down(cur_x, cur_y);

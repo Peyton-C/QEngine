@@ -163,6 +163,15 @@
  *   ALSASHIM_NOPLUG non-empty to leave PCM device names alone (skip the
  *                   plughw rewrite), e.g. against a card that already
  *                   advertises the needed formats natively
+ *   ALSASHIM_MAX_CHANNELS  channel count to report as the device's maximum,
+ *                   overriding the default described at snd_pcm_open() below
+ *                   (the card's real maximum, but at least 16)
+ *   ALSASHIM_NO_CAPTURE  non-empty to hide every capture stream, so a card with
+ *                   an input Engine cannot start (a USB headset's microphone,
+ *                   QEMU's hda-duplex) behaves like a playback-only one. Engine
+ *                   runs input and output as one combined device, and an input
+ *                   that fails to start takes playback down with it -- the
+ *                   stream opens, then sits in XRUN while decks never load.
  *   ALSASHIM_BUFFER_SCALE  multiplier for the PCM ring depth (default 8);
  *                   1 disables the resizing and the sw_params follow-up
  *                   entirely, leaving Engine's own buffering untouched
@@ -185,6 +194,8 @@
 typedef struct _snd_ctl_card_info snd_ctl_card_info_t;
 
 typedef struct _snd_pcm snd_pcm_t;
+typedef struct _snd_ctl snd_ctl_t;
+typedef struct _snd_pcm_info snd_pcm_info_t;
 typedef struct _snd_pcm_hw_params snd_pcm_hw_params_t;
 typedef struct _snd_pcm_sw_params snd_pcm_sw_params_t;
 typedef struct _snd_seq_client_info snd_seq_client_info_t;
@@ -194,6 +205,7 @@ typedef unsigned long snd_pcm_uframes_t;
 
 /* SND_PCM_STREAM_PLAYBACK, as returned by snd_pcm_stream(). */
 #define ALSASHIM_STREAM_PLAYBACK 0
+#define ALSASHIM_STREAM_CAPTURE 1
 
 typedef const char *(*get_name_t)(const snd_ctl_card_info_t *);
 typedef int (*get_card_t)(const snd_ctl_card_info_t *);
@@ -202,6 +214,11 @@ typedef int (*seq_get_card_t)(const snd_seq_client_info_t *);
 typedef int (*seq_get_client_t)(const snd_seq_client_info_t *);
 
 typedef int (*pcm_stream_t)(snd_pcm_t *);
+typedef int (*ctl_pcm_info_t)(snd_ctl_t *, snd_pcm_info_t *);
+typedef int (*pcm_close_t)(snd_pcm_t *);
+typedef int (*hw_any_t)(snd_pcm_t *, snd_pcm_hw_params_t *);
+typedef int (*hw_get_uint_t)(const snd_pcm_hw_params_t *, unsigned int *);
+typedef int (*pcm_info_stream_t)(const snd_pcm_info_t *);
 typedef int (*hw_frames_t)(snd_pcm_t *, snd_pcm_hw_params_t *, snd_pcm_uframes_t);
 typedef int (*hw_frames_p_t)(snd_pcm_t *, snd_pcm_hw_params_t *, snd_pcm_uframes_t *);
 typedef int (*hw_uint_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int, int);
@@ -221,6 +238,11 @@ static seq_get_card_t real_seq_get_card = NULL;
 static seq_get_client_t real_seq_get_client = NULL;
 
 static pcm_stream_t real_pcm_stream = NULL;
+static ctl_pcm_info_t real_ctl_pcm_info = NULL;
+static pcm_close_t real_pcm_close = NULL;
+static hw_any_t real_hw_any = NULL;
+static hw_get_uint_t real_get_ch_max = NULL;
+static pcm_info_stream_t real_pcm_info_stream = NULL;
 static hw_frames_t real_set_bufsz = NULL;
 static hw_frames_p_t real_set_bufsz_near = NULL;
 static hw_frames_p_t real_set_bufsz_min = NULL;
@@ -292,10 +314,106 @@ const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
  * channel conversion on Engine's behalf. Anything not starting with "hw:"
  * (including a name already routed through a plugin) is passed through
  * untouched. */
+static int no_capture(void) {
+    const char *v = getenv("ALSASHIM_NO_CAPTURE");
+    return v && *v;
+}
+
+/* How Engine asks whether a device has a given direction at all. A card with no
+ * capture answers -ENOENT here, so that is what a hidden one answers too. */
+int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
+    RESOLVE(real_ctl_pcm_info, "snd_ctl_pcm_info");
+    RESOLVE(real_pcm_info_stream, "snd_pcm_info_get_stream");
+    if (!real_ctl_pcm_info) return -ENOENT;
+
+    if (no_capture() && real_pcm_info_stream &&
+        real_pcm_info_stream(info) == ALSASHIM_STREAM_CAPTURE) {
+        if (debug_on()) fprintf(stderr, "[alsashim] hiding a capture stream\n");
+        return -ENOENT;
+    }
+    return real_ctl_pcm_info(ctl, info);
+}
+
+/* The channel count the hardware really has, per direction, as probed just
+ * before the plug layer is put in front of it; 0 until known.
+ *
+ * The plug layer is why this is needed. It converts between any layout and the
+ * card's, so it advertises a nominal maximum of 10000 channels. Engine asks for
+ * the maximum and takes it: it then renders and converts 10000-channel frames,
+ * which plug folds back down to the card's two. That costs about 28ms of CPU for
+ * every 12ms of audio (measured on a Raspberry Pi 5: one thread at 100%, in a
+ * float-to-int loop with a bound of 10000), so the stream underruns and is
+ * restarted eight times a second -- heard as constant popping -- and no ring
+ * depth can fix it, because audio is being produced slower than it is played.
+ *
+ * So the figure is brought down to the card's own maximum -- but never below
+ * ALSASHIM_MIN_REPORTED_CHANNELS. Engine lays its outputs out per product
+ * (master, booth, cue, ...) and needs room for all of them: told a stereo
+ * headset has 2 channels it ran cleanly and silently, and told 16 it played,
+ * with plug handing the first pair to the card exactly as it did at 10000.
+ * Sixteen is enough for every layout seen so far and costs nothing to render. */
+#define ALSASHIM_MIN_REPORTED_CHANNELS 16
+static unsigned int g_real_ch_max[2];
+static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
+
+#define ALSASHIM_PCM_NONBLOCK 1
+
+static void probe_real_channels(const char *hw_name, int stream) {
+    if (stream != ALSASHIM_STREAM_PLAYBACK && stream != ALSASHIM_STREAM_CAPTURE) return;
+    RESOLVE(real_pcm_close, "snd_pcm_close");
+    RESOLVE(real_hw_malloc, "snd_pcm_hw_params_malloc");
+    RESOLVE(real_hw_free, "snd_pcm_hw_params_free");
+    RESOLVE(real_hw_any, "snd_pcm_hw_params_any");
+    RESOLVE(real_get_ch_max, "snd_pcm_hw_params_get_channels_max");
+    if (!real_pcm_close || !real_hw_malloc || !real_hw_free || !real_hw_any ||
+        !real_get_ch_max) return;
+
+    snd_pcm_t *hw = NULL;
+    if (real_pcm_open(&hw, hw_name, stream, ALSASHIM_PCM_NONBLOCK) < 0 || !hw) return;
+    snd_pcm_hw_params_t *p = NULL;
+    unsigned int max = 0;
+    if (real_hw_malloc(&p) == 0 && p) {
+        if (real_hw_any(hw, p) >= 0 && real_get_ch_max(p, &max) == 0)
+            g_real_ch_max[stream] = max;
+        real_hw_free(p);
+    }
+    real_pcm_close(hw);
+    if (debug_on())
+        fprintf(stderr, "[alsashim] \"%s\" %s really has up to %u channels\n",
+                hw_name, stream == ALSASHIM_STREAM_PLAYBACK ? "playback" : "capture",
+                g_real_ch_max[stream]);
+}
+
+/* Has no pcm argument, so the direction is taken from the most recent open --
+ * Engine queries each device straight after opening it. */
+int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *params,
+                                       unsigned int *val) {
+    RESOLVE(real_get_ch_max, "snd_pcm_hw_params_get_channels_max");
+    if (!real_get_ch_max) return -ENOSYS;
+    int ret = real_get_ch_max(params, val);
+    if (ret < 0 || !val) return ret;
+
+    unsigned int cap = g_real_ch_max[g_last_stream];
+    if (cap > 0 && cap < ALSASHIM_MIN_REPORTED_CHANNELS)
+        cap = ALSASHIM_MIN_REPORTED_CHANNELS;
+    const char *v = getenv("ALSASHIM_MAX_CHANNELS");
+    if (v && *v) cap = (unsigned int)atoi(v);
+    if (cap > 0 && *val > cap) {
+        if (debug_on())
+            fprintf(stderr, "[alsashim] channels_max %u -> %u\n", *val, cap);
+        *val = cap;
+    }
+    return ret;
+}
+
 int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
     if (!real_pcm_open)
         real_pcm_open = (pcm_open_t)dlsym(RTLD_NEXT, "snd_pcm_open");
     if (!real_pcm_open) return -1;
+
+    /* Belt and braces for ALSASHIM_NO_CAPTURE: an open that did not go through
+     * the query above still finds nothing there. */
+    if (no_capture() && stream == ALSASHIM_STREAM_CAPTURE) return -ENOENT;
 
     if (name && strncmp(name, "hw:", 3) == 0 && !getenv("ALSASHIM_NOPLUG")) {
         char plugged[128];
@@ -304,6 +422,10 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
             if (debug_on())
                 fprintf(stderr, "[alsashim] opening \"%s\" as \"%s\"\n",
                         name, plugged);
+            /* Before the plug layer hides it: what the card can really do. */
+            probe_real_channels(name, stream);
+            if (stream == ALSASHIM_STREAM_PLAYBACK || stream == ALSASHIM_STREAM_CAPTURE)
+                g_last_stream = stream;
             return real_pcm_open(pcmp, plugged, stream, mode);
         }
     }

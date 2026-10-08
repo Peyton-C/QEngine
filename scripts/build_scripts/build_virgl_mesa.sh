@@ -3,9 +3,16 @@
 # virgl on the host's GPU, instead of rasterizing every frame on an emulated CPU.
 #
 # Usage: build_virgl_mesa.sh --arch <arm64|armhf> --mesa-version <ver>
-#                            --layout <gallium|dri> [--force]
+#                            --layout <gallium|dri> [--extra-drivers <list>]
+#                            [--force]
 #   Caches its output in the repo's build/, keyed by version and architecture, and
 #   reuses it on later runs the way get_kernel.sh caches a kernel. Requires Docker.
+#
+# --extra-drivers adds gallium drivers to a gallium-layout build, for running the
+# same rootfs on real hardware instead of under QEMU -- `--extra-drivers v3d,vc4`
+# for a Raspberry Pi. virgl and softpipe stay in, so the result still works in a
+# guest; it is cached under its own name (libgallium-<ver>-<arch>+v3d+vc4.so) and
+# the plain build is left alone.
 #
 # The version and the layout describe the guest, so both are read off its rootfs by
 # detect_mesa.sh and passed in. Neither can be inferred from --arch: the same
@@ -56,12 +63,14 @@ mkdir -p "$OUT_DIR"
 ARCH=""
 MESA_VER=""
 LAYOUT=""
+EXTRA_DRIVERS=""
 FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
         --mesa-version) MESA_VER="$2"; shift 2 ;;
         --layout) LAYOUT="$2"; shift 2 ;;
+        --extra-drivers) EXTRA_DRIVERS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -107,6 +116,15 @@ case "$LAYOUT" in
         ;;
     *) echo "ERROR: --layout must be gallium or dri; see detect_mesa.sh." >&2; exit 1 ;;
 esac
+
+if [ -n "$EXTRA_DRIVERS" ]; then
+    # Only the whole-library layout can take more drivers in one artifact; in the
+    # DRI layout each driver is its own file under its own name.
+    [ "$LAYOUT" = gallium ] || {
+        echo "ERROR: --extra-drivers needs --layout gallium." >&2; exit 1; }
+    GALLIUM_DRIVERS="$GALLIUM_DRIVERS,$EXTRA_DRIVERS"
+    OUT="${OUT%.so}+${EXTRA_DRIVERS//,/+}.so"
+fi
 
 if [ -s "$OUT" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"

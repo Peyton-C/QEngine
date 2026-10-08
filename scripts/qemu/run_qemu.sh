@@ -136,4 +136,4 @@ exec "$QEMU_BIN" \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \
   $QEMU_EXTRA_ARGS \
-  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"
+  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0${ARCH_KERNEL_ARGS:+ $ARCH_KERNEL_ARGS}"

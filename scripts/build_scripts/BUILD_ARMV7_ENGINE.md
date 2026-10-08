@@ -120,6 +120,53 @@ The steps individually, if you want them:
   newer, and an initrd built after `virtio_snd` was added to `get_kernel.sh` --
   rerun `get_kernel.sh --arch armhf` if yours predates that.
 
+- **Audio depth is an unresolved trade, and the numbers are not arm64's.** RMZ2's
+  Engine asks for a 256-frame ring of 128-frame periods (5.8ms / 2.9ms); this one
+  asks for 1024 frames of 512-frame periods — 23.2ms and 11.6ms — so each step of
+  `ALSASHIM_BUFFER_SCALE` is worth four times as much wall clock. Measured on
+  JP11, 512-frame periods throughout:
+
+  | scale | ring | result |
+  |------:|-----:|--------|
+  | 1 | 23.2ms | `Audio_probe` frozen; Engine acts as though it has no audio device and will not load a track |
+  | 4 | 92.9ms | XRUN before the first refill — `hw_ptr == appl_ptr == 4096` |
+  | 8 | 185.8ms | plays, but the playhead visibly snaps backwards |
+  | 32 | 743ms | same, much worse |
+
+  The build ships **8**, the only value yet seen to produce sound.
+
+  Read the scale-4 pointers carefully, because they say this is not Engine
+  failing to keep up with a steady stream: `appl_ptr` stopped at exactly one ring
+  and never moved again. Engine stalls *once* — at track load, from inside TCG,
+  since a 32-bit guest gets no hardware acceleration on Apple Silicon — and never
+  returns, because a PCM in XRUN state fails every later `snd_pcm_writei` with
+  `-EPIPE` and Engine calls no `snd_pcm_prepare`. On real hardware that recovery
+  path never has to work. So the ring depth is not buying throughput; it is
+  buying enough slack never to hit that one fatal stall.
+
+  Which is also why depth costs what it does. Engine never measures the latency
+  it got — no `snd_pcm_delay`, no `snd_pcm_status` anywhere in the binary — so it
+  advances the playhead by what it has written and then corrects to where the
+  audio actually is. That correction is a backwards jump the size of the ring's
+  fill level, which is precisely what deepening the ring enlarges.
+
+  **`ALSASHIM_XRUN_FREE_RUN=1` is the way out of the trade, and is untested.** It
+  sets playback's `stop_threshold` to the ring boundary, ALSA's idiom for "never
+  stop on an underrun", so a stall becomes an audible gap instead of permanent
+  silence — which should allow scale 1 or 2 and take the playhead error away with
+  the depth. Try it against the table above; both are service environment
+  variables, so a drop-in plus `systemctl restart engine` is the whole loop.
+
+  `/proc/asound/card0/pcm0p/sub0/status` gives the state and XRUN count,
+  `hw_params` beside it the ring actually granted. Past scale 8 the card also
+  caps out — `virtio_snd` builds its ALSA constraints from module parameters at
+  probe and `pcm_periods_max` defaults to 16, i.e. 8192 frames — so
+  `arch_devices.sh` raises it on the kernel command line
+  (`virtio_snd.pcm_periods_max=128`) to keep that clamp from being silent. It has
+  to be the command line rather than `/etc/modprobe.d`, because `virtio_snd` is in
+  the initrd's own load list and is modprobed inside the initramfs, before the
+  real root's `/etc` exists.
+
   What has *not* happened is a boot with sound coming out. Run with
   `ALSASHIM_DEBUG=1` and `QT_LOGGING_RULES=air.devicemanager.*=true`: the shim
   should log `reporting card name "..." as "JP07"` (if it does not, there is

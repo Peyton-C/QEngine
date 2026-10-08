@@ -171,6 +171,14 @@
  *   ALSASHIM_BUFFER_SCALE  multiplier for the PCM ring depth (default 8);
  *                   1 disables the resizing and the sw_params follow-up
  *                   entirely, leaving Engine's own buffering untouched
+ *   ALSASHIM_XRUN_FREE_RUN  non-empty (and not "0") to set playback's
+ *                   stop_threshold to the ring boundary, so an underrun leaves
+ *                   the stream running instead of stopping it. Engine never
+ *                   recovers from an XRUN -- every later write returns -EPIPE
+ *                   and it calls no snd_pcm_prepare -- so under emulation one
+ *                   stall silences audio permanently. Off by default; it turns
+ *                   a permanent silence into an audible gap, which is only the
+ *                   better trade where stalls are expected.
  *   ALSASHIM_MIDI_CARD  card number to report for card-less MIDI sequencer
  *                   clients (default 0); -1 disables this substitution
  *   ALSASHIM_DEBUG  non-empty to log each substitution to stderr
@@ -218,6 +226,7 @@ typedef int (*hw_get_frames_t)(const snd_pcm_hw_params_t *, snd_pcm_uframes_t *)
 typedef int (*hw_get_frames_d_t)(const snd_pcm_hw_params_t *,
                                  snd_pcm_uframes_t *, int *);
 typedef int (*sw_frames_t)(snd_pcm_t *, snd_pcm_sw_params_t *, snd_pcm_uframes_t);
+typedef int (*sw_get_frames_t)(const snd_pcm_sw_params_t *, snd_pcm_uframes_t *);
 
 static get_name_t real_get_name = NULL;
 static get_card_t real_get_card = NULL;
@@ -244,6 +253,7 @@ static hw_get_frames_d_t real_get_persz_min = NULL;
 static hw_get_frames_d_t real_get_persz_max = NULL;
 static sw_frames_t real_set_start = NULL;
 static sw_frames_t real_set_stop = NULL;
+static sw_get_frames_t real_get_boundary = NULL;
 
 /* Lazy resolution, one dlsym per symbol. Racing threads compute the same
  * pointer, so the unsynchronised write is benign. */
@@ -268,6 +278,14 @@ static int spoof_card(void) {
 static int debug_on(void) {
     const char *v = getenv("ALSASHIM_DEBUG");
     return v && *v;
+}
+
+/* Whether to make playback free-running rather than let an underrun stop the
+ * stream. Independent of ALSASHIM_BUFFER_SCALE on purpose: the case it exists
+ * for is a *shallow* ring that would otherwise die on its first stall. */
+static int free_run_on(void) {
+    const char *v = getenv("ALSASHIM_XRUN_FREE_RUN");
+    return v && *v && *v != '0';
 }
 
 const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
@@ -577,6 +595,38 @@ int snd_pcm_sw_params_set_stop_threshold(snd_pcm_t *pcm,
                                          snd_pcm_uframes_t val) {
     RESOLVE(real_set_stop, "snd_pcm_sw_params_set_stop_threshold");
     if (!real_set_stop) return -ENOSYS;
+
+    /* Free-running playback: stop_threshold at the ring's boundary — a value the
+     * available count can never reach — is ALSA's own idiom for "never stop this
+     * stream on an underrun". The stream stays RUNNING through a gap instead of
+     * entering XRUN, which matters here because Engine does not recover from one:
+     * once the PCM is in XRUN state every further snd_pcm_writei returns -EPIPE
+     * until someone calls snd_pcm_prepare, and Engine calls neither. A single
+     * stall is therefore permanent, and shows up as an audio device that went
+     * silent and a frozen "Audio_probe" watchdog rather than as a dropout.
+     *
+     * On real hardware an XRUN essentially never happens, so that recovery path
+     * has simply never had to work. Under emulation it is the common case.
+     *
+     * The cost is that a stall becomes an audible gap with the playhead running
+     * on through it, where today it is silence forever; and the benefit is that
+     * surviving stalls no longer requires burying them under ring depth, which is
+     * what pushes Engine's own position display out of step with the sound.
+     *
+     * Checked before the depth-derived value below so this holds at any
+     * ALSASHIM_BUFFER_SCALE, scale 1 included. */
+    if (free_run_on()) {
+        RESOLVE(real_get_boundary, "snd_pcm_sw_params_get_boundary");
+        snd_pcm_uframes_t boundary;
+        if (real_get_boundary && real_get_boundary(p, &boundary) == 0 &&
+            boundary > val && real_set_stop(pcm, p, boundary) == 0) {
+            log_scaled(pcm, "stop_threshold (free-run)", val, boundary);
+            return 0;
+        }
+        if (debug_on())
+            fprintf(stderr, "[alsashim] free-run stop_threshold refused; "
+                            "leaving it at %lu\n", (unsigned long)val);
+    }
 
     snd_pcm_uframes_t bufsz;
     if (buffer_scale() > 1 && granted_buffer_size(pcm, &bufsz) == 0 &&

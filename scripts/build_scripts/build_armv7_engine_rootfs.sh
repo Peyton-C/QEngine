@@ -414,9 +414,52 @@ EOF
 # PCM ring (ALSASHIM_BUFFER_SCALE, default 8) so that a 5.8ms buffer is not being
 # serviced by QEMU's 10ms audio timer. Both are on by default; see
 # shims/alsashim/alsashim.c and docs/ENGINEOS.md.
+# ALSASHIM_BUFFER_SCALE: how much deeper than Engine's own request the PCM ring
+# is made. 8 is the only value on this guest yet observed to produce sound.
+#
+# The numbers here are NOT arm64's. RMZ2's Engine asks for a 256-frame ring of
+# 128-frame periods (5.8ms / 2.9ms); this one asks for 1024 frames of 512-frame
+# periods -- 23.2ms of ring, 11.6ms per period -- so each step of the scale is
+# worth four times as much wall clock, and 8 here means 185.8ms in 16 periods.
+#
+# What was measured, at 512-frame periods throughout:
+#
+#   scale 1 (23.2ms)   Audio_probe frozen, Engine acts as though it has no
+#                      audio device and will not load a track
+#   scale 4 (92.9ms)   XRUN before the first buffer is even refilled:
+#                      hw_ptr == appl_ptr == 4096, i.e. Engine wrote exactly one
+#                      ring and then nothing, ever
+#   scale 8 (185.8ms)  plays, but Engine's playhead visibly snaps backwards
+#   scale 32 (743ms)   the same, much worse
+#
+# Note what the scale-4 pointers say: this is not Engine failing to keep up with
+# a steady stream. It stalls once -- at track load, from inside TCG, since a
+# 32-bit guest gets no hardware acceleration on Apple Silicon -- and never comes
+# back, because once the PCM is in XRUN state every snd_pcm_writei returns -EPIPE
+# and Engine calls no snd_pcm_prepare. So the depth is not really buying
+# throughput; it is buying enough slack to never hit that one fatal stall.
+#
+# Which is why the depth also costs what it does. Engine never measures the
+# latency it got -- it imports snd_pcm_avail and snd_pcm_writei and no
+# snd_pcm_delay or snd_pcm_status -- so it advances its playhead by what it has
+# written and then corrects to where audio actually is, and that correction is a
+# backwards jump the size of the ring's fill level.
+#
+# ALSASHIM_XRUN_FREE_RUN is the way out of that trade, if it works: it makes
+# playback free-running so a stall is a gap rather than a permanent stop, which
+# should let the scale come back down to 1 or 2 and take the playhead error with
+# it. Untested on this guest -- try it against the numbers above:
+#
+#   Environment=ALSASHIM_XRUN_FREE_RUN=1
+#   Environment=ALSASHIM_BUFFER_SCALE=1
+#
+# Both are service environment variables, so a drop-in and `systemctl restart
+# engine` is the whole loop; /proc/asound/card0/pcm0p/sub0/status reports the
+# state and the XRUN count, and hw_params beside it the ring actually granted.
 cat >> /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<EOF
 Environment=ALSASHIM_AS=$AUDIO_CARD_NAME
 Environment=ALSASHIM_CARD=0
+Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
 
 umount /mnt/rootfs

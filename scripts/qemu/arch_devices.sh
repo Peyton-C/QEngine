@@ -69,6 +69,8 @@ case "$ARCH" in
         # itself: the launchers' own host check sets CPU=host for KVM/HVF, and a
         # value here would win over it via ${CPU:-...} and silently disable it.
         ARCH_CPU_DEFAULT="max"
+        # Nothing to add: this guest's card is hda, which has no such ceiling.
+        ARCH_KERNEL_ARGS=""
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
         GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
@@ -99,6 +101,30 @@ case "$ARCH" in
         # it is a bigger change than this one and these devices have 2GB anyway.
         MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
+        # Lift a ceiling that would otherwise clamp silently.
+        #
+        # Linux's virtio_snd builds its ALSA constraints from module parameters at
+        # probe time (virtsnd_pcm_build_hw), and pcm_periods_max defaults to 16.
+        # This Engine runs 512-frame periods, so that caps a stream at 8192 frames
+        # -- and alsashim, which deepens a ring by scaling the buffer while leaving
+        # the period size alone, would hit it at ALSASHIM_BUFFER_SCALE=8 and go no
+        # further no matter what the variable said. A clamp that quiet is worth
+        # removing: the rootfs build ships scale 4 as a compromise
+        # between underruns that freeze Engine's audio callback outright and a ring
+        # so deep that its waveform no longer matches the sound (see the reasoning
+        # there), so tuning it across that range is expected rather than
+        # exceptional.
+        #
+        # On the kernel command line rather than in /etc/modprobe.d because this
+        # module is in the initrd's own load list, so it is modprobed inside the
+        # initramfs, before the real root's /etc is anywhere. The kernel applies
+        # module.parameter= arguments whenever the module loads, so the command
+        # line reaches it either way -- and needs no initrd or rootfs rebuild to
+        # change.
+        #
+        # A ceiling only: the ring actually allocated is whatever alsashim asks
+        # for, so a high value here changes nothing on its own.
+        ARCH_KERNEL_ARGS="virtio_snd.pcm_periods_max=128"
         GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
         # GL works here. Two things had to be true: the machine gained a working PCI
         # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the

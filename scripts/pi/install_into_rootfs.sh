@@ -11,7 +11,11 @@
 set -euo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
+# Settings file first, then the caller's environment again on top of it, so that
+# `sudo AUDIO_CARD=... chroot-engine.sh` overrides the file for one run.
+_caller_env="$(export -p)"
 [ -f "$QENGINE_DIR/pi.env" ] && . "$QENGINE_DIR/pi.env"
+eval "$_caller_env"
 R="${ENGINE_ROOT:-/srv/engine}"
 STAGE="$QENGINE_DIR/stage"
 

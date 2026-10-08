@@ -41,13 +41,23 @@ echo 'play left' | sudo tee /srv/engine/run/midisurface.fifo
 
 Nothing starts on boot, and nothing here installs a service.
 
+### Listening from another machine
+With no speakers on the Pi, Engine can play into ALSA's loopback card and another machine can pull the audio over SSH:
+
+```sh
+sudo AUDIO_CARD=Loopback qengine/chroot-engine.sh    # on the Pi
+scripts/pi/listen.sh <user>@<pi>                     # where you want to hear it
+```
+
+`listen.sh` needs `sox` on the listening machine. Expect a few hundred milliseconds of delay.
+
 ## Settings
 
 Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the common ones and [chroot-engine.sh](chroot-engine.sh) documents all of them. The ones you are most likely to need:
 
 | Variable | Default | |
 | --- | --- | --- |
-| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` |
+| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards`, or `Loopback` |
 | `SCREEN` | `1280 800` | size to run at; the monitor must offer it |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |
 | `MIDI_FORWARD` | none | a real controller, by sequencer name |

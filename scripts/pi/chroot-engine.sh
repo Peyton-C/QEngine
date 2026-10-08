@@ -25,6 +25,7 @@
 #   AUDIO_CARD    sound card by ALSA id (the bracketed name in
 #                 /proc/asound/cards), since card numbers follow plug order.
 #                 Default: the first USB audio card. HDMI audio does not work.
+#                 "Loopback" loads and uses ALSA's loopback card.
 #   MIDI_FORWARD  a real USB controller to drive Engine with, as a substring of
 #                 its ALSA sequencer name. Needs a mapping in the controllermap
 #                 manifest for it and for this product. Default: none.
@@ -34,7 +35,11 @@
 set -uo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
+# Settings file first, then the caller's environment again on top of it, so that
+# `sudo AUDIO_CARD=... chroot-engine.sh` overrides the file for one run.
+_caller_env="$(export -p)"
 [ -f "$QENGINE_DIR/pi.env" ] && . "$QENGINE_DIR/pi.env"
+eval "$_caller_env"
 R="${ENGINE_ROOT:-/srv/engine}"
 
 mountpoint -q "$R/proc" || { echo "ERROR: run chroot-up.sh first." >&2; exit 1; }
@@ -88,6 +93,18 @@ EOF
 TB_ARGS="${TB_ARGS:---pointer --mouse --symlink /dev/input/qengine-touch0 $SCREEN}"
 
 ### audio #####################################################################
+# AUDIO_CARD=Loopback sends Engine's output to ALSA's loopback card, for
+# listening from another machine; README.md has the command for the other end.
+#
+# It needs the deeper ring a real card does not: the loopback card keeps time
+# with kernel timer ticks (4ms on a Pi), which is too coarse for Engine's own
+# 12ms buffer -- the stream underran and restarted about 75 times a second, and
+# the decks visibly ran slow. Latency does not matter on this path anyway.
+if [ "${AUDIO_CARD:-}" = Loopback ]; then
+    modprobe snd-aloop 2>/dev/null
+    ALSASHIM_BUFFER_SCALE="${ALSASHIM_BUFFER_SCALE:-8}"
+fi
+
 # /proc/asound/cards lines look like " 1 [Headset        ]: USB-Audio - ...".
 card_id() { sed -n 's/^ *[0-9]* \[\([^] ]*\) *\]:.*/\1/p'; }
 if [ -z "${AUDIO_CARD:-}" ]; then

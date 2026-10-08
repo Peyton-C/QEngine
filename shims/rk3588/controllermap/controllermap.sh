@@ -14,7 +14,7 @@
 #                       (answers the handshake, relays MIDI unchanged)
 #
 # with the *mapping* — which note/CC means what — supplied by the assignment
-# QML that Engine loads for the RMZ2 controller. Engine reads that file from
+# QML that Engine loads for the product's own controller. Engine reads that file from
 # disk at device-bind time, so swapping it swaps the mapping, with no runtime
 # translation and no per-controller code.
 #
@@ -28,7 +28,7 @@
 #   - Only the vocabulary Engine's own QML components expose can be mapped
 #     (PlayCue, Sync, MixerChannelCore, ActionPads, ...). A control with no
 #     counterpart has nowhere to go.
-#   - LED/display feedback is emitted in RMZ2's protocol and a foreign
+#   - LED/display feedback is emitted in the product's own protocol and a foreign
 #     controller will not understand it. Harmless, but expect dark buttons.
 #
 # Usage: controllermap.sh [--dry-run] [--list] [--restore]
@@ -37,19 +37,28 @@ set -eu
 
 MAP_DIR="${MAP_DIR:-/root/controllermap}"
 MANIFEST="$MAP_DIR/manifest"
-TARGET_DIR="/usr/Engine/AssignmentFiles/PresetAssignmentFiles/RMZ2"
+
+# Which product this guest is spoofing decides which assignment files Engine
+# loads, so it decides which ones get replaced. Read from the same file dtshim
+# and midisurface use; RMZ2 if it cannot be read, which is what this script
+# assumed before it knew about any other product.
+PRODUCT_CODE="${PRODUCT_CODE:-$(cat /root/fake-dt/inmusic,product-code 2>/dev/null || true)}"
+PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}"
+TARGET_DIR="/usr/Engine/AssignmentFiles/PresetAssignmentFiles/$PRODUCT_CODE"
 
 # Engine resolves these names from its KnownDevices entry (AssignmentFileName
-# = "RMZ2 Controller"), so they are fixed — a mapping directory supplies files
-# under exactly these names and they are installed over the vendor ones.
+# = "<CODE> Controller"), so they are fixed — a mapping directory supplies files
+# under exactly these names and they are installed over the vendor ones. A
+# mapping is written against one product's assignment structure, so a directory
+# carries one set of files per product it supports and the rest are ignored.
 #
-#   <mapping>/RMZ2_Controller_Assignments.qml   required — the note/CC map
-#   <mapping>/RMZ2_Controller_Device.qml        optional — device protocol:
+#   <mapping>/<CODE>_Controller_Assignments.qml   required — the note/CC map
+#   <mapping>/<CODE>_Controller_Device.qml        optional — device protocol:
 #       SysEx identity, LED/pad-display encoding, and the motor commands sent
 #       on startup/shutdown. Most mappings will not need this; supply it only
 #       to change how Engine talks *to* the surface, as opposed to what the
 #       surface's controls mean.
-MAPPED_FILES="RMZ2_Controller_Assignments.qml RMZ2_Controller_Device.qml"
+MAPPED_FILES="${PRODUCT_CODE}_Controller_Assignments.qml ${PRODUCT_CODE}_Controller_Device.qml"
 
 DRY_RUN=0
 ACTION=install
@@ -74,8 +83,16 @@ log() { echo "controllermap: $*"; }
 # deviation from how this image normally runs, and not something to discover
 # later by accident. Writes here are small and infrequent (one file, at boot),
 # so the exposure is limited, but it is worth knowing about.
-remount_rw() { mount -o remount,rw / 2>/dev/null || true; }
+#
+# CONTROLLERMAP_NO_REMOUNT skips both, for a rootfs that is already writable and
+# should stay that way — entered by chroot on another machine, for instance,
+# where "/" names a filesystem this script has no business remounting.
+remount_rw() {
+    [ -n "${CONTROLLERMAP_NO_REMOUNT:-}" ] && return 0
+    mount -o remount,rw / 2>/dev/null || true
+}
 remount_ro() {
+    [ -n "${CONTROLLERMAP_NO_REMOUNT:-}" ] && return 0
     if ! mount -o remount,ro / 2>/dev/null; then
         log "note: could not restore / to read-only (mount busy); it stays rw"
     fi
@@ -132,7 +149,7 @@ restore_vendor() {
 
 if [ "$ACTION" = restore ]; then
     restore_vendor
-    log "restored the vendor RMZ2 mapping"
+    log "restored the vendor $PRODUCT_CODE mapping"
     exit 0
 fi
 
@@ -165,10 +182,19 @@ if [ -z "$MATCH_NAME" ]; then
 fi
 
 SRC_DIR="$MAP_DIR/mappings/$MATCH_NAME"
-if [ ! -f "$SRC_DIR/RMZ2_Controller_Assignments.qml" ]; then
-    log "ERROR: manifest matched $MATCH_ID -> $MATCH_NAME but"
-    log "       $SRC_DIR/RMZ2_Controller_Assignments.qml is missing"
-    exit 1
+if [ ! -f "$SRC_DIR/${PRODUCT_CODE}_Controller_Assignments.qml" ]; then
+    # Not an error: a mapping only exists for the products someone has written
+    # one for. Make sure no other controller's mapping is left installed.
+    log "mapping '$MATCH_NAME' (matched $MATCH_ID) has no"
+    log "${PRODUCT_CODE}_Controller_Assignments.qml; leaving the vendor mapping in place"
+    for f in $MAPPED_FILES; do
+        if ! cmp -s "$TARGET_DIR/$f.vendor" "$TARGET_DIR/$f"; then
+            restore_vendor
+            log "reverted to the vendor mapping"
+            break
+        fi
+    done
+    exit 0
 fi
 
 if [ "$DRY_RUN" = 1 ]; then

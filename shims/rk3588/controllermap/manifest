@@ -6,11 +6,13 @@
 # <vid:pid>      lowercase hex as it appears in sysfs, e.g. 154e:1000.
 #                Run `controllermap.sh --list` with the controller plugged in
 #                to print the ids actually present.
-# <mapping-dir>  a directory under mappings/ containing a single file,
-#                RMZ2_Controller_Assignments.qml, written against that
-#                controller's own notes/CCs.
+# <mapping-dir>  a directory under mappings/ containing
+#                <CODE>_Controller_Assignments.qml for each product it supports
+#                (RMZ2_..., JP24_...), written against that controller's own
+#                notes/CCs. controllermap installs the one matching the product
+#                this guest is spoofing and ignores the others.
 #
-# Authoring a mapping: copy the vendor RMZ2_Controller_Assignments.qml as a
+# Authoring a mapping: copy the vendor <CODE>_Controller_Assignments.qml as a
 # starting point and change the note/CC numbers to what your controller emits
 # (`aseqdump`-style capture, or the controller's MIDI implementation chart).
 # The structure — which QML component provides which function — stays as-is;

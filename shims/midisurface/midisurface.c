@@ -367,6 +367,54 @@ static int verbose = 0;
 static int forward_client = -1;
 static int forward_port = -1;
 
+/* The translations --forward does. "Relayed unchanged" holds for everything an
+ * assignment file can describe; these are the three things one cannot, each
+ * found by pointing a real MC6000MK2 at a Prime 4 G2 guest. All are off unless
+ * asked for, and none knows anything about a particular controller.
+ *
+ * --pitchbend-cc UPPER,LOWER
+ *
+ * A pitch fader. Engine's SpeedSlider only accepts a 14-bit
+ * value as a pair of control changes (ccUpper, ccLower), while a controller like
+ * the MC6000MK2 sends its fader as MIDI Pitch Bend, which no component reads. The
+ * two carry the same 14 bits, so a forwarded Pitch Bend is re-sent as that CC
+ * pair on the same channel -- most significant half first, so Engine has both
+ * halves by the time the second arrives -- and the mapping then names the pair in
+ * an ordinary SpeedSlider. -1 means off.
+ *
+ * --relative-cc CC=UPPER,LOWER
+ *
+ * A jog wheel. Engine's JogWheel reads a platter as an absolute position that
+ * counts up and wraps, sent as a 14-bit CC pair. A controller that instead
+ * reports movement -- one CC whose value is 64 plus or minus the number of ticks
+ * since the last message -- is read as a position that never leaves 63..65, and
+ * the platter barely responds. So the ticks are summed into a 14-bit counter per
+ * MIDI channel and that counter is sent in the CC's place.
+ *
+ * --note-map CH:FROM=TO  or  CH:FROM=TOCH:TO
+ *
+ * A note that arrives where Engine is not listening for it. Two cases so far.
+ * Controls that share a note number: Components that take a run of notes
+ * (eight pads from firstPadNote) cannot leave one out, so when the controller
+ * puts something unrelated inside the run -- the MC6000MK2's browse-encoder push
+ * is 0x28 on the channel where its sampler buttons run 0x21 upward -- the only
+ * way to tell them apart is to move one before Engine sees it. And controls on
+ * the wrong channel: Engine's Load listens on the surface's global channel and
+ * tells the decks apart by note, while the MC6000MK2 sends each LOAD on whichever
+ * channel that side's selected deck uses, so the second form moves the note to
+ * another channel as well. Applies to note on and note off. */
+static int pitchbend_cc_upper = -1;
+static int pitchbend_cc_lower = -1;
+
+static int relative_cc = -1;
+static int relative_cc_upper = -1;
+static int relative_cc_lower = -1;
+static int relative_position[16];
+
+#define MAX_NOTE_MAPS 8
+static struct { int ch, from, to_ch, to; } note_maps[MAX_NOTE_MAPS];
+static int note_map_count = 0;
+
 /* Auto motor-off. RMZ2's decks wait on platter timecode that cannot
  * exist under emulation, so play does nothing until motorized mode is toggled
  * off, and Engine does not persist that setting — it starts motorized every
@@ -505,6 +553,37 @@ static void handle_incoming(void) {
             if (verbose)
                 fprintf(stderr, "[surface] forwarding type %d from %d:%d\n",
                         ev->type, ev->source.client, ev->source.port);
+            if (ev->type == SND_SEQ_EVENT_PITCHBEND && pitchbend_cc_upper >= 0) {
+                /* ALSA reports -8192..8191; the CC pair carries 0..16383. */
+                int v = ev->data.control.value + 8192;
+                if (v < 0) v = 0;
+                if (v > 16383) v = 16383;
+                int ch = ev->data.control.channel;
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, pitchbend_cc_upper, v >> 7);
+                send_event(&out);
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, pitchbend_cc_lower, v & 0x7F);
+            } else if (ev->type == SND_SEQ_EVENT_CONTROLLER && relative_cc >= 0 &&
+                       (int)ev->data.control.param == relative_cc) {
+                int ch = ev->data.control.channel & 0x0F;
+                int pos = (relative_position[ch] + ev->data.control.value - 64) & 0x3FFF;
+                relative_position[ch] = pos;
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, relative_cc_upper, pos >> 7);
+                send_event(&out);
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, relative_cc_lower, pos & 0x7F);
+            } else if (ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF) {
+                for (int m = 0; m < note_map_count; m++) {
+                    if (out.data.note.channel == note_maps[m].ch &&
+                        out.data.note.note == note_maps[m].from) {
+                        out.data.note.channel = (unsigned char)note_maps[m].to_ch;
+                        out.data.note.note = (unsigned char)note_maps[m].to;
+                        break;
+                    }
+                }
+            }
             send_event(&out);
             if (snd_seq_event_input_pending(seq, 0) <= 0) break;
             continue;
@@ -597,12 +676,55 @@ int main(int argc, char **argv) {
             motor_off_enabled = 1;
         } else if (strcmp(argv[i], "--forward") == 0 && i + 1 < argc) {
             forward_match = argv[++i];
+        } else if (strcmp(argv[i], "--pitchbend-cc") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%i,%i", &pitchbend_cc_upper, &pitchbend_cc_lower) != 2 ||
+                pitchbend_cc_upper < 0 || pitchbend_cc_upper > 127 ||
+                pitchbend_cc_lower < 0 || pitchbend_cc_lower > 127) {
+                fprintf(stderr, "--pitchbend-cc wants two controller numbers, "
+                                "e.g. 0x05,0x06\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--relative-cc") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%i=%i,%i", &relative_cc, &relative_cc_upper,
+                       &relative_cc_lower) != 3 ||
+                relative_cc < 0 || relative_cc > 127 ||
+                relative_cc_upper < 0 || relative_cc_upper > 127 ||
+                relative_cc_lower < 0 || relative_cc_lower > 127) {
+                fprintf(stderr, "--relative-cc wants CC=UPPER,LOWER, "
+                                "e.g. 0x51=0x37,0x4D\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--note-map") == 0 && i + 1 < argc) {
+            int ch, from, to_ch, to;
+            const char *spec = argv[++i];
+            int fields = sscanf(spec, "%i:%i=%i:%i", &ch, &from, &to_ch, &to);
+            if (fields == 3) {
+                /* CH:FROM=TO -- the third number was the note, same channel. */
+                to = to_ch;
+                to_ch = ch;
+            }
+            if (note_map_count >= MAX_NOTE_MAPS || (fields != 3 && fields != 4) ||
+                ch < 0 || ch > 15 || to_ch < 0 || to_ch > 15 ||
+                from < 0 || from > 127 || to < 0 || to > 127) {
+                fprintf(stderr, "--note-map wants CH:FROM=TO or CH:FROM=TOCH:TO, "
+                                "e.g. 0:0x28=0x70 or 1:0x62=0:0x62 (at most %d)\n",
+                        MAX_NOTE_MAPS);
+                return 1;
+            }
+            note_maps[note_map_count].ch = ch;
+            note_maps[note_map_count].from = from;
+            note_maps[note_map_count].to_ch = to_ch;
+            note_maps[note_map_count].to = to;
+            note_map_count++;
         } else if (argv[i][0] != '-') {
             client_name = argv[i];
         } else {
             fprintf(stderr,
                     "usage: %s [client-name] [-v] [--motor-off] "
-                    "[--forward <controller-name-substring>]\n", argv[0]);
+                    "[--forward <controller-name-substring>] "
+                    "[--pitchbend-cc <upper>,<lower>] "
+                    "[--relative-cc <cc>=<upper>,<lower>] "
+                    "[--note-map <ch>:<from>=[<ch>:]<to>]...\n", argv[0]);
             return 1;
         }
     }

@@ -143,6 +143,15 @@ pkill -f '^/usr/Engine/Engine'; sleep 2; pkill -9 -f '^/usr/Engine/Engine'
 pkill -f '^/root/touchbridge'; pkill -f '^/root/midisurface'
 sleep 1
 
+# Engine copies every track it loads, and that track's stems, into this directory
+# and works from the copy. Nothing in this setup ever removes them -- they were
+# found at 270 files and 900MB after a day, 25 copies of each sampler sound among
+# them, one set per launch -- and /data is a small image. Engine is stopped at
+# this point, so nothing here is in use.
+if [ -d "$R/data/inMusicTempFiles" ]; then
+    find "$R/data/inMusicTempFiles" -mindepth 1 -delete
+fi
+
 # Engine aborts at start-up without a system bus. The rootfs's own daemon, so it
 # sees Engine OS's bus policy and not the host's.
 if [ ! -S "$R/run/dbus/system_bus_socket" ]; then

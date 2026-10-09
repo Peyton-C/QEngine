@@ -39,7 +39,15 @@ echo 'load left' | sudo tee /srv/engine/run/midisurface.fifo
 echo 'play left' | sudo tee /srv/engine/run/midisurface.fifo
 ```
 
-Nothing starts on boot, and nothing here installs a service.
+Nothing starts on boot unless you ask for it:
+
+```sh
+cd ~/qengine
+sed "s|@QENGINE_DIR@|$PWD|" qengine.service | sudo tee /etc/systemd/system/qengine.service
+sudo systemctl daemon-reload && sudo systemctl enable qengine.service
+```
+
+[qengine.service](qengine.service) runs `chroot-up.sh` and `chroot-engine.sh` at boot with the settings in `pi.env`.
 
 ### Listening from another machine
 With no speakers on the Pi, Engine can play into ALSA's loopback card and another machine can pull the audio over SSH:

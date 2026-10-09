@@ -97,7 +97,7 @@ rm -rf "$OUT/stage/controllermap"
 cp -R "$REPO_ROOT/shims/rk3588/controllermap" "$OUT/stage/controllermap"
 rm -f "$OUT/stage/controllermap/controllermap.service"
 cp "$SCRIPT_DIR/chroot-up.sh" "$SCRIPT_DIR/chroot-engine.sh" \
-   "$SCRIPT_DIR/install_into_rootfs.sh" "$OUT/"
+   "$SCRIPT_DIR/install_into_rootfs.sh" "$SCRIPT_DIR/qengine.service" "$OUT/"
 
 echo "--- copying the rootfs image ---"
 # The image is mostly holes. Clone it where the filesystem can (macOS/APFS),

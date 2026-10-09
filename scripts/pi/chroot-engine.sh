@@ -35,6 +35,8 @@
 #   CUE_CHANNEL   which output that is: the first channel of its pair, counting
 #                 from 1. Default 3. ALSASHIM_METER=1 logs every channel's level
 #                 to engine.log, which shows what a product puts where.
+#   CARD_WAIT     seconds to wait for AUDIO_CARD and CUE_CARD to appear before
+#                 going on without them. Default 0; qengine.service sets it.
 #   MIDI_FORWARD  a real USB controller to drive Engine with, as a substring of
 #                 its ALSA sequencer name. Needs a mapping in the controllermap
 #                 manifest for it and for this product. Default: none.
@@ -113,6 +115,17 @@ if [ "${AUDIO_CARD:-}" = Loopback ]; then
     modprobe snd-aloop 2>/dev/null
     ALSASHIM_BUFFER_SCALE="${ALSASHIM_BUFFER_SCALE:-8}"
 fi
+
+# Started at boot (qengine.service), this can run before a USB card has
+# enumerated: wait up to CARD_WAIT seconds for the ones named.
+for _ in $(seq 1 "${CARD_WAIT:-0}"); do
+    missing=""
+    for c in "${AUDIO_CARD:-}" "${CUE_CARD:-}"; do
+        [ -z "$c" ] || grep -qE "^ *[0-9]+ \[$c *\]:" /proc/asound/cards || missing=1
+    done
+    [ -n "$missing" ] || break
+    sleep 1
+done
 
 # /proc/asound/cards lines look like " 1 [Headset        ]: USB-Audio - ...".
 card_id() { sed -n 's/^ *[0-9]* \[\([^] ]*\) *\]:.*/\1/p'; }

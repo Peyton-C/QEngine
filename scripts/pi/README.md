@@ -1,7 +1,7 @@
 # Running Engine on a Raspberry Pi 5
 Runs an instance's Engine OS rootfs in a chroot on a RPI, with no QEMU or other virtualization. Could be used with other arm64 linux devices with a 4k kernel.
 
-Tested with a Raspberry Pi 5 4GB on Raspberry Pi OS Lite 64-bit Trixie, with a spoofed Denon Prime 4 G2 (JP24) on Engine OS 5.1.1. Everything tested, including fake touch with a usb mouse, display, audio, a real midi controller (via virtual control surface), external USB media, and playback (including pre-rendered stems), works, with the only exception being SoundSwitch.
+Tested with a Raspberry Pi 5 4GB on Raspberry Pi OS Lite 64-bit Trixie, with a spoofed Denon Prime 4 G2 (JP24) on Engine OS 5.1.1. Everything tested, including fake touch with a usb mouse, display, audio (USB and HDMI), a real midi controller (via virtual control surface), external USB media, and playback (including pre-rendered stems), works, with the only exception being SoundSwitch.
 
 ## On the Pi, once
 - Flash Raspberry Pi OS Lite (64-bit) with SSH enabled.
@@ -57,7 +57,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 
 | Variable | Default | |
 | --- | --- | --- |
-| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards`, or `Loopback` |
+| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` (`vc4hdmi1` is HDMI-A-2), or `Loopback` |
 | `SCREEN` | `1280 800` | size to run at; the monitor must offer it |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |
 | `MIDI_FORWARD` | none | a real controller, by sequencer name |
@@ -75,9 +75,11 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 - **Touch.** `touchbridge --mouse` turns any USB mouse into the touchscreen, and
   `cursorshim` draws the pointer, since a monitor shows none.
 - **Audio.** `alsashim` hides the card's inputs (`ALSASHIM_NO_CAPTURE`) and uses
-  Engine's own buffer size (`ALSASHIM_BUFFER_SCALE=1`). HDMI audio does not
-  work: the Pi's HDMI sound device only takes a format the conversion layer
-  cannot produce. Use a USB device.
+  Engine's own buffer size (`ALSASHIM_BUFFER_SCALE=1`). The Pi's HDMI sound
+  device only takes S/PDIF-framed samples, which the usual conversion layer
+  cannot produce, so `alsashim` opens it through ALSA's `hdmi:` device instead.
+  For sound from the monitor, set `AUDIO_CARD` to the port's card: `vc4hdmi0`
+  for HDMI-A-1, `vc4hdmi1` for HDMI-A-2.
 - **Services.** There is no systemd in the chroot, so the two Engine needs are
   started by hand: the rootfs's own D-Bus daemon, and `edisksd`, which mounts
   removable drives and tells Engine about them.

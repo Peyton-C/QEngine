@@ -73,6 +73,14 @@
  * Engine builds these names itself from a hardcoded "hw:%d", so there's no
  * configuration route to the same result.
  *
+ * One kind of card needs a different name. A Raspberry Pi's HDMI sound device
+ * (vc4-hdmi) takes a single sample format, IEC958_SUBFRAME_LE -- each sample
+ * already wrapped in its S/PDIF subframe -- and `plug` does not convert to
+ * that, so "plughw:N" fails at set_format just as "hw:N" would. alsa-lib's
+ * own answer is the card's "hdmi:" PCM (cards/vc4-hdmi.conf), which puts the
+ * `iec958` plugin in front of the device; a card that offers only that format
+ * is therefore opened as plug:'hdmi:CARD=N' instead.
+ *
  * 3. THE MIDI CLIENT'S CARD NUMBER
  *
  * Separately, Engine's MIDI device enumerator rejects any ALSA sequencer
@@ -218,6 +226,7 @@ typedef int (*ctl_pcm_info_t)(snd_ctl_t *, snd_pcm_info_t *);
 typedef int (*pcm_close_t)(snd_pcm_t *);
 typedef int (*hw_any_t)(snd_pcm_t *, snd_pcm_hw_params_t *);
 typedef int (*hw_get_uint_t)(const snd_pcm_hw_params_t *, unsigned int *);
+typedef int (*hw_test_format_t)(snd_pcm_t *, snd_pcm_hw_params_t *, int);
 typedef int (*pcm_info_stream_t)(const snd_pcm_info_t *);
 typedef int (*hw_frames_t)(snd_pcm_t *, snd_pcm_hw_params_t *, snd_pcm_uframes_t);
 typedef int (*hw_frames_p_t)(snd_pcm_t *, snd_pcm_hw_params_t *, snd_pcm_uframes_t *);
@@ -242,6 +251,7 @@ static ctl_pcm_info_t real_ctl_pcm_info = NULL;
 static pcm_close_t real_pcm_close = NULL;
 static hw_any_t real_hw_any = NULL;
 static hw_get_uint_t real_get_ch_max = NULL;
+static hw_test_format_t real_test_format = NULL;
 static pcm_info_stream_t real_pcm_info_stream = NULL;
 static hw_frames_t real_set_bufsz = NULL;
 static hw_frames_p_t real_set_bufsz_near = NULL;
@@ -358,30 +368,44 @@ static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
 
 #define ALSASHIM_PCM_NONBLOCK 1
 
-static void probe_real_channels(const char *hw_name, int stream) {
-    if (stream != ALSASHIM_STREAM_PLAYBACK && stream != ALSASHIM_STREAM_CAPTURE) return;
+/* SND_PCM_FORMAT_S16_LE and SND_PCM_FORMAT_IEC958_SUBFRAME_LE. */
+#define ALSASHIM_FORMAT_S16_LE 2
+#define ALSASHIM_FORMAT_IEC958_SUBFRAME_LE 18
+
+/* Returns non-zero when the card takes IEC958 subframes and not plain PCM, i.e.
+ * when it has to be opened through its "hdmi:" PCM rather than "plughw:". */
+static int probe_real_hw(const char *hw_name, int stream) {
+    int iec958_only = 0;
+    if (stream != ALSASHIM_STREAM_PLAYBACK && stream != ALSASHIM_STREAM_CAPTURE) return 0;
     RESOLVE(real_pcm_close, "snd_pcm_close");
     RESOLVE(real_hw_malloc, "snd_pcm_hw_params_malloc");
     RESOLVE(real_hw_free, "snd_pcm_hw_params_free");
     RESOLVE(real_hw_any, "snd_pcm_hw_params_any");
     RESOLVE(real_get_ch_max, "snd_pcm_hw_params_get_channels_max");
+    RESOLVE(real_test_format, "snd_pcm_hw_params_test_format");
     if (!real_pcm_close || !real_hw_malloc || !real_hw_free || !real_hw_any ||
-        !real_get_ch_max) return;
+        !real_get_ch_max) return 0;
 
     snd_pcm_t *hw = NULL;
-    if (real_pcm_open(&hw, hw_name, stream, ALSASHIM_PCM_NONBLOCK) < 0 || !hw) return;
+    if (real_pcm_open(&hw, hw_name, stream, ALSASHIM_PCM_NONBLOCK) < 0 || !hw) return 0;
     snd_pcm_hw_params_t *p = NULL;
     unsigned int max = 0;
     if (real_hw_malloc(&p) == 0 && p) {
-        if (real_hw_any(hw, p) >= 0 && real_get_ch_max(p, &max) == 0)
-            g_real_ch_max[stream] = max;
+        if (real_hw_any(hw, p) >= 0) {
+            if (real_get_ch_max(p, &max) == 0) g_real_ch_max[stream] = max;
+            if (real_test_format)
+                iec958_only =
+                    real_test_format(hw, p, ALSASHIM_FORMAT_IEC958_SUBFRAME_LE) == 0 &&
+                    real_test_format(hw, p, ALSASHIM_FORMAT_S16_LE) != 0;
+        }
         real_hw_free(p);
     }
     real_pcm_close(hw);
     if (debug_on())
-        fprintf(stderr, "[alsashim] \"%s\" %s really has up to %u channels\n",
+        fprintf(stderr, "[alsashim] \"%s\" %s really has up to %u channels%s\n",
                 hw_name, stream == ALSASHIM_STREAM_PLAYBACK ? "playback" : "capture",
-                g_real_ch_max[stream]);
+                g_real_ch_max[stream], iec958_only ? ", IEC958 subframes only" : "");
+    return iec958_only;
 }
 
 /* Has no pcm argument, so the direction is taken from the most recent open --
@@ -417,13 +441,15 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
 
     if (name && strncmp(name, "hw:", 3) == 0 && !getenv("ALSASHIM_NOPLUG")) {
         char plugged[128];
-        int n = snprintf(plugged, sizeof(plugged), "plug%s", name);
+        /* Before the plug layer hides it: what the card can really do. */
+        int iec958_only = probe_real_hw(name, stream);
+        int n = iec958_only
+            ? snprintf(plugged, sizeof(plugged), "plug:'hdmi:CARD=%d'", atoi(name + 3))
+            : snprintf(plugged, sizeof(plugged), "plug%s", name);
         if (n > 0 && (size_t)n < sizeof(plugged)) {
             if (debug_on())
                 fprintf(stderr, "[alsashim] opening \"%s\" as \"%s\"\n",
                         name, plugged);
-            /* Before the plug layer hides it: what the card can really do. */
-            probe_real_channels(name, stream);
             if (stream == ALSASHIM_STREAM_PLAYBACK || stream == ALSASHIM_STREAM_CAPTURE)
                 g_last_stream = stream;
             return real_pcm_open(pcmp, plugged, stream, mode);

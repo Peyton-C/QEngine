@@ -24,7 +24,8 @@
 #                 connected HDMI port.
 #   AUDIO_CARD    sound card by ALSA id (the bracketed name in
 #                 /proc/asound/cards), since card numbers follow plug order.
-#                 Default: the first USB audio card. HDMI audio does not work.
+#                 Default: the first USB audio card. The monitor's speakers
+#                 are vc4hdmi0 (HDMI-A-1) or vc4hdmi1 (HDMI-A-2).
 #                 "Loopback" loads and uses ALSA's loopback card.
 #   MIDI_FORWARD  a real USB controller to drive Engine with, as a substring of
 #                 its ALSA sequencer name. Needs a mapping in the controllermap

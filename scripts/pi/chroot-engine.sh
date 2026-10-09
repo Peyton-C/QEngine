@@ -184,9 +184,12 @@ if [ -d "$R/data/inMusicTempFiles" ]; then
 fi
 
 # Engine aborts at start-up without a system bus. The rootfs's own daemon, so it
-# sees Engine OS's bus policy and not the host's.
-if [ ! -S "$R/run/dbus/system_bus_socket" ]; then
+# sees Engine OS's bus policy and not the host's. Asked of the process and not
+# the socket: stopping qengine.service kills the daemon and leaves its socket
+# and pid file in the chroot's /run, and it will not start over either.
+if ! pgrep -f '^/usr/bin/dbus-daemon --system --fork$' >/dev/null; then
     mkdir -p "$R/run/dbus"
+    rm -f "$R/run/dbus/system_bus_socket" "$R/run/dbus/pid"
     chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/bin/dbus-daemon --system --fork
 fi
 

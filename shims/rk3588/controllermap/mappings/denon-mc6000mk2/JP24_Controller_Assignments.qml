@@ -17,12 +17,20 @@
 //   --forward MC6000MK2 --pitchbend-cc 0x05,0x06 --relative-cc 0x51=0x37,0x4D
 //   --note-map 0:0x28=0x70
 //   --note-map 1:0x62=0:0x62 --note-map 2:0x63=0:0x63 --note-map 3:0x63=0:0x63
+//   --led-map /root/controllermap/mappings/denon-mc6000mk2/JP24_Controller_Leds.txt
 //
 // for the controls an assignment file cannot describe as the unit sends them:
 // the pitch faders (Pitch Bend), the jog wheels (relative ticks), the
 // browse-encoder push (the same note as the left deck's eighth pad) and the LOAD
 // buttons (sent on the deck's channel, wanted on the global one). Each is noted
 // where it is used below; midisurface.c explains the translations.
+//
+// The last line is the lamps. Engine lights a button by echoing its note; the
+// MC6000MK2 wants a Control Change naming a lamp number instead, and
+// JP24_Controller_Leds.txt is the table between the two. It is keyed on the
+// notes in this file, so a note changed here has to change there. Every LedType
+// is left at Simple: the unit's lamps are one colour, and the table reads only
+// lit, dim and dark.
 //
 // ---------------------------------------------------------------------------
 // DELIBERATELY UNMAPPED
@@ -33,8 +41,8 @@
 //       which Engine's DeckSelect cannot follow. Stay on decks 3 and 4.
 //   Microphones -- the G2 mixes them in software and the MC6000MK2 in hardware.
 //   Stems, playlist banks, media slots -- no matching controls.
-//   VU meters, all LED feedback -- Engine emits these in the G2's protocol, and
-//       midisurface forwards one way only.
+//   VU meters -- Engine emits these in the G2's protocol, and --led-map only
+//       translates button lamps.
 
 import airAssignments 1.0
 import InputAssignment 0.1
@@ -144,6 +152,7 @@ MidiAssignment {
 				playNote: 0x43 // PLAY
 				cueNote: 0x42  // CUE
 				cueShiftAction: Action.SetCuePoint
+				playLedType: LedType.Simple
 			}
 
 			Sync {
@@ -153,10 +162,12 @@ MidiAssignment {
 
 			KeyLock {
 				note: 0x06 // KEY LOCK
+				ledType: LedType.Simple
 			}
 
-			// With no jog data reaching Engine, VINYL MODE is most useful as
-			// the slip toggle rather than as a scratch-mode switch.
+			// VINYL MODE as the slip toggle. It cannot show it: the button's
+			// lamp is the unit's own vinyl mode, which the jog wheels need left
+			// on. See JP24_Controller_Leds.txt.
 			Slip {
 				note: 0x04 // VINYL MODE
 			}
@@ -193,6 +204,7 @@ MidiAssignment {
 			// The four HOT CUE buttons pick the pad mode and the four SAMP
 			// buttons are pads 1-4; see README.md for why they are relabelled.
 			PadModeSelect {
+				ledType: LedType.Simple
 				buttonsModel: ListModel {
 					ListElement { note: 0x17 } // HOT CUE1
 					ListElement { note: 0x18 } // HOT CUE2
@@ -240,10 +252,13 @@ MidiAssignment {
 	// channel, whatever DECK CHG. says. Pads 5-8 fall on 0x25-0x28, which the
 	// deck sections do not send, so they are simply dead.
 	//
-	// The G2's pads are quad pads -- each can be split into four -- and report
-	// where they were struck through a pair of CCs. A plain button has no
-	// position to report, so every press lands wherever Engine puts a pad with
-	// none.
+	// ActionPads and not the G2's own QuadPads, for the lamps. The G2's pads can
+	// each be split into four, and QuadPads lights them to match: nothing at all
+	// with LedType.Simple, and with LedType.RGB a SysEx per quarter carrying a
+	// colour. ActionPads is what the products with plain pads use, and echoes
+	// each pad's note as lit, dim or dark like every other button here. It logs
+	// a few warnings about properties named index and note when Engine binds;
+	// the pads and their lamps work regardless.
 
 	Repeater {
 		model: ListModel {
@@ -270,7 +285,7 @@ MidiAssignment {
 				id: deckAction
 			}
 
-			QuadPads {
+			ActionPads {
 				firstPadNote: 0x21 // SAMP.1
 				ledType: LedType.Simple
 			}

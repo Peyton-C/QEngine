@@ -163,6 +163,25 @@
  * lowered below what Engine asked for — so they stay correct even on the
  * fallback path, where the ring didn't grow at all.
  *
+ * 5. A SECOND OUTPUT ON ANOTHER CARD (optional)
+ *
+ * Engine drives one sound device and writes every output it has -- master,
+ * booth, headphone cue -- as channel pairs of the same frame; the plug layer
+ * hands the first pair to the card and drops the rest. That is all a stereo
+ * card can do, and it leaves no way to hear the cue.
+ *
+ * With ALSASHIM_CUE_PCM set, one further pair is copied out of every
+ * snd_pcm_writei() Engine makes and played on a second card by a thread of the
+ * shim's own. The two cards are deliberately not joined into one device (ALSA's
+ * `multi`): they run on separate clocks, and a joined device can only follow
+ * one of them, so the other drifts into an underrun every few minutes and the
+ * restart is heard on both. Here Engine's device is untouched -- the copy is a
+ * memcpy into a ring and never blocks -- and the drift lands on the second
+ * card alone: it is absorbed by the ring, which is cut back when it grows too
+ * deep and refilled after an underrun when it runs dry. Either is one short
+ * glitch in the headphones every several minutes. The second output runs
+ * about 30-80ms behind the first.
+ *
  * Env vars:
  *   ALSASHIM_AS     card name to report (default "RMZ2", System One's real
  *                   simple-audio-card name, which is what its allowlist
@@ -185,12 +204,22 @@
  *                   entirely, leaving Engine's own buffering untouched
  *   ALSASHIM_MIDI_CARD  card number to report for card-less MIDI sequencer
  *                   clients (default 0); -1 disables this substitution
+ *   ALSASHIM_CUE_PCM  PCM to play a second output pair on, e.g. "plughw:1";
+ *                   unset for none
+ *   ALSASHIM_CUE_CHANNEL  first channel of that pair in Engine's frame, counting
+ *                   from 1 (default 3)
+ *   ALSASHIM_METER  non-empty to log each output channel's peak level every few
+ *                   seconds, which is how to find out which pair is which
  *   ALSASHIM_DEBUG  non-empty to log each substitution to stderr
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -239,6 +268,7 @@ typedef int (*hw_get_frames_t)(const snd_pcm_hw_params_t *, snd_pcm_uframes_t *)
 typedef int (*hw_get_frames_d_t)(const snd_pcm_hw_params_t *,
                                  snd_pcm_uframes_t *, int *);
 typedef int (*sw_frames_t)(snd_pcm_t *, snd_pcm_sw_params_t *, snd_pcm_uframes_t);
+typedef long (*writei_t)(snd_pcm_t *, const void *, snd_pcm_uframes_t);
 
 static get_name_t real_get_name = NULL;
 static get_card_t real_get_card = NULL;
@@ -271,6 +301,7 @@ static hw_get_frames_d_t real_get_persz_min = NULL;
 static hw_get_frames_d_t real_get_persz_max = NULL;
 static sw_frames_t real_set_start = NULL;
 static sw_frames_t real_set_stop = NULL;
+static writei_t real_writei = NULL;
 
 /* Lazy resolution, one dlsym per symbol. Racing threads compute the same
  * pointer, so the unsynchronised write is benign. */
@@ -364,6 +395,8 @@ int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
  * Sixteen is enough for every layout seen so far and costs nothing to render. */
 #define ALSASHIM_MIN_REPORTED_CHANNELS 16
 static unsigned int g_real_ch_max[2];
+/* The playback device Engine has open, as last opened through the rewrite below. */
+static _Atomic(snd_pcm_t *) g_main_pcm;
 static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
 
 #define ALSASHIM_PCM_NONBLOCK 1
@@ -452,10 +485,233 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
                         name, plugged);
             if (stream == ALSASHIM_STREAM_PLAYBACK || stream == ALSASHIM_STREAM_CAPTURE)
                 g_last_stream = stream;
-            return real_pcm_open(pcmp, plugged, stream, mode);
+            int ret = real_pcm_open(pcmp, plugged, stream, mode);
+            if (ret >= 0 && stream == ALSASHIM_STREAM_PLAYBACK && pcmp)
+                atomic_store(&g_main_pcm, *pcmp);
+            return ret;
         }
     }
     return real_pcm_open(pcmp, name, stream, mode);
+}
+
+/* --- second output ---------------------------------------------------- */
+
+/* SND_PCM_FORMAT_*, SND_PCM_ACCESS_RW_INTERLEAVED. */
+#define ALSASHIM_FORMAT_S32_LE 10
+#define ALSASHIM_FORMAT_FLOAT_LE 14
+#define ALSASHIM_ACCESS_RW_INTERLEAVED 3
+
+/* Frames of ring, a power of two; what the second card is asked to buffer; and
+ * the ring depth at which the oldest audio is dropped, with what is kept. */
+#define CUE_RING 16384
+#define CUE_LATENCY_US 30000
+#define CUE_RING_HIGH 2048
+#define CUE_RING_KEEP 256
+
+static struct {
+    int32_t ring[CUE_RING][2];
+    atomic_ulong w, r;      /* frames ever written / read; the ring index is mod */
+    sem_t wake;
+    atomic_int started;
+    atomic_uint rate;       /* of Engine's stream; the worker follows a change */
+} g_cue;
+
+/* The layout of the frames Engine writes, as its last snd_pcm_hw_params() on
+ * the playback device set it. */
+static atomic_uint g_fmt_channels;
+static atomic_int g_fmt_format = -1;
+
+static const char *cue_pcm_name(void) {
+    static const char *v;
+    static int looked;
+    if (!looked) { v = getenv("ALSASHIM_CUE_PCM"); looked = 1; }
+    return (v && *v) ? v : NULL;
+}
+
+static unsigned int cue_channel(void) {
+    static unsigned int ch;
+    if (!ch) {
+        const char *v = getenv("ALSASHIM_CUE_CHANNEL");
+        int n = (v && *v) ? atoi(v) : 3;
+        ch = n >= 1 ? (unsigned int)n : 3;
+    }
+    return ch - 1;
+}
+
+static int meter_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *v = getenv("ALSASHIM_METER"); on = v && *v; }
+    return on;
+}
+
+static int32_t sample_at(const void *buf, int format, unsigned long i) {
+    switch (format) {
+    case ALSASHIM_FORMAT_S16_LE: return (int32_t)((const int16_t *)buf)[i] << 16;
+    case ALSASHIM_FORMAT_S32_LE: return ((const int32_t *)buf)[i];
+    case ALSASHIM_FORMAT_FLOAT_LE: {
+        float f = ((const float *)buf)[i];
+        if (f > 1.0f) f = 1.0f;
+        if (f < -1.0f) f = -1.0f;
+        return (int32_t)(f * 2147483520.0f);
+    }
+    default: return 0;
+    }
+}
+
+static void *cue_worker(void *arg) {
+    (void)arg;
+    typedef int (*set_params_t)(snd_pcm_t *, int, int, unsigned int, unsigned int,
+                                int, unsigned int);
+    typedef int (*recover_t)(snd_pcm_t *, int, int);
+    set_params_t set_params = (set_params_t)dlsym(RTLD_NEXT, "snd_pcm_set_params");
+    recover_t recover = (recover_t)dlsym(RTLD_NEXT, "snd_pcm_recover");
+    RESOLVE(real_pcm_close, "snd_pcm_close");
+    if (!set_params || !recover || !real_pcm_close || !real_writei) return NULL;
+
+    snd_pcm_t *pcm = NULL;
+    unsigned int rate = 0;
+    for (;;) {
+        sem_wait(&g_cue.wake);
+        unsigned int want = atomic_load(&g_cue.rate);
+        if (pcm && want != rate) { real_pcm_close(pcm); pcm = NULL; }
+        if (!pcm) {
+            if (real_pcm_open(&pcm, cue_pcm_name(), ALSASHIM_STREAM_PLAYBACK, 0) < 0 ||
+                set_params(pcm, ALSASHIM_FORMAT_S32_LE, ALSASHIM_ACCESS_RW_INTERLEAVED,
+                           2, want, 1, CUE_LATENCY_US) < 0) {
+                fprintf(stderr, "[alsashim] cannot open \"%s\" for the second output\n",
+                        cue_pcm_name());
+                if (pcm) real_pcm_close(pcm);
+                pcm = NULL;
+                /* Not worth retrying at audio rate; a replugged card is picked
+                 * up within a few seconds. */
+                atomic_store(&g_cue.r, atomic_load(&g_cue.w));
+                struct timespec ts = {3, 0};
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            rate = want;
+            atomic_store(&g_cue.r, atomic_load(&g_cue.w));
+            if (debug_on())
+                fprintf(stderr, "[alsashim] second output on \"%s\" at %uHz\n",
+                        cue_pcm_name(), rate);
+        }
+
+        unsigned long w = atomic_load(&g_cue.w), r = atomic_load(&g_cue.r);
+        if (w - r > CUE_RING_HIGH) {
+            if (debug_on())
+                fprintf(stderr, "[alsashim] second output %lu frames behind, dropping\n",
+                        w - r);
+            r = w - CUE_RING_KEEP;
+        }
+        while (r != w) {
+            unsigned long at = r % CUE_RING, n = w - r;
+            if (n > CUE_RING - at) n = CUE_RING - at;
+            long done = real_writei(pcm, g_cue.ring[at], n);
+            if (done < 0 && recover(pcm, (int)done, 1) < 0) {
+                real_pcm_close(pcm);
+                pcm = NULL;
+                break;
+            }
+            if (done > 0) r += (unsigned long)done;
+        }
+        atomic_store(&g_cue.r, r);
+    }
+    return NULL;
+}
+
+static void cue_start(void) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_cue.started, &expected, 1)) return;
+    pthread_t t;
+    sem_init(&g_cue.wake, 0, 0);
+    if (pthread_create(&t, NULL, cue_worker, NULL) == 0) pthread_detach(t);
+}
+
+/* Peak level per channel since the last report, for ALSASHIM_METER. */
+static void meter(const void *buf, int format, unsigned int channels, long frames) {
+    static int32_t peak[64];
+    static unsigned long seen;
+    static unsigned int rate_seen;
+    if (channels > 64) channels = 64;
+    for (long f = 0; f < frames; f++)
+        for (unsigned int c = 0; c < channels; c++) {
+            int32_t v = sample_at(buf, format, (unsigned long)f * channels + c);
+            if (v < 0) v = v == INT32_MIN ? INT32_MAX : -v;
+            if (v > peak[c]) peak[c] = v;
+        }
+    seen += (unsigned long)frames;
+    rate_seen = atomic_load(&g_cue.rate);
+    if (seen < 3UL * (rate_seen ? rate_seen : 44100)) return;
+    char line[64 * 6 + 1];
+    int at = 0;
+    for (unsigned int c = 0; c < channels; c++)
+        at += snprintf(line + at, sizeof(line) - (size_t)at, " %d:%d", c + 1,
+                       peak[c] >> 24);
+    fprintf(stderr, "[alsashim] peak per channel, of 127:%s\n", line);
+    memset(peak, 0, sizeof(peak));
+    seen = 0;
+}
+
+/* The only call Engine writes audio with. */
+long snd_pcm_writei(snd_pcm_t *pcm, const void *buf, snd_pcm_uframes_t frames) {
+    RESOLVE(real_writei, "snd_pcm_writei");
+    if (!real_writei) return -ENOSYS;
+    long done = real_writei(pcm, buf, frames);
+    if (done <= 0 || pcm != atomic_load(&g_main_pcm)) return done;
+
+    int format = atomic_load(&g_fmt_format);
+    unsigned int channels = atomic_load(&g_fmt_channels);
+    if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
+        format != ALSASHIM_FORMAT_FLOAT_LE)
+        return done;
+    if (meter_on()) meter(buf, format, channels, done);
+
+    unsigned int first = cue_channel();
+    if (!cue_pcm_name() || first + 2 > channels) return done;
+    cue_start();
+    unsigned long w = atomic_load(&g_cue.w);
+    /* A full ring means nothing is draining it; the audio is simply not kept. */
+    if (w - atomic_load(&g_cue.r) + (unsigned long)done > CUE_RING) return done;
+    for (long f = 0; f < done; f++) {
+        unsigned long i = (unsigned long)f * channels + first;
+        int32_t *out = g_cue.ring[(w + (unsigned long)f) % CUE_RING];
+        out[0] = sample_at(buf, format, i);
+        out[1] = sample_at(buf, format, i + 1);
+    }
+    atomic_store(&g_cue.w, w + (unsigned long)done);
+    sem_post(&g_cue.wake);
+    return done;
+}
+
+int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
+    typedef int (*get_format_t)(const snd_pcm_hw_params_t *, int *);
+    typedef int (*get_rate_t)(const snd_pcm_hw_params_t *, unsigned int *, int *);
+    static hw_any_t real_hw_params;
+    static hw_get_uint_t get_channels;
+    static get_format_t get_format;
+    static get_rate_t get_rate;
+    RESOLVE(real_hw_params, "snd_pcm_hw_params");
+    RESOLVE(get_channels, "snd_pcm_hw_params_get_channels");
+    RESOLVE(get_format, "snd_pcm_hw_params_get_format");
+    RESOLVE(get_rate, "snd_pcm_hw_params_get_rate");
+    if (!real_hw_params) return -ENOSYS;
+
+    int ret = real_hw_params(pcm, params);
+    if (ret < 0 || pcm != atomic_load(&g_main_pcm) || !get_channels || !get_format ||
+        !get_rate)
+        return ret;
+    unsigned int channels = 0, rate = 0;
+    int format = -1;
+    if (get_channels(params, &channels) == 0 && get_format(params, &format) == 0 &&
+        get_rate(params, &rate, NULL) == 0) {
+        atomic_store(&g_fmt_channels, channels);
+        atomic_store(&g_fmt_format, format);
+        atomic_store(&g_cue.rate, rate);
+        if (debug_on())
+            fprintf(stderr, "[alsashim] Engine writes %u channels, format %d, %uHz\n",
+                    channels, format, rate);
+    }
+    return ret;
 }
 
 /* --- PCM ring depth --------------------------------------------------- */

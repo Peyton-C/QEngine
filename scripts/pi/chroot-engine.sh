@@ -27,6 +27,12 @@
 #                 Default: the first USB audio card. The monitor's speakers
 #                 are vc4hdmi0 (HDMI-A-1) or vc4hdmi1 (HDMI-A-2).
 #                 "Loopback" loads and uses ALSA's loopback card.
+#   CUE_CARD      a second sound card, by ALSA id, to play one more of Engine's
+#                 outputs on -- headphones on a USB card while the master goes
+#                 to HDMI, say. Default: none.
+#   CUE_CHANNEL   which output that is: the first channel of its pair, counting
+#                 from 1. Default 3. ALSASHIM_METER=1 logs every channel's level
+#                 to engine.log, which shows what a product puts where.
 #   MIDI_FORWARD  a real USB controller to drive Engine with, as a substring of
 #                 its ALSA sequencer name. Needs a mapping in the controllermap
 #                 manifest for it and for this product. Default: none.
@@ -117,6 +123,12 @@ if [ -z "$CARD_INDEX" ]; then
     echo "         Available:" >&2; grep '^ *[0-9]' /proc/asound/cards >&2
     CARD_INDEX=0
 fi
+CUE_INDEX=""
+if [ -n "${CUE_CARD:-}" ]; then
+    CUE_INDEX="$(grep -E "^ *[0-9]+ \[$CUE_CARD *\]:" /proc/asound/cards | awk '{print $1; exit}')"
+    [ -n "$CUE_INDEX" ] ||
+        echo "WARNING: no sound card with id '$CUE_CARD'; no second output." >&2
+fi
 
 ### environment ###############################################################
 SHIMS=/root/cursorshim.so:/root/dtshim.so:/root/alsashim.so:/root/teeshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
@@ -132,7 +144,9 @@ ENVV=("${BASE[@]}"
       "ALSASHIM_NO_CAPTURE=${ALSASHIM_NO_CAPTURE-1}"
       "ALSASHIM_BUFFER_SCALE=${ALSASHIM_BUFFER_SCALE:-1}")
 [ -n "${QT_LOGGING_RULES:-}" ] && ENVV+=("QT_LOGGING_RULES=$QT_LOGGING_RULES")
+[ -n "$CUE_INDEX" ] && ENVV+=("ALSASHIM_CUE_PCM=plughw:$CUE_INDEX" "ALSASHIM_CUE_CHANNEL=${CUE_CHANNEL:-3}")
 [ -n "${ALSASHIM_DEBUG:-}" ] && ENVV+=("ALSASHIM_DEBUG=1")
+[ -n "${ALSASHIM_METER:-}" ] && ENVV+=("ALSASHIM_METER=1")
 [ -n "${ALSASHIM_MAX_CHANNELS:-}" ] && ENVV+=("ALSASHIM_MAX_CHANNELS=$ALSASHIM_MAX_CHANNELS")
 [ -n "${CURSORSHIM_DEBUG:-}" ] && ENVV+=("CURSORSHIM_DEBUG=1")
 
@@ -188,4 +202,4 @@ sleep 2
 setsid chroot "$R" /usr/bin/env -i "${ENVV[@]}" /usr/Engine/Scripts/runengine \
     > "$R/run/engine.log" 2>&1 < /dev/null &
 
-echo "started $PRODUCT at $MODE on $CONNECTOR, audio on ${AUDIO_CARD:-<none>}${MIDI_FORWARD:+, forwarding $MIDI_FORWARD}"
+echo "started $PRODUCT at $MODE on $CONNECTOR, audio on ${AUDIO_CARD:-<none>}${CUE_INDEX:+ and $CUE_CARD}${MIDI_FORWARD:+, forwarding $MIDI_FORWARD}"

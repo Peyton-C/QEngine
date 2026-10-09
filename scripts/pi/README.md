@@ -51,6 +51,15 @@ scripts/pi/listen.sh <user>@<pi>                     # where you want to hear it
 
 `listen.sh` needs `sox` on the listening machine. Expect a few hundred milliseconds of delay.
 
+### Headphones on a second card
+Engine plays through one sound card, and a stereo card only gets the master. `CUE_CARD` names a second card for one more of Engine's outputs, so the master can go to the monitor and the headphone cue to a USB device:
+
+```sh
+sudo AUDIO_CARD=vc4hdmi1 CUE_CARD=H630 qengine/chroot-engine.sh
+```
+
+On a Prime 4 G2 the headphones are channels 3-4, which is the default; the master is 1-2 and is repeated on 5-6 and 7-8. For another product, start once with `ALSASHIM_METER=1` and read the per-channel levels in `engine.log`, then set `CUE_CHANNEL`. The second card runs 30-80ms behind the first and, having its own clock, may glitch briefly every several minutes; the main output is not affected.
+
 ## Settings
 
 Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the common ones and [chroot-engine.sh](chroot-engine.sh) documents all of them. The ones you are most likely to need:
@@ -58,6 +67,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 | Variable | Default | |
 | --- | --- | --- |
 | `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` (`vc4hdmi1` is HDMI-A-2), or `Loopback` |
+| `CUE_CARD` | none | a second card for the headphone output; `CUE_CHANNEL` (default 3) picks the pair |
 | `SCREEN` | `1280 800` | size to run at; the monitor must offer it |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |
 | `MIDI_FORWARD` | none | a real controller, by sequencer name |

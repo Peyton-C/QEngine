@@ -68,7 +68,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 | --- | --- | --- |
 | `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` (`vc4hdmi1` is HDMI-A-2), or `Loopback` |
 | `CUE_CARD` | none | a second card for the headphone output; `CUE_CHANNEL` (default 3) picks the pair |
-| `SCREEN` | `1280 800` | size to run at; the monitor must offer it |
+| `SCREEN` | `1280 800` | size to run at; the monitor must offer it. Other heights need `QT_SCALE_FACTOR`, see Known limits |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |
 | `MIDI_FORWARD` | none | a real controller, by sequencer name |
 | `MIDI_FORWARD_ARGS` | none | `midisurface` options that controller's mapping needs |
@@ -98,7 +98,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
   skips non-media partitions, as it does on real hardware.
 
 ## Known limits
-- Engine hung at start-up at 1920x1080 and 2560x1440 during first-boot setup; 1280x800 is what has been used since. Not retested after setup.
+- Engine's interface is laid out for an 800-pixel-high screen and hangs at start-up at any other height (1920x1080, 2560x1440): a height binding in its QML never settles, and the main thread spins in the layout pass. To run at a larger size, have Qt scale the interface so that it still sees 800: `SCREEN="1920 1080"` with `QT_SCALE_FACTOR=1.35` (1080 / 800). 2560x1440 with 1.8 works the same way.
 - Bluetooth and network management are not running, and Engine logs warnings about both.
 - The stock launch scripts write to Rockchip-specific sysfs paths and fail harmlessly, as they do under QEMU.
 - SoundSwitch did not work when tried in a chroot on a VM, not looked into yet.

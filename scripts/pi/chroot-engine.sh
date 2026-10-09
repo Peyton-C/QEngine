@@ -19,7 +19,9 @@
 # Environment (or $QENGINE_DIR/pi.env, which both scripts read):
 #   QENGINE_DIR, ENGINE_ROOT   as in chroot-up.sh
 #   SCREEN        "W H" to run at. Default "1280 800", the size the UI is laid
-#                 out for; Engine has been seen to hang at start-up above it.
+#                 out for. Engine hangs at start-up at any other height unless
+#                 QT_SCALE_FACTOR is set to H / 800, so that it still lays out
+#                 800 high: SCREEN="1920 1080" QT_SCALE_FACTOR=1.35.
 #   CONNECTOR     DRM connector to use, e.g. HDMI-A-2. Default: the first
 #                 connected HDMI port.
 #   AUDIO_CARD    sound card by ALSA id (the bracketed name in
@@ -38,7 +40,7 @@
 #                 manifest for it and for this product. Default: none.
 #   MIDI_FORWARD_ARGS  extra midisurface options that mapping calls for; its
 #                 header lists them.
-#   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, ALSASHIM_*   passed through.
+#   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, QT_SCALE_FACTOR, ALSASHIM_*   passed through.
 set -uo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
@@ -144,6 +146,7 @@ ENVV=("${BASE[@]}"
       "ALSASHIM_NO_CAPTURE=${ALSASHIM_NO_CAPTURE-1}"
       "ALSASHIM_BUFFER_SCALE=${ALSASHIM_BUFFER_SCALE:-1}")
 [ -n "${QT_LOGGING_RULES:-}" ] && ENVV+=("QT_LOGGING_RULES=$QT_LOGGING_RULES")
+[ -n "${QT_SCALE_FACTOR:-}" ] && ENVV+=("QT_SCALE_FACTOR=$QT_SCALE_FACTOR")
 [ -n "$CUE_INDEX" ] && ENVV+=("ALSASHIM_CUE_PCM=plughw:$CUE_INDEX" "ALSASHIM_CUE_CHANNEL=${CUE_CHANNEL:-3}")
 [ -n "${ALSASHIM_DEBUG:-}" ] && ENVV+=("ALSASHIM_DEBUG=1")
 [ -n "${ALSASHIM_METER:-}" ] && ENVV+=("ALSASHIM_METER=1")

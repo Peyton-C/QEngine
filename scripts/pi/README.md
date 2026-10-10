@@ -49,6 +49,16 @@ sudo systemctl daemon-reload && sudo systemctl enable qengine.service
 
 [qengine.service](qengine.service) runs `chroot-up.sh` and `chroot-engine.sh` at boot with the settings in `pi.env`.
 
+### Stopping
+```sh
+sudo qengine/chroot-down.sh           # or: sudo systemctl stop qengine
+```
+The Pi's pwoer button works similarly to the power button on real controllers, with the exception being that a double press will shut the pi without confirmation in Engine still. [powerkey.py](powerkey.py) is what connects the native behavior of Engine and the Pi together, and it only runs alongside Engine: with Engine stopped, a single press powers the Pi off as usual. Its log is `/srv/engine/run/powerkey.log`.
+
+`chroot-down.sh` has Engine quit, stops what was started for it, unmounts any USB drives and then the chroot itself. The service runs it when it is stopped, so shutting the Pi down or rebooting it does the same; Engine takes about seven seconds to quit. Pulling the power does none of this.
+
+Restart Engine with `sudo systemctl restart qengine` when it was started by the service. `chroot-engine.sh` run by hand works too, but the Engine it starts belongs to your login session and not to the service, and at shutdown is stopped along with that session.
+
 ### Listening from another machine
 With no speakers on the Pi, Engine can play into ALSA's loopback card and another machine can pull the audio over SSH:
 
@@ -101,6 +111,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 - **Services.** There is no systemd in the chroot, so the two Engine needs are
   started by hand: the rootfs's own D-Bus daemon, and `edisksd`, which mounts
   removable drives and tells Engine about them.
+- **Quitting.** Nothing on the real system ever stops Engine from outside, andb the signal a service manager stops it with makes Qt exit on the spot. `quitshim` turns that signal into Engine's own clean exit, and stands in for the firmware's splash service, which Engine aborts without on its way out.
 - **udev.** The chroot uses the host's udev database. `chroot-up.sh` installs two
   rules on the host so that `edisksd` leaves the Pi's own SD card alone and
   skips non-media partitions, as it does on real hardware.

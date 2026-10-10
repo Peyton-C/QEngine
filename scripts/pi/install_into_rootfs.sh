@@ -36,7 +36,7 @@ for so in "$STAGE"/libgallium-*.so; do
     echo "installed $name"
 done
 
-for f in dtshim.so alsashim.so teeshim.so cursorshim.so drmatomic.so touchbridge midisurface; do
+for f in dtshim.so alsashim.so teeshim.so cursorshim.so quitshim.so drmatomic.so touchbridge midisurface; do
     [ -e "$STAGE/$f" ] || continue
     install -o 0 -g 0 -m 755 "$STAGE/$f" "$R/root/$f"
     echo "installed $f"

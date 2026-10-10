@@ -4,7 +4,8 @@
 # touchbridge and midisurface first, then the stock runengine script.
 #
 # Usage: sudo chroot-engine.sh
-#   Safe to re-run; it stops the previous Engine first. Logs land in
+#   Safe to re-run; it stops the previous Engine first (chroot-down.sh stops
+#   it and everything else, for good). Logs land in
 #   $ENGINE_ROOT/run/*.log. Drive the virtual control surface with
 #     echo 'play left' | sudo tee $ENGINE_ROOT/run/midisurface.fifo
 #
@@ -146,7 +147,7 @@ if [ -n "${CUE_CARD:-}" ]; then
 fi
 
 ### environment ###############################################################
-SHIMS=/root/cursorshim.so:/root/dtshim.so:/root/alsashim.so:/root/teeshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
+SHIMS=/root/cursorshim.so:/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
 ENVV=("${BASE[@]}"
       LD_PRELOAD=$SHIMS
@@ -169,8 +170,13 @@ ENVV=("${BASE[@]}"
 ### launch ####################################################################
 # Anchored patterns: an unanchored one also matches the shell that invoked us,
 # which over ssh is the session itself.
+# powerkey.py first: it acts on how Engine exits.
+pkill -f '/powerkey\.py '
 pkill -f '^/bin/sh /usr/Engine/Scripts/'
-pkill -f '^/usr/Engine/Engine'; sleep 2; pkill -9 -f '^/usr/Engine/Engine'
+# With quitshim preloaded SIGTERM asks Engine to quit, which takes it a moment.
+pkill -f '^/usr/Engine/Engine'
+for _ in $(seq 1 200); do pgrep -f '^/usr/Engine/Engine' >/dev/null || break; sleep 0.1; done
+pkill -9 -f '^/usr/Engine/Engine'
 pkill -f '^/root/touchbridge'; pkill -f '^/root/midisurface'
 sleep 1
 
@@ -220,5 +226,15 @@ setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /bin/sh -c \
 sleep 2
 setsid chroot "$R" /usr/bin/env -i "${ENVV[@]}" /usr/Engine/Scripts/runengine \
     > "$R/run/engine.log" 2>&1 < /dev/null &
+
+# The power button, and a Yes to Engine's own "Turn Off" prompt: see powerkey.py.
+# On the host, since powering it off is not something the chroot can do. The
+# lock keeps the login manager from powering off on the first press, and is
+# held for as long as powerkey.py runs.
+if [ -x "$QENGINE_DIR/powerkey.py" ]; then
+    setsid systemd-inhibit --what=handle-power-key --mode=block --who=qengine \
+        --why="Engine asks before turning off" "$QENGINE_DIR/powerkey.py" "$R" \
+        > "$R/run/powerkey.log" 2>&1 < /dev/null &
+fi
 
 echo "started $PRODUCT at $MODE on $CONNECTOR, audio on ${AUDIO_CARD:-<none>}${CUE_INDEX:+ and $CUE_CARD}${MIDI_FORWARD:+, forwarding $MIDI_FORWARD}"

@@ -18,10 +18,11 @@
 #                    rootfs by install_into_rootfs.sh:
 #     libgallium     Mesa with v3d and vc4 added -- the guest's has only virgl
 #     shims          built from the working tree, so they carry whatever the
-#                    rootfs builder does not install yet (cursorshim) and any
+#                    rootfs builder does not install (cursorshim, quitshim) and any
 #                    fix newer than the instance
 #     controllermap  the script, manifest and mappings
-#   chroot-up.sh, chroot-engine.sh, install_into_rootfs.sh
+#   chroot-up.sh, chroot-engine.sh, chroot-down.sh, powerkey.py,
+#   install_into_rootfs.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -81,6 +82,7 @@ docker run --rm --platform linux/arm64 \
         gcc -shared -fPIC -O2 -Wall -o /out/dtshim.so /shims/dtshim/dtshim.c -DSOC_RK3588 -ldl -lpthread
         gcc -shared -fPIC -O2 -Wall -o /out/alsashim.so /shims/alsashim/alsashim.c -ldl
         gcc -shared -fPIC -O2 -Wall -o /out/teeshim.so /shims/teeshim/teeshim.c
+        gcc -shared -fPIC -O2 -Wall -o /out/quitshim.so /shims/quitshim/quitshim.c -ldl -lpthread
         gcc -shared -fPIC -O2 -Wall -I/usr/include/libdrm \
             -o /out/cursorshim.so /shims/cursorshim/cursorshim.c -ldl -lpthread
         gcc -shared -fPIC -O2 -I/usr/include/libdrm \
@@ -88,7 +90,7 @@ docker run --rm --platform linux/arm64 \
         gcc -O2 -Wall -o /out/touchbridge /shims/touchbridge/touchbridge.c
         gcc -O2 -Wall -o /out/midisurface /shims/midisurface/midisurface.c -lasound
     ' 2>&1 | grep -v "Wnonnull-compare\|^ *[0-9]* |\|^ *|\|In function" || true
-for f in dtshim.so alsashim.so teeshim.so cursorshim.so drmatomic.so touchbridge midisurface; do
+for f in dtshim.so alsashim.so teeshim.so cursorshim.so quitshim.so drmatomic.so touchbridge midisurface; do
     [ -s "$OUT/stage/$f" ] || { echo "ERROR: $f was not built." >&2; exit 1; }
 done
 
@@ -96,8 +98,9 @@ echo "--- staging controllermap and the Pi scripts ---"
 rm -rf "$OUT/stage/controllermap"
 cp -R "$REPO_ROOT/shims/rk3588/controllermap" "$OUT/stage/controllermap"
 rm -f "$OUT/stage/controllermap/controllermap.service"
-cp "$SCRIPT_DIR/chroot-up.sh" "$SCRIPT_DIR/chroot-engine.sh" \
-   "$SCRIPT_DIR/install_into_rootfs.sh" "$SCRIPT_DIR/qengine.service" "$OUT/"
+cp "$SCRIPT_DIR/chroot-up.sh" "$SCRIPT_DIR/chroot-engine.sh" "$SCRIPT_DIR/chroot-down.sh" \
+   "$SCRIPT_DIR/powerkey.py" "$SCRIPT_DIR/install_into_rootfs.sh" \
+   "$SCRIPT_DIR/qengine.service" "$OUT/"
 
 echo "--- copying the rootfs image ---"
 # The image is mostly holes. Clone it where the filesystem can (macOS/APFS),

@@ -16,6 +16,9 @@ Fakes various parts of the device tree expected by Engine and other InMusic OSes
 ## midisurface
 An emulated midi surface to control Engine.
 
+## quitshim
+Makes SIGTERM quit Engine cleanly, where Qt would exit on the spot. Used on the Pi, where Engine is stopped by a service manager.
+
 ## teeshim
 Bypass the TEE check added in Engine 5.1.0+.
 

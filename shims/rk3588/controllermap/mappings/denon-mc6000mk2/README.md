@@ -42,7 +42,7 @@ throughout the file — those are Engine identities, not MC6000MK2 labels.
 | TRACK SELECT knob + push | browse / load (shift+push unloads) |
 | LIST / AREA / PANEL | Browse / Source / Menu views |
 | CH3, CH4 strips: trim, 3-band EQ, fader, CUE | mixer channels 1 and 2 |
-| FILTER ON (L/R) + FILTER knob | sweep FX per channel |
+| FILTER ON (L/R) + FILTER knob | sweep FX per channel (RMZ2; on JP24 see [below](#stem-levels-on-the-eq-knobs-jp24)) |
 | CROSS FADER, X FADER CONTOUR | crossfader and contour |
 | MASTER, BOOTH, PAN, PHONES | master, booth, cue mix, cue gain |
 | MIC ON 1 / 2, MIC EQ HIGH/LOW | mic on, mic EQ |
@@ -57,6 +57,31 @@ and the hot cue buttons are not consecutive (`0x17 0x18 0x19 0x20`). Driving
 the pads from SAMP. 1–4 and the mode from HOT CUE 1–4 is the only arrangement
 that reaches every pad mode. Hot cues are still available — as pads, in the
 hot cue pad mode.
+
+## Stem levels on the EQ knobs (JP24)
+
+The table above is the RMZ2 mapping. The Prime 4 G2 mapping,
+`JP24_Controller_Assignments.qml`, documents itself in its header, and differs
+in one place worth knowing before reaching for the knobs.
+
+On a Prime 4 G2, SHIFT + a channel's CUE turns that strip's HIGH / MID / LOW
+knobs into stem levels. Here **FILTER ON** does it instead — the left button
+for mixer channel 1 (the CH3 strip), the right for channel 2 (CH4). The G2 has
+no sweep FX on/off, so the button was free; the FILTER knob still sweeps.
+
+- Press FILTER ON with a stemmed track on that deck: the lamp lights and the
+  three EQ knobs set stem levels. Press again for EQ.
+- The knobs use soft takeover. After switching, a knob does nothing until it is
+  swept through the value Engine currently holds.
+- The lamp follows the strip mode and nothing else. Engine's own `StemsLevel`
+  module would also dim it for "stems available" and blink it during takeover,
+  but it never lit the lamp at all on this setup, so the mapping writes the
+  toggle out by hand.
+
+The lamps are `0x63` (left) and `0x64` (right) in `JP24_Controller_Leds.txt`,
+driven like the CUE MIXER lamps. They were found on a real unit by lighting
+lamps one at a time; the Mixxx MC6000MK2 script lists `0x65` and `0x66`, which
+light neither.
 
 ## Not mapped
 

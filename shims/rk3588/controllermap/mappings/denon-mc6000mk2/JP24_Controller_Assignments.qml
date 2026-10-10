@@ -40,7 +40,7 @@
 //   Deck layers -- DECK CHG. changes the MIDI channel the deck section sends on,
 //       which Engine's DeckSelect cannot follow. Stay on decks 3 and 4.
 //   Microphones -- the G2 mixes them in software and the MC6000MK2 in hardware.
-//   Stems, playlist banks, media slots -- no matching controls.
+//   Stem overrides, playlist banks, media slots -- no matching controls.
 //   VU meters -- Engine emits these in the G2's protocol, and --led-map only
 //       translates button lamps.
 
@@ -310,6 +310,7 @@ MidiAssignment {
 				bassCC: 0x0F   // EQ LOW VR (CH3)
 				faderCC: 0x10  // FADER (CH3)
 				filterCC: 0x66 // FILTER (L) KNOB
+				filterNote: 0x16 // FILTER ON (L)
 			}
 			ListElement {
 				mixerChannelName: '2'
@@ -321,6 +322,7 @@ MidiAssignment {
 				bassCC: 0x14   // EQ LOW VR (CH4)
 				faderCC: 0x15  // FADER (CH4)
 				filterCC: 0x67 // FILTER (R) KNOB
+				filterNote: 0x1E // FILTER ON (R)
 			}
 		}
 
@@ -344,6 +346,38 @@ MidiAssignment {
 
 			SweepFxKnob {
 				cc: model.filterCC
+			}
+
+			// FILTER ON switches the strip's EQ knobs between EQ and stem
+			// levels, as SHIFT + CUE does on the G2. The G2 has no sweep FX
+			// on/off for the button to drive instead. Notes are from the
+			// command list and agree with Mixxx's mapping; not captured.
+			//
+			// This is the vendor StemsLevel module written out, for its lamp:
+			// StemsLevel lights only while it believes a stemmed track is on
+			// the deck, and here it never does -- the switch worked and Engine
+			// sent no note for it. The lamp below follows the strip mode alone.
+			ValueNoteAssignment {
+				objectName: 'Stems Level Mixer Channel %1'.arg(mixerChannelConfig.name)
+				channel: mixerChannelConfig.midiChannel
+				note: model.filterNote
+				enabled: !mixerChannelConfig.inComputerMode
+				output: ActionOutput {
+					target: PropertyTarget {
+						path: mixerChannelConfig.channelStripModePath
+					}
+				}
+			}
+
+			OutputAssignment {
+				objectName: 'Stems Level LED Mixer Channel %1'.arg(mixerChannelConfig.name)
+				properties: { 'ledValue': '' }
+				readonly property int ledNote: model.filterNote
+				readonly property int ledValue: mixerChannelConfig.inStemsLevelMode ? 127 : 0
+				function send() {
+					device.sendSimpleColor(mixerChannelConfig.midiChannel, ledNote, ledValue)
+				}
+				Component.onCompleted: send()
 			}
 		}
 	}

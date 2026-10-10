@@ -65,3 +65,11 @@ send 3 0x4A 0x06
 # Mixer: CUE MIXER CH3 and CH4, Engine's channels 1 and 2.
 0:0x05  0 0x50 0x51 0x51 0x52   # CUE MIXER CH3
 0:0x07  0 0x50 0x51 0x57 0x58   # CUE MIXER CH4
+
+# FILTER ON, the stem-levels switch. Lit while the strip's EQ knobs are stem
+# levels. Driven as the CUE MIXER lamps are. The Mixxx MK2 script has these as
+# 0x65 (left) and 0x66 (right), which lit neither on a real unit; the numbers
+# here were found by lighting lamps one at a time and watching. 0x62, beside
+# them, is the VIDEO lamp.
+0:0x16  0 0x50 0x51 0x63        # FILTER ON (L) (seen)
+0:0x1E  0 0x50 0x51 0x64        # FILTER ON (R) (seen)

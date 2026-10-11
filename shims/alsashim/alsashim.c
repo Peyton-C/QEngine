@@ -175,7 +175,7 @@
  *                   stop_threshold to the ring boundary, so an underrun leaves
  *                   the stream running instead of stopping it. Engine never
  *                   recovers from an XRUN -- every later write returns -EPIPE
- *                   and it calls no snd_pcm_prepare, so under emulation one
+ *                   and it calls no snd_pcm_prepare -- so under emulation one
  *                   stall silences audio permanently. Off by default; it turns
  *                   a permanent silence into an audible gap, which is only the
  *                   better trade where stalls are expected.

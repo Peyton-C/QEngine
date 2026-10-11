@@ -175,19 +175,43 @@
  *                   stop_threshold to the ring boundary, so an underrun leaves
  *                   the stream running instead of stopping it. Engine never
  *                   recovers from an XRUN -- every later write returns -EPIPE
- *                   and it calls no snd_pcm_prepare -- so under emulation one
+ *                   and it calls no snd_pcm_prepare, so under emulation one
  *                   stall silences audio permanently. Off by default; it turns
  *                   a permanent silence into an audible gap, which is only the
  *                   better trade where stalls are expected.
  *   ALSASHIM_MIDI_CARD  card number to report for card-less MIDI sequencer
  *                   clients (default 0); -1 disables this substitution
  *   ALSASHIM_DEBUG  non-empty to log each substitution to stderr
+ *
+ * RK3288 output layout. The vendor codec is S32_LE / 4 channels / 44100, but
+ * what the two stereo pairs *mean* differs by product:
+ *   Prime GO   ch 0,1 = cue (headphone), ch 2,3 = master
+ *   SC6000     ch 0,1 = Layer A, ch 2,3 = Layer B -- two independent RCA pairs,
+ *              because the deck can play two layers at once
+ * A card that cannot carry four channels (QEMU's usb-audio, or virtio-sound
+ * with one stream) still gets Engine's native layout, bridged in userspace:
+ *   ALSASHIM_CHANNELS         channels advertised to Engine (default 4)
+ *   ALSASHIM_HW_CHANNELS      channels on the real device (default 2)
+ *   ALSASHIM_MASTER_CHANNELS  source indices of the master pair (default 2,3);
+ *                             this is what Prime GO needs on a stereo card
+ *   ALSASHIM_LAYER_MIX        non-empty sums both pairs (ch 0,1 + 2,3), for
+ *                             SC6000, where either layer may carry the track
+ *   ALSASHIM_ALLOW_32BIT      leave the real format mask alone (Engine uses S32)
+ *   ALSASHIM_RATE             pin the advertised rate (44100); without it Engine
+ *                             can take its 96 kHz upsampling path
+ *   ALSASHIM_ENUM_CAPTURE     present the card as duplex
+ *   ALSASHIM_FAKE_CAPTURE     open capture on the "null" PCM (reads silence)
+ *   ALSASHIM_PLAYBACK_DEV / ALSASHIM_CAPTURE_DEV  pick the card's PCM device
+ *                             per direction, for SoC cards that are not device 0
  */
 #define _GNU_SOURCE
+#include <time.h>
+#include <execinfo.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -196,6 +220,8 @@
  * against libasound: the real symbols are resolved out of the copy Engine
  * has already loaded). */
 typedef struct _snd_ctl_card_info snd_ctl_card_info_t;
+typedef struct _snd_ctl snd_ctl_t;
+typedef struct _snd_pcm_info snd_pcm_info_t;
 
 typedef struct _snd_pcm snd_pcm_t;
 typedef struct _snd_pcm_hw_params snd_pcm_hw_params_t;
@@ -209,8 +235,12 @@ typedef unsigned long snd_pcm_uframes_t;
 #define ALSASHIM_STREAM_PLAYBACK 0
 
 typedef const char *(*get_name_t)(const snd_ctl_card_info_t *);
+typedef const char *(*get_id_t)(const snd_ctl_card_info_t *);
 typedef int (*get_card_t)(const snd_ctl_card_info_t *);
 typedef int (*pcm_open_t)(snd_pcm_t **, const char *, int, int);
+typedef int (*ctl_pcm_info_t)(snd_ctl_t *, snd_pcm_info_t *);
+typedef unsigned int (*pcm_info_get_device_t)(const snd_pcm_info_t *);
+typedef ssize_t (*pcm_readi_t)(snd_pcm_t *, void *, snd_pcm_uframes_t);
 typedef int (*seq_get_card_t)(const snd_seq_client_info_t *);
 typedef int (*seq_get_client_t)(const snd_seq_client_info_t *);
 
@@ -229,8 +259,12 @@ typedef int (*sw_frames_t)(snd_pcm_t *, snd_pcm_sw_params_t *, snd_pcm_uframes_t
 typedef int (*sw_get_frames_t)(const snd_pcm_sw_params_t *, snd_pcm_uframes_t *);
 
 static get_name_t real_get_name = NULL;
+static get_id_t real_get_id = NULL;
 static get_card_t real_get_card = NULL;
 static pcm_open_t real_pcm_open = NULL;
+static ctl_pcm_info_t real_ctl_pcm_info = NULL;
+static pcm_info_get_device_t real_pcm_info_get_device = NULL;
+static pcm_readi_t real_pcm_readi = NULL;
 static seq_get_card_t real_seq_get_card = NULL;
 static seq_get_client_t real_seq_get_client = NULL;
 
@@ -265,6 +299,14 @@ static sw_get_frames_t real_get_boundary = NULL;
 static const char *spoof_name(void) {
     const char *v = getenv("ALSASHIM_AS");
     return (v && *v) ? v : "RMZ2";
+}
+
+/* The card *id* is a separate getter from the name. Denon's own build reports
+ * the same string for both, but some ALSA enumerators match the id, so spoof
+ * it too (ALSASHIM_ID overrides, else the same string as the name). */
+static const char *spoof_id(void) {
+    const char *v = getenv("ALSASHIM_ID");
+    return (v && *v) ? v : spoof_name();
 }
 
 /* Which card index to spoof, or -1 for all of them. Parsed per call rather
@@ -311,26 +353,183 @@ const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
     return as;
 }
 
+typedef const char *(*get_driver_t)(const snd_ctl_card_info_t *);
+static get_driver_t real_get_driver = NULL;
+
+/* ALSADeviceEnumerator also reads the card *driver* (snd_ctl_card_info_get_driver),
+ * which on this board is the ASoC driver "mt8183-sound". Spoof it too. */
+const char *snd_ctl_card_info_get_driver(const snd_ctl_card_info_t *obj) {
+    if (!real_get_driver)
+        real_get_driver = (get_driver_t)dlsym(RTLD_NEXT, "snd_ctl_card_info_get_driver");
+    if (!real_get_driver) return spoof_name();
+    const char *real = real_get_driver(obj);
+    if (debug_on())
+        fprintf(stderr, "[alsashim] get_driver \"%s\"\n", real ? real : "(null)");
+    const char *v = getenv("ALSASHIM_DRIVER");
+    return (v && *v) ? v : real;
+}
+
+const char *snd_ctl_card_info_get_id(const snd_ctl_card_info_t *obj) {
+    if (!real_get_id)
+        real_get_id = (get_id_t)dlsym(RTLD_NEXT, "snd_ctl_card_info_get_id");
+    if (!real_get_id) return spoof_id();
+
+    const char *real = real_get_id(obj);
+
+    int want = spoof_card();
+    if (want >= 0) {
+        if (!real_get_card)
+            real_get_card = (get_card_t)dlsym(RTLD_NEXT, "snd_ctl_card_info_get_card");
+        if (!real_get_card || real_get_card(obj) != want) return real;
+    }
+
+    const char *as = spoof_id();
+    if (debug_on())
+        fprintf(stderr, "[alsashim] reporting card id \"%s\" as \"%s\"\n",
+                real ? real : "(null)", as);
+    return as;
+}
+
 /* Rewrite "hw:..." -> "plughw:..." so ALSA's plug layer does format/rate/
  * channel conversion on Engine's behalf. Anything not starting with "hw:"
  * (including a name already routed through a plugin) is passed through
- * untouched. */
+ * untouched.
+ *
+ * Engine drives one card as a *combined* playback+capture device opened as
+ * "hw:N" (device 0). Real inmusic codecs expose both directions on device 0;
+ * the tablet's SoC card does not — playback is PCM device 0, capture device 3
+ * — so a bare "plughw:N" gives ENOENT on capture and EBUSY on the second
+ * playback open. Pick the device per direction (ALSASHIM_PLAYBACK_DEV /
+ * ALSASHIM_CAPTURE_DEV override the defaults). */
+static int stream_device(int stream) {
+    const char *v = getenv(stream == ALSASHIM_STREAM_PLAYBACK
+                           ? "ALSASHIM_PLAYBACK_DEV" : "ALSASHIM_CAPTURE_DEV");
+    if (v && *v) return atoi(v);
+    return stream == ALSASHIM_STREAM_PLAYBACK ? 0 : 3;
+}
+
+/* Engine drives one card as a *combined* playback+capture device. This board's
+ * capture PCM cannot be opened ("no backend DAIs enabled for Capture_1"), so
+ * with ALSASHIM_FAKE_CAPTURE the capture direction is opened as a second, real
+ * *playback* PCM (device ALSASHIM_FAKE_CAPTURE_DEV, default 1) and reads on it
+ * return silence. Engine only needs the handle to exist and configure. */
+#define ALSASHIM_MAX_FAKE_CAPTURE 8
+static snd_pcm_t *fake_capture[ALSASHIM_MAX_FAKE_CAPTURE];
+static int fake_capture_n = 0;
+
+static int is_fake_capture(snd_pcm_t *p) {
+    for (int i = 0; i < fake_capture_n; i++)
+        if (fake_capture[i] == p) return 1;
+    return 0;
+}
+
 int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
     if (!real_pcm_open)
         real_pcm_open = (pcm_open_t)dlsym(RTLD_NEXT, "snd_pcm_open");
     if (!real_pcm_open) return -1;
 
     if (name && strncmp(name, "hw:", 3) == 0 && !getenv("ALSASHIM_NOPLUG")) {
+        int card = 0, dev = -1;
+        if (sscanf(name, "hw:%d,%d", &card, &dev) < 1)
+            return real_pcm_open(pcmp, name, stream, mode);
+        int open_stream = stream;
+        const char *literal = NULL; /* PCM name used verbatim (fake capture) */
+        if (stream == 1 /* CAPTURE */ && getenv("ALSASHIM_FAKE_CAPTURE")) {
+            const char *cd = getenv("ALSASHIM_FAKE_CAPTURE_DEV");
+            if (!cd || !*cd) cd = "null";
+            if (cd[0] < '0' || cd[0] > '9') {
+                /* Non-numeric: a PCM name that really supports capture on this
+                 * board ("null" returns silence). Devices 1/2 exist but their
+                 * playback open fails with EINVAL, which is what made Engine
+                 * report "Could not open device hw:N ... Invalid argument". */
+                literal = cd;
+                open_stream = stream;
+            } else {
+                dev = atoi(cd);
+                open_stream = ALSASHIM_STREAM_PLAYBACK;
+            }
+        } else if (dev < 0) {
+            dev = stream_device(stream);
+        }
         char plugged[128];
-        int n = snprintf(plugged, sizeof(plugged), "plug%s", name);
+        int n = literal ? snprintf(plugged, sizeof(plugged), "%s", literal)
+                        : snprintf(plugged, sizeof(plugged), "plughw:%d,%d", card, dev);
         if (n > 0 && (size_t)n < sizeof(plugged)) {
             if (debug_on())
-                fprintf(stderr, "[alsashim] opening \"%s\" as \"%s\"\n",
-                        name, plugged);
-            return real_pcm_open(pcmp, plugged, stream, mode);
+                fprintf(stderr, "[alsashim] opening \"%s\" (stream %d) as \"%s\" (open stream %d)\n",
+                        name, stream, plugged, open_stream);
+            int rc = real_pcm_open(pcmp, plugged, open_stream, mode);
+            if (rc == 0 && *pcmp && stream == 1 &&
+                getenv("ALSASHIM_FAKE_CAPTURE") &&
+                fake_capture_n < ALSASHIM_MAX_FAKE_CAPTURE)
+                fake_capture[fake_capture_n++] = *pcmp;
+            return rc;
         }
     }
     return real_pcm_open(pcmp, name, stream, mode);
+}
+
+/* Report only PCM device 0 of each card. Engine otherwise opens the same
+ * "hw:N" once per real PCM device and the exclusive hw PCM returns EBUSY. */
+int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
+    if (!real_ctl_pcm_info)
+        real_ctl_pcm_info = (ctl_pcm_info_t)dlsym(RTLD_NEXT, "snd_ctl_pcm_info");
+    if (!real_pcm_info_get_device)
+        real_pcm_info_get_device = (pcm_info_get_device_t)dlsym(RTLD_NEXT, "snd_pcm_info_get_device");
+    if (!real_ctl_pcm_info) return -1;
+    if (real_pcm_info_get_device && real_pcm_info_get_device(info) != 0) return -2;
+    /* Only ever report the real answer. Faking success for the capture stream
+     * here makes Engine enumerate a bogus capture device for hw:0, which then
+     * wins the default-device pick (Playback: false) and leaves the combined
+     * device's playback slot null -- the "frozen Audio_probe" symptom. Capture
+     * is faked at snd_pcm_open() time instead, which Engine reaches anyway
+     * while opening the combined device. */
+    int rc = real_ctl_pcm_info(ctl, info);
+    if (rc < 0 && getenv("ALSASHIM_ENUM_CAPTURE")) {
+        /* ALSACombinedDevice wants a duplex card.  Refill the info from the
+         * playback direction (device 0 really has one) and then flip its
+         * stream field to capture, so the entry is fully formed rather than
+         * garbage.  Combined with ALSASHIM_FAKE_CAPTURE the open also works. */
+        typedef unsigned int (*info_get_stream_t)(const snd_pcm_info_t *);
+        typedef void (*info_set_stream_t)(snd_pcm_info_t *, int);
+        static info_get_stream_t real_info_get_stream = NULL;
+        static info_set_stream_t real_info_set_stream = NULL;
+        if (!real_info_get_stream)
+            real_info_get_stream = (info_get_stream_t)dlsym(RTLD_NEXT, "snd_pcm_info_get_stream");
+        if (!real_info_set_stream)
+            real_info_set_stream = (info_set_stream_t)dlsym(RTLD_NEXT, "snd_pcm_info_set_stream");
+        if (real_info_get_stream && real_info_set_stream &&
+            real_info_get_stream(info) == 1) {
+            real_info_set_stream(info, 0);
+            rc = real_ctl_pcm_info(ctl, info);
+            real_info_set_stream(info, 1);
+            if (rc == 0) return 0;
+        }
+    }
+    return rc;
+}
+
+/* Reads on the faked capture handle return silence, paced to the stream rate.
+ * The `null` PCM returns instantly, so without the sleep Engine's full-duplex
+ * thread spins at 100% CPU and starves the UI thread (observed as a frozen
+ * panel and load average > 10). */
+static unsigned int alsashim_target_rate(void);
+ssize_t snd_pcm_readi(snd_pcm_t *pcm, void *buf, snd_pcm_uframes_t count) {
+    if (is_fake_capture(pcm)) {
+        unsigned int rate = alsashim_target_rate();
+        if (rate && count) {
+            long long ns = (long long)count * 1000000000LL / (long long)rate;
+            struct timespec ts;
+            ts.tv_sec = (time_t)(ns / 1000000000LL);
+            ts.tv_nsec = (long)(ns % 1000000000LL);
+            nanosleep(&ts, NULL);
+        }
+        if (buf) memset(buf, 0, (size_t)count * 8);
+        return (ssize_t)count;
+    }
+    if (!real_pcm_readi)
+        real_pcm_readi = (pcm_readi_t)dlsym(RTLD_NEXT, "snd_pcm_readi");
+    return real_pcm_readi ? real_pcm_readi(pcm, buf, count) : -1;
 }
 
 /* --- PCM ring depth --------------------------------------------------- */
@@ -596,25 +795,13 @@ int snd_pcm_sw_params_set_stop_threshold(snd_pcm_t *pcm,
     RESOLVE(real_set_stop, "snd_pcm_sw_params_set_stop_threshold");
     if (!real_set_stop) return -ENOSYS;
 
-    /* Free-running playback: stop_threshold at the ring's boundary — a value the
-     * available count can never reach — is ALSA's own idiom for "never stop this
-     * stream on an underrun". The stream stays RUNNING through a gap instead of
-     * entering XRUN, which matters here because Engine does not recover from one:
-     * once the PCM is in XRUN state every further snd_pcm_writei returns -EPIPE
-     * until someone calls snd_pcm_prepare, and Engine calls neither. A single
-     * stall is therefore permanent, and shows up as an audio device that went
-     * silent and a frozen "Audio_probe" watchdog rather than as a dropout.
-     *
-     * On real hardware an XRUN essentially never happens, so that recovery path
-     * has simply never had to work. Under emulation it is the common case.
-     *
-     * The cost is that a stall becomes an audible gap with the playhead running
-     * on through it, where today it is silence forever; and the benefit is that
-     * surviving stalls no longer requires burying them under ring depth, which is
-     * what pushes Engine's own position display out of step with the sound.
-     *
-     * Checked before the depth-derived value below so this holds at any
-     * ALSASHIM_BUFFER_SCALE, scale 1 included. */
+    /* Free-running playback (from upstream's universal-audio branch):
+     * stop_threshold at the ring's boundary -- a value the available count can
+     * never reach -- is ALSA's own idiom for "never stop this stream on an
+     * underrun". Engine does not recover from an XRUN: every later
+     * snd_pcm_writei returns -EPIPE and it calls no snd_pcm_prepare, so under
+     * emulation one stall is silence forever. Checked before the depth-derived
+     * value below so this holds at any ALSASHIM_BUFFER_SCALE, scale 1 included. */
     if (free_run_on()) {
         RESOLVE(real_get_boundary, "snd_pcm_sw_params_get_boundary");
         snd_pcm_uframes_t boundary;
@@ -662,4 +849,593 @@ int snd_seq_client_info_get_card(const snd_seq_client_info_t *info) {
                 real_seq_get_client ? real_seq_get_client(info) : -1, as, card);
     }
     return as;
+}
+
+/* --- Format restriction ---------------------------------------------------
+ * Engine enumerates the formats a PCM advertises and selects the highest
+ * quality one.  Through ALSA's `plug` layer that is S32_LE, but plug's rate
+ * converter cannot produce 44100 Hz into a 32-bit format (snd_pcm_hw_params
+ * returns EINVAL), which is exactly what happens against QEMU's usb-audio
+ * card: natively 48000 Hz only.  Advertising S16_LE alone makes Engine pick
+ * S16_LE, and 44100 + S16_LE converts cleanly.
+ *
+ * ALSASHIM_ALLOW_32BIT  non-empty to leave the real format mask alone. */
+typedef int snd_pcm_format_t;
+typedef struct _snd_pcm_format_mask snd_pcm_format_mask_t;
+#define ALSASHIM_FMT_S16_LE 2 /* SND_PCM_FORMAT_S16_LE */
+typedef void (*fmt_mask_none_t)(snd_pcm_format_mask_t *);
+typedef int (*fmt_mask_set_t)(snd_pcm_format_mask_t *, snd_pcm_format_t);
+typedef void (*get_fmt_mask_t)(const snd_pcm_hw_params_t *,
+                               snd_pcm_format_mask_t *);
+typedef int (*test_fmt_t)(snd_pcm_t *, snd_pcm_hw_params_t *,
+                          snd_pcm_format_t);
+static get_fmt_mask_t real_get_fmt_mask = NULL;
+static test_fmt_t real_test_fmt = NULL;
+static fmt_mask_none_t real_mask_none = NULL;
+static fmt_mask_set_t real_mask_set = NULL;
+
+static int restrict_formats(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("ALSASHIM_ALLOW_32BIT");
+        v = (e && *e) ? 0 : 1;
+    }
+    return v;
+}
+
+/* Single rate advertised to Engine (real inmusic codecs are 44100-only).
+ * ALSASHIM_RATE overrides; "0" or empty disables the clamp. */
+static unsigned int alsashim_target_rate(void) {
+    const char *v = getenv("ALSASHIM_RATE");
+    if (!v || !*v) return 44100;
+    long n = strtol(v, NULL, 10);
+    return (n > 0) ? (unsigned int)n : 44100;
+}
+
+void snd_pcm_hw_params_get_format_mask(const snd_pcm_hw_params_t *params,
+                                       snd_pcm_format_mask_t *mask) {
+    if (!real_get_fmt_mask)
+        real_get_fmt_mask = (get_fmt_mask_t)dlsym(
+            RTLD_NEXT, "snd_pcm_hw_params_get_format_mask");
+    if (real_get_fmt_mask) real_get_fmt_mask(params, mask);
+    if (!restrict_formats() || !mask) return;
+    if (!real_mask_none)
+        real_mask_none =
+            (fmt_mask_none_t)dlsym(RTLD_NEXT, "snd_pcm_format_mask_none");
+    if (!real_mask_set)
+        real_mask_set =
+            (fmt_mask_set_t)dlsym(RTLD_NEXT, "snd_pcm_format_mask_set");
+    if (real_mask_none) real_mask_none(mask);
+    if (real_mask_set) real_mask_set(mask, ALSASHIM_FMT_S16_LE);
+}
+
+int snd_pcm_hw_params_test_format(snd_pcm_t *pcm, snd_pcm_hw_params_t *params,
+                                  snd_pcm_format_t format) {
+    if (!real_test_fmt)
+        real_test_fmt = (test_fmt_t)dlsym(RTLD_NEXT,
+                                          "snd_pcm_hw_params_test_format");
+    if (restrict_formats() && format != ALSASHIM_FMT_S16_LE) return -EINVAL;
+    return real_test_fmt ? real_test_fmt(pcm, params, format) : 0;
+}
+
+/* --- Debug: log the hw-params sequence Engine builds (ALSASHIM_DEBUG) ----- */
+typedef int (*hw_set_fmt_t)(snd_pcm_t *, snd_pcm_hw_params_t *,
+                            snd_pcm_format_t);
+typedef int (*hw_rate_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int, int);
+typedef int (*hw_rate_p_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int *,
+                           int *);
+typedef int (*hw_ch_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int);
+typedef int (*hw_persz_t)(snd_pcm_t *, snd_pcm_hw_params_t *, snd_pcm_uframes_t,
+                          int);
+typedef int (*hw_persz_p_t)(snd_pcm_t *, snd_pcm_hw_params_t *,
+                            snd_pcm_uframes_t *, int *);
+typedef int (*hw_apply_t)(snd_pcm_t *, snd_pcm_hw_params_t *);
+static hw_set_fmt_t real_set_fmt = NULL;
+static hw_rate_t real_set_rate = NULL;
+static hw_rate_p_t real_set_rate_near = NULL;
+static hw_ch_t real_set_channels = NULL;
+static hw_persz_t real_set_persz = NULL;
+static hw_persz_p_t real_set_persz_near = NULL;
+static hw_apply_t real_apply = NULL;
+
+int snd_pcm_hw_params_set_format(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                 snd_pcm_format_t f) {
+    RESOLVE(real_set_fmt, "snd_pcm_hw_params_set_format");
+    if (!real_set_fmt) return -ENOSYS;
+    /* Engine sets S32_LE regardless of what the mask advertises, and plug's
+     * rate converter cannot resample 44100 into a 32-bit format.  Substitute
+     * S16_LE so the conversion is possible; Engine reads the negotiated
+     * format back from hw_params, as it must for a plug-routed device. */
+    snd_pcm_format_t use = f;
+    if (restrict_formats() && f != ALSASHIM_FMT_S16_LE)
+        use = ALSASHIM_FMT_S16_LE;
+    int r = real_set_fmt(p, h, use);
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_format(%d)->(%d) -> %d\n", (int)f,
+                (int)use, r);
+    return r;
+}
+
+int snd_pcm_hw_params_set_rate(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                               unsigned int r, int d) {
+    RESOLVE(real_set_rate, "snd_pcm_hw_params_set_rate");
+    unsigned int want = alsashim_target_rate();
+    int rc = real_set_rate ? real_set_rate(p, h, want, d) : -ENOSYS;
+    if (debug_on()) fprintf(stderr, "[alsashim] set_rate(%u)->(%u,%d) -> %d\n", r, want, d, rc);
+    return rc;
+}
+
+int snd_pcm_hw_params_set_rate_near(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                    unsigned int *r, int *d) {
+    RESOLVE(real_set_rate_near, "snd_pcm_hw_params_set_rate_near");
+    unsigned int req = r ? *r : 0;
+    unsigned int want = alsashim_target_rate();
+    if (r) *r = want;
+    int rc = real_set_rate_near ? real_set_rate_near(p, h, r, d) : -ENOSYS;
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_rate_near(%u)->(%u) -> %d got %u\n", req, want, rc,
+                r ? *r : 0);
+    return rc;
+}
+
+/* Engine enumerates the rates the PCM advertises and upsamples to the highest
+ * one it finds; through `plug` on a 48000-only board that is 96000, and that
+ * upsampling path is what it then fails on (`ALSACombinedDevice::
+ * setUpsamplingRate` warning) before the deck render callback runs.  Real
+ * inmusic hardware is 44100-only, so advertise exactly one rate. */
+typedef int (*hw_test_rate_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int, int);
+typedef int (*hw_get_rate_t)(const snd_pcm_hw_params_t *, unsigned int *, int *);
+static hw_test_rate_t real_test_rate = NULL;
+static hw_get_rate_t real_get_ratemin = NULL;
+static hw_get_rate_t real_get_ratemax = NULL;
+
+int snd_pcm_hw_params_test_rate(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                unsigned int r, int d) {
+    RESOLVE(real_test_rate, "snd_pcm_hw_params_test_rate");
+    if (r != alsashim_target_rate()) return -EINVAL;
+    return real_test_rate ? real_test_rate(p, h, r, d) : 0;
+}
+
+int snd_pcm_hw_params_get_rate_min(const snd_pcm_hw_params_t *h, unsigned int *v,
+                                   int *d) {
+    RESOLVE(real_get_ratemin, "snd_pcm_hw_params_get_rate_min");
+    int rc = real_get_ratemin ? real_get_ratemin(h, v, d) : -ENOSYS;
+    if (v) *v = alsashim_target_rate();
+    return rc;
+}
+
+int snd_pcm_hw_params_get_rate_max(const snd_pcm_hw_params_t *h, unsigned int *v,
+                                   int *d) {
+    RESOLVE(real_get_ratemax, "snd_pcm_hw_params_get_rate_max");
+    int rc = real_get_ratemax ? real_get_ratemax(h, v, d) : -ENOSYS;
+    if (v) *v = alsashim_target_rate();
+    return rc;
+}
+
+/* --- Virtual channel layout bridged onto a 2-channel device --------------
+ * The real JP11 codec presents S32_LE / 4 channels / 44100.  Engine's first
+ * channel pair is the cue (headphone) bus and the second pair is the master
+ * bus, so a 2-channel device only ever receives cue.  QEMU's usb-audio cannot
+ * carry more than 2 channels cleanly, so instead of truncating the layout we
+ * let Engine negotiate its native 4-channel one, negotiate the underlying
+ * (plug) device at 2 channels, and copy the master pair out of each virtual
+ * frame in snd_pcm_writei.  plug then does the S32->S16 / 44100->48000
+ * conversion, which is correct at 2 channels.
+ *
+ *   ALSASHIM_CHANNELS         channels advertised to Engine (default 4)
+ *   ALSASHIM_HW_CHANNELS      channels on the real device (default 2)
+ *   ALSASHIM_MASTER_CHANNELS  source indices of the master pair (default 2,3)
+ *
+ * With ALSASHIM_CHANNELS == ALSASHIM_HW_CHANNELS the bridge is disabled and
+ * the shim is a pass-through. */
+static unsigned int env_uint(const char *name, unsigned int dflt) {
+    const char *v = getenv(name);
+    if (!v || !*v) return dflt;
+    long n = strtol(v, NULL, 10);
+    return (n > 0 && n < 1024) ? (unsigned int)n : dflt;
+}
+
+static unsigned int virtual_channels(void) {
+    return env_uint("ALSASHIM_CHANNELS", 4);
+}
+static unsigned int hw_channels(void) {
+    return env_uint("ALSASHIM_HW_CHANNELS", 2);
+}
+
+static void master_pair(unsigned int *l, unsigned int *r) {
+    static int done = 0;
+    static unsigned int a = 2, b = 3;
+    if (!done) {
+        const char *v = getenv("ALSASHIM_MASTER_CHANNELS");
+        unsigned x, y;
+        if (v && *v && sscanf(v, "%u,%u", &x, &y) == 2) { a = x; b = y; }
+        done = 1;
+    }
+    *l = a;
+    *r = b;
+}
+
+/* Set once Engine has negotiated the virtual channel count. */
+static int bridge_active = 0;
+
+int snd_pcm_hw_params_set_channels(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                   unsigned int c) {
+    RESOLVE(real_set_channels, "snd_pcm_hw_params_set_channels");
+    if (!real_set_channels) return -ENOSYS;
+
+    unsigned int vc = virtual_channels(), hc = hw_channels();
+    unsigned int use = c;
+    if (vc != hc && c == vc) {
+        use = hc;
+        bridge_active = 1;
+    } else if (c != vc) {
+        bridge_active = 0;
+    }
+    int rc = real_set_channels(p, h, use);
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_channels(%u)->(%u) -> %d (virtual %u, hw %u)\n",
+                c, use, rc, vc, hc);
+    return rc;
+}
+
+typedef int (*hw_ch_near_t)(snd_pcm_t *, snd_pcm_hw_params_t *, unsigned int *);
+static hw_ch_near_t real_set_channels_near = NULL;
+
+int snd_pcm_hw_params_set_channels_near(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                        unsigned int *c) {
+    RESOLVE(real_set_channels_near, "snd_pcm_hw_params_set_channels_near");
+    if (!real_set_channels_near || !c) return -ENOSYS;
+
+    unsigned int want = *c;
+    unsigned int vc = virtual_channels(), hc = hw_channels();
+    unsigned int use = want;
+    if (vc != hc && want >= vc) use = hc;
+    int rc = real_set_channels_near(p, h, &use);
+    if (rc == 0) {
+        if (vc != hc && want >= vc) { *c = vc; bridge_active = 1; }
+        else { *c = use; bridge_active = 0; }
+    }
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_channels_near(%u) -> %d got %u\n",
+                want, rc, *c);
+    return rc;
+}
+
+int snd_pcm_hw_params_set_period_size(snd_pcm_t *p, snd_pcm_hw_params_t *h,
+                                      snd_pcm_uframes_t v, int d) {
+    RESOLVE(real_set_persz, "snd_pcm_hw_params_set_period_size");
+    int rc = real_set_persz ? real_set_persz(p, h, v, d) : -ENOSYS;
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_period_size(%lu,%d) -> %d\n",
+                (unsigned long)v, d, rc);
+    return rc;
+}
+
+int snd_pcm_hw_params_set_period_size_near(snd_pcm_t *p,
+                                           snd_pcm_hw_params_t *h,
+                                           snd_pcm_uframes_t *v, int *d) {
+    RESOLVE(real_set_persz_near, "snd_pcm_hw_params_set_period_size_near");
+    snd_pcm_uframes_t req = v ? *v : 0;
+    int rc = real_set_persz_near ? real_set_persz_near(p, h, v, d) : -ENOSYS;
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_period_size_near(%lu) -> %d got %lu\n",
+                (unsigned long)req, rc, (unsigned long)(v ? *v : 0));
+    return rc;
+}
+
+int snd_pcm_hw_params(snd_pcm_t *p, snd_pcm_hw_params_t *h) {
+    RESOLVE(real_apply, "snd_pcm_hw_params");
+    int rc = real_apply ? real_apply(p, h) : -ENOSYS;
+    if (debug_on()) fprintf(stderr, "[alsashim] hw_params -> %d\n", rc);
+    return rc;
+}
+
+/* Engine reads the plug layer's channel maximum (10000 - plug can route any
+ * count) and uses it as the channel count, which no real device can
+ * realise, so hw_params then fails.  Report the count the real JP11 codec
+ * has (4), so Engine negotiates its native layout. */
+typedef int (*hw_ch_get_t)(const snd_pcm_hw_params_t *, unsigned int *);
+static hw_ch_get_t real_get_chmax = NULL;
+static hw_ch_get_t real_get_chmin = NULL;
+static hw_ch_get_t real_get_chcur = NULL;
+
+int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *h,
+                                       unsigned int *val) {
+    RESOLVE(real_get_chmax, "snd_pcm_hw_params_get_channels_max");
+    int r = real_get_chmax ? real_get_chmax(h, val) : -ENOSYS;
+    unsigned int vc = virtual_channels();
+    if (val && *val > vc) {
+        if (debug_on())
+            fprintf(stderr, "[alsashim] channels_max %u -> %u\n", *val, vc);
+        *val = vc;
+    }
+    return r;
+}
+
+int snd_pcm_hw_params_get_channels_min(const snd_pcm_hw_params_t *h,
+                                       unsigned int *val) {
+    RESOLVE(real_get_chmin, "snd_pcm_hw_params_get_channels_min");
+    int r = real_get_chmin ? real_get_chmin(h, val) : -ENOSYS;
+    if (val && *val > virtual_channels()) *val = virtual_channels();
+    return r;
+}
+
+/* After the bridge is armed the real device is 2-channel, but Engine must
+ * size its frames for the 4-channel layout it negotiated. */
+int snd_pcm_hw_params_get_channels(const snd_pcm_hw_params_t *h,
+                                   unsigned int *val) {
+    RESOLVE(real_get_chcur, "snd_pcm_hw_params_get_channels");
+    int r = real_get_chcur ? real_get_chcur(h, val) : -ENOSYS;
+    if (r == 0 && bridge_active && val) {
+        if (debug_on())
+            fprintf(stderr, "[alsashim] channels %u -> %u\n", *val,
+                    virtual_channels());
+        *val = virtual_channels();
+    }
+    return r;
+}
+/* --- Force the RW path (safety net) --------------------------------------
+ * Engine asks for SND_PCM_ACCESS_RW_INTERLEAVED itself and imports only
+ * snd_pcm_writei/snd_pcm_readi (confirmed from Engine.bin's dynamic symbols),
+ * so this is a no-op in practice.  It exists because only the read/write path
+ * can carry a format conversion through `plug`: an mmap buffer is a window
+ * onto the *slave* ring, so an application format that differs from the
+ * hardware's would be written without conversion.  Forcing RW keeps a caller
+ * that did negotiate mmap on the converting path instead.
+ * ALSASHIM_FORCE_RW non-empty enables this (SND_PCM_ACCESS_RW_INTERLEAVED=3). */
+typedef int (*hw_access_t)(snd_pcm_t *, snd_pcm_hw_params_t *, int);
+static hw_access_t real_set_access = NULL;
+
+int snd_pcm_hw_params_set_access(snd_pcm_t *p, snd_pcm_hw_params_t *h, int a) {
+    RESOLVE(real_set_access, "snd_pcm_hw_params_set_access");
+    int use = a;
+    const char *e = getenv("ALSASHIM_FORCE_RW");
+    if (e && *e) use = 3; /* SND_PCM_ACCESS_RW_INTERLEAVED */
+    int r = real_set_access ? real_set_access(p, h, use) : -ENOSYS;
+    if (debug_on())
+        fprintf(stderr, "[alsashim] set_access(%d)->(%d) -> %d\n", a, use, r);
+    return r;
+}
+
+/* --- Master-pair extraction onto the 2-channel device --------------------
+ * Engine writes its negotiated 4-channel S32 frames here.  When the bridge is
+ * armed, copy the master pair (default indices 2,3) into a 2-channel S32
+ * buffer and hand that to plug, which converts it to the hw's S16 @ 48000.
+ * Any extra hw channels are zeroed.  With ALSASHIM_DUMP set, also report the
+ * peak sample every 64 calls (on the virtual frame, pre-extraction). */
+typedef long (*writei_t)(snd_pcm_t *, const void *, unsigned long);
+static writei_t real_writei = NULL;
+static int32_t *bridge_buf = NULL;
+static size_t bridge_cap = 0;
+
+long snd_pcm_writei(snd_pcm_t *p, const void *b, unsigned long f) {
+    RESOLVE(real_writei, "snd_pcm_writei");
+    if (!real_writei) return -ENOSYS;
+
+    if (getenv("ALSASHIM_WBT")) {
+        static int wbt_done = 0;
+        if (!wbt_done) {
+            wbt_done = 1;
+            void *bt[64];
+            int n = backtrace(bt, 64);
+            fprintf(stderr, "\n[alsashim] === writei backtrace (%d frames) ===\n", n);
+            backtrace_symbols_fd(bt, n, 2);
+            fprintf(stderr, "[alsashim] === end backtrace ===\n");
+        }
+    }
+
+    if (getenv("ALSASHIM_DUMP") && b && f) {
+        static unsigned long calls = 0;
+        const int32_t *s = (const int32_t *)b;
+        unsigned int nc = bridge_active ? virtual_channels() : 2;
+        unsigned long n = f;
+        if (nc > 16) nc = 16;
+        if (n > 2048) n = 2048;
+        long pk[16] = {0};
+        for (unsigned long i = 0; i < n; i++)
+            for (unsigned int c = 0; c < nc; c++) {
+                long v = s[i * nc + c];
+                if (v < 0) v = -v;
+                if (v > pk[c]) pk[c] = v;
+            }
+        if ((calls++ % 64) == 0) {
+            fprintf(stderr, "[alsashim] writei frames=%lu ch:", f);
+            for (unsigned int c = 0; c < nc; c++) fprintf(stderr, " %ld", pk[c]);
+            fprintf(stderr, "\n");
+        }
+    }
+
+    unsigned int vc = virtual_channels(), hc = hw_channels();
+    if (!(bridge_active && vc != hc && b && f))
+        return real_writei(p, b, f);
+
+    size_t need = (size_t)f * hc * sizeof(int32_t);
+    if (need > bridge_cap) {
+        int32_t *nb = realloc(bridge_buf, need);
+        if (!nb) return real_writei(p, b, f);
+        bridge_buf = nb;
+        bridge_cap = need;
+    }
+
+    unsigned int ml, mr;
+    master_pair(&ml, &mr);
+    const int32_t *src = (const int32_t *)b;
+    int32_t *dst = bridge_buf;
+    /* The SC6000/Prime GO codec exposes TWO stereo outputs, not one: Layer A /
+     * RCA pair 1 on channels 0,1 and Layer B / RCA pair 2 on 2,3.  A 2-channel
+     * board therefore has to sum both layers, or a track playing on the second
+     * layer is silent.  ALSASHIM_LAYER_MIX=1 enables the sum (saturating). */
+    const char *mixv = getenv("ALSASHIM_LAYER_MIX");
+    int mix = (mixv && *mixv && *mixv != '0');
+    for (unsigned long i = 0; i < f; i++) {
+        if (mix && vc >= 4 && hc == 2) {
+            long l = (long)src[i * vc + 0] + (long)src[i * vc + 2];
+            long r = (long)src[i * vc + 1] + (long)src[i * vc + 3];
+            if (l > 2147483647L) l = 2147483647L;
+            if (l < -2147483648L) l = -2147483648L;
+            if (r > 2147483647L) r = 2147483647L;
+            if (r < -2147483648L) r = -2147483648L;
+            dst[i * hc + 0] = (int32_t)l;
+            dst[i * hc + 1] = (int32_t)r;
+            continue;
+        }
+        dst[i * hc + 0] = src[i * vc + (ml < vc ? ml : 0)];
+        if (hc > 1) dst[i * hc + 1] = src[i * vc + (mr < vc ? mr : 1)];
+        for (unsigned int c = 2; c < hc; c++) dst[i * hc + c] = 0;
+    }
+    return real_writei(p, dst, f);
+}
+
+/* --- allowlist reader (diagnostic, shim-only) -----------------------------
+ *
+ * The card-name allowlist is a std::vector<std::string> built from Engine's
+ * compiled-in config map, so there is no file to edit and no exported symbol to
+ * hook. The vector-copy constructor FUN_0038116c copies each element with
+ * memcpy (call site 0x00381264 in the unrebased image). Interposing memcpy and
+ * logging the source of calls that return there dumps the entries, which lets
+ * ALSASHIM_AS be set to the real card name instead of patching Engine.
+ * Enable with ALSASHIM_DUMP_ALLOWLIST=1. */
+#include <stdint.h>
+
+static int g_dump_allowlist = 0;
+
+__attribute__((constructor))
+static void alsashim_dump_ctor(void) {
+    const char *v = getenv("ALSASHIM_DUMP_ALLOWLIST");
+    g_dump_allowlist = (v && *v) ? 1 : 0;
+}
+
+typedef void *(*memcpy_t)(void *, const void *, size_t);
+void *memcpy(void *dest, const void *src, size_t n) {
+    static memcpy_t real_memcpy = NULL;
+    if (!real_memcpy) real_memcpy = (memcpy_t)dlsym(RTLD_NEXT, "memcpy");
+    if (g_dump_allowlist && n >= 2 && n <= 24) {
+        const unsigned char *s = (const unsigned char *)src;
+        int ok = 1;
+        for (size_t i = 0; i < n; i++) { if (s[i] < 0x20 || s[i] > 0x7e) { ok = 0; break; } }
+        if (ok) {
+            static long cnt = 0;
+            if (cnt < 40000) {
+                fprintf(stderr, "[alsashim] mcp n=%zu ra=0x%lx \"%.*s\"\n",
+                        n, (unsigned long)(uintptr_t)__builtin_return_address(0),
+                        (int)n, (const char *)src);
+                cnt++;
+            }
+        }
+    }
+    return real_memcpy(dest, src, n);
+}
+
+/* Log both operands of the card-name comparisons in scanDevices. The allowlist
+ * loop compares the (spoofed) card name against each entry with memcmp; the
+ * comparison is length-gated, so set ALSASHIM_AS to a string of the target
+ * length. Enable with ALSASHIM_DUMP_ALLOWLIST=1. */
+typedef int (*memcmp_t)(const void *, const void *, size_t);
+int memcmp(const void *a, const void *b, size_t n) {
+    static memcmp_t real_memcmp = NULL;
+    if (!real_memcmp) real_memcmp = (memcmp_t)dlsym(RTLD_NEXT, "memcmp");
+    if (g_dump_allowlist && n >= 2 && n <= 40) {
+        const char *nm = getenv("ALSASHIM_AS");
+        if (nm && strlen(nm) == n) {
+            if (real_memcmp(a, nm, n) == 0)
+                fprintf(stderr, "[alsashim] AL n=%zu entry=\"%.*s\"\n", n, (int)n, (const char *)b);
+            else if (real_memcmp(b, nm, n) == 0)
+                fprintf(stderr, "[alsashim] AL n=%zu entry=\"%.*s\"\n", n, (int)n, (const char *)a);
+        }
+    }
+    return real_memcmp(a, b, n);
+}
+
+/* --- Crash backtrace (diagnostic) ----------------------------------------
+ * Engine SEGV/ABRTs shortly after ALSADevice::start() once the card is
+ * accepted.  With ALSASHIM_BT=1 install SA_SIGINFO handlers that print the
+ * faulting address, PC/LR/SP and the containing object + offset, so the crash
+ * can be mapped back through Ghidra (file offset = ghidra_addr - 0x10000).
+ * backtrace() itself returns 0 frames here (no frame pointers), so the
+ * register context is the useful part. */
+#include <execinfo.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <unistd.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+
+static void puthex(const char *tag, unsigned long v) {
+    char buf[64];
+    static const char hx[] = "0123456789abcdef";
+    int n = 0;
+    for (const char *t = tag; *t; t++) buf[n++] = *t;
+    buf[n++] = '0'; buf[n++] = 'x';
+    int started = 0;
+    for (int sh = 28; sh >= 0; sh -= 4) {
+        int d = (v >> sh) & 0xf;
+        if (d || started || sh == 0) { buf[n++] = hx[d]; started = 1; }
+    }
+    buf[n++] = '\n';
+    ssize_t r = write(2, buf, (size_t)n); (void)r;
+}
+
+static volatile sig_atomic_t in_bt = 0;
+static void alsashim_bt_handler(int sig, siginfo_t *si, void *uc_) {
+    if (in_bt) _exit(3);
+    in_bt = 1;
+    signal(sig, SIG_DFL); /* recursive fault kills instead of looping */
+    ucontext_t *uc = (ucontext_t *)uc_;
+    unsigned long pc = 0, lr = 0, sp = 0, fp = 0;
+    if (uc) {
+        pc = (unsigned long)uc->uc_mcontext.arm_pc;
+        lr = (unsigned long)uc->uc_mcontext.arm_lr;
+        sp = (unsigned long)uc->uc_mcontext.arm_sp;
+        fp = (unsigned long)uc->uc_mcontext.arm_fp;
+    }
+    ssize_t r;
+    r = write(2, "\n[alsashim] caught signal\n", 26); (void)r;
+    puthex("si_addr=", (unsigned long)(si ? si->si_addr : 0));
+    puthex("pc=", pc);
+    puthex("lr=", lr);
+    puthex("sp=", sp);
+    puthex("fp=", fp);
+    {
+        void *bt[96];
+        int nb = backtrace(bt, 96);
+        r = write(2, "--- crash backtrace ---\n", 25); (void)r;
+        backtrace_symbols_fd(bt, nb, 2);
+        r = write(2, "--- end ---\n", 12); (void)r;
+    }
+    r = write(2, "--- fp chain ---\n", 17); (void)r;
+    unsigned long f = fp;
+    for (int i = 0; i < 48 && f; i++) {
+        unsigned long prev = *(volatile unsigned long *)f;
+        unsigned long ra = *(volatile unsigned long *)(f + 4);
+        puthex("fp=", f); puthex("  ra=", ra);
+        if (prev <= f) break;
+        f = prev;
+    }
+    r = write(2, "--- stack ---\n", 14); (void)r;
+    unsigned long *st = (unsigned long *)sp;
+    for (int i = 0; i < 160; i++) puthex("stk=", st[i]);
+    {
+        int fd = open("/proc/self/maps", O_RDONLY);
+        if (fd >= 0) {
+            char mb[4096]; ssize_t k;
+            r = write(2, "--- self maps ---\n", 18); (void)r;
+            while ((k = read(fd, mb, sizeof(mb))) > 0) { r = write(2, mb, (size_t)k); (void)r; }
+            close(fd);
+        }
+    }
+    _exit(128 + sig);
+}
+
+__attribute__((constructor))
+static void alsashim_bt_ctor(void) {
+    if (!getenv("ALSASHIM_BT")) return;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = alsashim_bt_handler;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    fprintf(stderr, "[alsashim] backtrace handlers installed\n");
 }

@@ -33,9 +33,36 @@ alongside it: `serial-number`, `inmusic,az01-pcb-rev`.
 ## Battery / AC detection
 Battery-powered hardware (Prime Go) shows a "touch and hold the logo" prompt at boot and auto-quits after 30s if not held. Prime 4 has no battery and skips this entirely.
 
-Two ways to bypass under emulation:
+Three ways to bypass under emulation:
 1. Spoof as `JC11` (Prime 4) — no battery, no gate.
 2. Perform the hold gesture via synthetic or real touch input while spoofed as `JP11`.
+3. Park the countdown in the application binary, so the guest can stay `JP11` (spoofing
+   `JC11` avoids the gate but brings its own display bug). The countdown's reset function
+   is `FUN_00540844` (file offset `0x530844`) and stores the two `10000 ms` constants;
+   writing `0x7FFFFFFF` instead and skipping the comparison at both sites is enough on
+   its own — no QML change, and no change to the splash, is needed:
+
+   | file offset | original (12 bytes)                   | patched                               |
+   |-------------|---------------------------------------|---------------------------------------|
+   | `0x530894`  | `10c702e30c0052e16d00001a`            | `ffcf0fe3ffcf47e36d0000ea`            |
+   | `0x53093c`  | `103702e3030052e10d00001a`            | `ff3f0fe3ff3f47e30d0000ea`            |
+
+   i.e. `movw`+`movt` to `0x7FFFFFFF` and then an unconditional branch — the "skip" — in
+   place of `movw …, #0x2710` + `cmp` + `bne`. Both edits are the same length as what they
+   replace, so the file can be patched in place. Verified on the armv7 / Qt 6 Engine OS
+   **5.0.4** build (44,619,440 bytes, build id `af073865a3318d807a8303f716152eac923a4c6f`):
+   the countdown then never expires and holding the logo still unlocks normally. The
+   offsets do not transfer to other builds — check the size and build id first. Note this
+   *parks* the countdown rather than removing it; the timer that decrements it was not
+   located.
+
+   Two further things are needed for any guest-side binary or QML edit to take effect:
+   * `QML_DISABLE_DISK_CACHE=1` in the launcher. Without it the engine runs the stale
+     compiled QML from `/.cache/AIR Music Technology/Engine/qmlcache/` and edits to the
+     QML embedded in the binary are silently ignored.
+   * `-skipFirmwareUpdate` on the Engine command line. It is unrelated to the battery
+     gate, but without it the control-surface firmware check can stop the guest before
+     the UI is reached.
 
 Unconfirmed: QML/config properties resembling `Configuration/HasBattery` and `useFakeAC`/`fakeAC` suggest a dev override to fake AC power without a product-code swap.
 

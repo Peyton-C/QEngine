@@ -14,7 +14,7 @@ unbound or claimed:
   rekordbox init replay  rb_init_sequence.json, through the ALSA sequencer
   keepalive SysEx        every 200 ms, sequencer
   xx 27 deck state       every 10 ms for each loaded deck, hidraw
-  waveform               xx 30 length, 0x37 overview, 0x38 full, on track load
+  track load             xx 30 length, 0x33 cover, 0x37 overview, 0x38 full
 
 The waveform comes from the track file itself -- Engine's library keeps only a
 coarse overview -- decoded by ffmpeg into low/mid/high envelopes.
@@ -328,6 +328,61 @@ def columns(env, n_cols):
     return bytes(out)
 
 
+# ---- artwork -----------------------------------------------------------------
+
+ART_SIZE = 240                   # the jog screen's canvas
+
+
+def engine_artwork(path):
+    """The cover Engine shows for a track: Engine Library/Artwork/<hash>.jpg,
+    named by the base64url of the AlbumArt row's hash. None if not found."""
+    import base64, sqlite3
+    lib, sep, rel = path.partition("/Engine Library/")
+    if not sep:
+        return None
+    lib += sep
+    try:
+        db = sqlite3.connect(f"file:{lib}Database2/m.db?mode=ro", uri=True)
+        row = db.execute("SELECT a.hash FROM Track t JOIN AlbumArt a ON a.id = t.albumArtId "
+                         "WHERE t.path = ?", (rel,)).fetchone()
+        db.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    art = f"{lib}Artwork/{base64.urlsafe_b64encode(row[0]).decode().rstrip('=')}.jpg"
+    return art if os.path.exists(art) else None
+
+
+def artwork_jpeg(path):
+    """The track's cover as a square baseline JPEG for the jog screen: Engine's
+    own, else the file's embedded one, else plain dark so the last track's
+    cover does not linger."""
+    fit = (f"scale={ART_SIZE}:{ART_SIZE}:force_original_aspect_ratio=decrease,"
+           f"pad={ART_SIZE}:{ART_SIZE}:(ow-iw)/2:(oh-ih)/2")
+    out = ["-frames:v", "1", "-vf", fit, "-pix_fmt", "yuvj420p", "-q:v", "6", "-f", "mjpeg", "-"]
+    sources = []
+    art = engine_artwork(path)
+    if art:
+        sources.append(["-i", art])
+    sources.append(["-i", path, "-map", "0:v:0"])
+    sources.append(["-f", "lavfi", "-i", f"color=c=0x101010:s={ART_SIZE}x{ART_SIZE}"])
+    for src in sources:
+        r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", *src, *out],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if r.returncode == 0 and r.stdout.startswith(b"\xff\xd8"):
+            return r.stdout
+    return None
+
+
+def artwork_packets(deck_byte, jpeg):
+    """0x33, the cover. Laid out as Veezuhz decoded Serato's: the usual 6-byte
+    header, then the JPEG's size (LE16) and a zero, then the JPEG. Without that
+    sub-header, or with the background upload's 4-byte one, nothing showed."""
+    body = bytes([len(jpeg) & 0xFF, len(jpeg) >> 8, 0x00]) + jpeg
+    return packetise(deck_byte, 0x33, body)
+
+
 def waveform_packets(deck_byte, path, duration, max_cols, squeeze):
     """The firmware drops a 0x38 upload much over ~24500 columns. Over the
     cap, `squeeze` spreads the whole track across max_cols columns; otherwise
@@ -344,7 +399,9 @@ def waveform_packets(deck_byte, path, duration, max_cols, squeeze):
             ov[o * 3 + lane] = max(full[c * 3 + lane] for c in range(lo, hi))
     if max_cols:
         full = full[:3 * max_cols]
+    jpeg = artwork_jpeg(path)
     return ([build_xx30(deck_byte, duration)]
+            + (artwork_packets(deck_byte, jpeg) if jpeg else [])
             + packetise(deck_byte, 0x37, OVERVIEW_SUBHDR + bytes(ov))
             + packetise(deck_byte, 0x38, full))
 

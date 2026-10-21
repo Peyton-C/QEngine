@@ -1,0 +1,13 @@
+[Unit]
+Description=DDJ-FLX10 jog screens for Engine
+After=qengine.service
+
+[Service]
+# The bridge waits for the controller and for Engine's mod on its own, so it
+# can start before either and survive both coming and going.
+ExecStart=/usr/bin/python3 -I -u @QENGINE_DIR@/flx10/flx10_bridge.py --squeeze
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

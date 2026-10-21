@@ -4,8 +4,14 @@ Shows Engine's decks on the Pioneer/AlphaTheta DDJ-FLX10's jog screens: waveform
 ## Running it
 - Install ffmpeg on the Pi, which the bridge uses to build waveforms from the track files: `sudo apt install ffmpeg`.
 - Build `flx10.rcc` from `shims/montero/mods/flx10/flx10.qrc` with `rcc -binary` and put it in the rootfs at `/data/mods/flx10/`.
-- Start Engine with MONTERO preloaded: `sudo SHIMS_EXTRA=/root/montero.so qengine/chroot-engine.sh`.
-- Run the bridge as root on the Pi host: `sudo python3 flx10_bridge.py`. It waits for the controller, and picks it up again after a replug.
+- Set the FLX10 lines in `pi.env`, from `pi.env.example`. They forward the controller to Engine with its mapping and preload MONTERO.
+- Copy this directory to `~/qengine/flx10` and install the bridge as a service, which waits for the controller and picks it up again after a replug:
+
+```sh
+cd ~/qengine
+sed "s|@QENGINE_DIR@|$PWD|" flx10/flx10-bridge.service | sudo tee /etc/systemd/system/flx10-bridge.service
+sudo systemctl daemon-reload && sudo systemctl enable --now flx10-bridge.service
+```
 
 The bridge speaks through the kernel's own drivers and claims nothing, so midisurface can drive Engine from the same controller.
 
@@ -13,6 +19,7 @@ The bridge speaks through the kernel's own drivers and claims nothing, so midisu
 | File | What |
 | --- | --- |
 | `flx10_bridge.py` | The bridge |
+| `flx10-bridge.service` | Runs the bridge at boot |
 | `flx10_screen_test.py` | Drives the screens with fake decks, for protocol work without Engine |
 | `rb_init_sequence.json` | rekordbox's start-up traffic to the controller, replayed to wake the screens |
 

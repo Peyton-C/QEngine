@@ -4,7 +4,9 @@ Drive the DDJ-FLX10 jog screens with fake deck data, for working on the screen
 protocol without Engine. Same transport as flx10_bridge.py: unlock over ep0,
 the rekordbox init replay and keepalive over rawmidi, packets over hidraw.
 
-Stop flx10_bridge.py first; the rawmidi node opens exclusively.
+Stop the bridge and Engine first (systemctl stop flx10-bridge qengine): this
+writes the rawmidi node, which opens only while nothing else has the
+controller's output, and midisurface does whenever Engine runs.
 
   sudo python3 flx10_screen_test.py --wave --pos          synthetic 128/174.5 BPM decks
   sudo python3 flx10_screen_test.py --wave --pos --wave-file <track>

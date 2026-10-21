@@ -11,8 +11,8 @@ so midisurface can use the same controller at the same time -- nothing is
 unbound or claimed:
 
   ep0 vendor unlock      seven control transfers (USBDEVFS_CONTROL)
-  rekordbox init replay  rb_init_sequence.json, onto the ALSA rawmidi node
-  keepalive SysEx        every 200 ms, rawmidi
+  rekordbox init replay  rb_init_sequence.json, through the ALSA sequencer
+  keepalive SysEx        every 200 ms, sequencer
   xx 27 deck state       every 10 ms for each loaded deck, hidraw
   waveform               xx 30 length, 0x37 overview, 0x38 full, on track load
 
@@ -102,26 +102,81 @@ def usb_unlock(sysfs):
         os.close(fd)
 
 
-def find_nodes(sysfs):
+def find_hidraw(sysfs):
     hid = sorted(glob.glob(f"{sysfs}:1.5/*/hidraw/hidraw*"))
-    cards = glob.glob(f"{sysfs}:*/sound/card*")
-    midi = f"/dev/snd/midiC{os.path.basename(cards[0])[4:]}D0" if cards else None
-    return ("/dev/" + os.path.basename(hid[0]) if hid else None,
-            midi if midi and os.path.exists(midi) else None)
+    return "/dev/" + os.path.basename(hid[0]) if hid else None
+
+
+def find_seq_client(name="DDJ-FLX10"):
+    """The controller's ALSA sequencer client, from /proc/asound/seq/clients."""
+    try:
+        for line in open("/proc/asound/seq/clients"):
+            m = re.match(r'Client\s+(\d+)\s*:\s*"([^"]*)"', line)
+            if m and name in m[2]:
+                return int(m[1])
+    except OSError:
+        pass
+    return None
+
+
+class SeqOut:
+    """MIDI to the controller through the ALSA sequencer, by ctypes.
+
+    Not the rawmidi node: midisurface reaches the same controller through the
+    sequencer, and the kernel opens a USB MIDI output for the sequencer only
+    when nobody holds it as rawmidi. With the bridge on /dev/snd/midiC0D0,
+    midisurface's lamp port failed to connect ("could not send to 16:0")."""
+
+    EVENT_SIZE = 28            # sizeof(snd_seq_event_t), on every ABI
+    SUBSCRIBERS, DIRECT = 254, 253
+
+    def __init__(self, client, port=0):
+        import ctypes
+        self.ct = ctypes
+        self.lib = ctypes.CDLL("libasound.so.2")
+        self.seq = ctypes.c_void_p()
+        if self.lib.snd_seq_open(ctypes.byref(self.seq), b"default", 1, 0) < 0:   # OUTPUT
+            raise OSError("snd_seq_open failed")
+        self.lib.snd_seq_set_client_name(self.seq, b"flx10_bridge")
+        self.port = self.lib.snd_seq_create_simple_port(self.seq, b"screens", 0, 1 << 20)
+        if self.port < 0 or self.lib.snd_seq_connect_to(self.seq, self.port, client, port) < 0:
+            self.close()
+            raise OSError(f"cannot send to sequencer client {client}:{port}")
+        self.enc = ctypes.c_void_p()
+        self.lib.snd_midi_event_new(256, ctypes.byref(self.enc))
+        self.ev = ctypes.create_string_buffer(self.EVENT_SIZE)
+
+    def send(self, msg):
+        ct = self.ct
+        self.lib.snd_midi_event_reset_encode(self.enc)
+        ct.memset(self.ev, 0, self.EVENT_SIZE)
+        if self.lib.snd_midi_event_encode(self.enc, msg, len(msg), self.ev) <= 0:
+            return
+        raw = ct.cast(self.ev, ct.POINTER(ct.c_ubyte))
+        raw[3] = self.DIRECT                       # queue
+        raw[13] = self.port                        # source.port
+        raw[14], raw[15] = self.SUBSCRIBERS, self.DIRECT   # dest: subscribers
+        if self.lib.snd_seq_event_output_direct(self.seq, self.ev) < 0:
+            raise OSError("sequencer output failed")
+
+    def close(self):
+        if self.seq:
+            self.lib.snd_seq_close(self.seq)
+            self.seq = None
 
 
 class Controller:
-    def __init__(self, sysfs, hid, midi):
+    def __init__(self, sysfs, hid, client):
         usb_unlock(sysfs)
         time.sleep(0.3)
-        self.mfd = os.open(midi, os.O_WRONLY)
+        self.midi = SeqOut(client)
         self.hfd = os.open(hid, os.O_RDWR)
         self.last_keepalive = 0.0
         for ep, hexb in json.load(open(os.path.join(HERE, "rb_init_sequence.json"))):
             data = bytes.fromhex(hexb)
             if ep == "ep3":
                 for m in usbmidi_decode(data):
-                    os.write(self.mfd, m)
+                    self.midi.send(m)
             else:
                 self.screen(data)
             time.sleep(0.002)
@@ -131,15 +186,15 @@ class Controller:
 
     def keepalive(self, now):
         if now - self.last_keepalive >= 0.2:
-            os.write(self.mfd, KEEPALIVE)
+            self.midi.send(KEEPALIVE)
             self.last_keepalive = now
 
     def close(self):
-        for fd in (self.hfd, self.mfd):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        try:
+            os.close(self.hfd)
+        except OSError:
+            pass
+        self.midi.close()
 
 
 # ---- packets -------------------------------------------------------------------
@@ -433,14 +488,15 @@ class Bridge:
         threading.Thread(target=self.waveformer, daemon=True).start()
         while not self.stop.is_set():
             sysfs = find_device()
-            hid, midi = find_nodes(sysfs) if sysfs else (None, None)
-            if not (hid and midi):
+            hid = find_hidraw(sysfs) if sysfs else None
+            client = find_seq_client() if sysfs else None
+            if not (hid and client):
                 time.sleep(2)
                 continue
-            log(f"FLX10 at {sysfs} (hidraw {hid}, rawmidi {midi})")
+            log(f"FLX10 at {sysfs} (hidraw {hid}, sequencer client {client})")
             ctl = None
             try:
-                ctl = Controller(sysfs, hid, midi)
+                ctl = Controller(sysfs, hid, client)
                 # Re-send every loaded deck's waveform to a fresh controller.
                 with self.lock, self.work:
                     for n, d in self.decks.items():

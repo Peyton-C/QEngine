@@ -389,7 +389,10 @@ static int forward_port = -1;
  * reports movement -- one CC whose value is 64 plus or minus the number of ticks
  * since the last message -- is read as a position that never leaves 63..65, and
  * the platter barely responds. So the ticks are summed into a 14-bit counter per
- * MIDI channel and that counter is sent in the CC's place.
+ * MIDI channel and that counter is sent in the CC's place. Give it more than
+ * once for a wheel that reports on several CCs -- the DDJ-FLX10 uses one for
+ * the platter top and another for its side -- and the ones naming the same
+ * pair add to the same counter.
  *
  * --note-map CH:FROM=TO  or  CH:FROM=TOCH:TO
  *
@@ -406,10 +409,16 @@ static int forward_port = -1;
 static int pitchbend_cc_upper = -1;
 static int pitchbend_cc_lower = -1;
 
-static int relative_cc = -1;
-static int relative_cc_upper = -1;
-static int relative_cc_lower = -1;
-static int relative_position[16];
+#define MAX_RELATIVE_CCS 8
+static struct { int cc, upper, lower; } relative_ccs[MAX_RELATIVE_CCS];
+static int relative_cc_count = 0;
+static int relative_position[16][128];   /* per channel, per upper CC */
+
+static int relative_cc_index(int cc) {
+    for (int r = 0; r < relative_cc_count; r++)
+        if (relative_ccs[r].cc == cc) return r;
+    return -1;
+}
 
 #define MAX_NOTE_MAPS 8
 static struct { int ch, from, to_ch, to; } note_maps[MAX_NOTE_MAPS];
@@ -457,6 +466,14 @@ static struct { int ch, cc, value; } led_sends[MAX_LED_SENDS];
 static int led_send_count = 0;
 static int lamp_port = -1;
 static void send_to_controller(int ch, int param, int val);
+
+/* --echo-lamps: Engine's notes and control changes go to the forwarded
+ * controller as they are. For a controller lit by echoing its own notes -- the
+ * DDJ-FLX10 is one -- an assignment file written in the controller's numbers
+ * already makes Engine speak its lamp protocol, and anything finer (dim
+ * levels, pad colours) is the device file's to translate. Lines in --led-map
+ * still take precedence for the notes they name. */
+static int echo_lamps = 0;
 
 static int load_led_map(const char *path) {
     FILE *f = fopen(path, "r");
@@ -651,6 +668,24 @@ static void send_to_controller(int ch, int param, int val) {
         fprintf(stderr, "send to controller failed: %s\n", snd_strerror(err));
 }
 
+/* One of Engine's events, unchanged, to the controller. See --echo-lamps. */
+static void echo_to_controller(const snd_seq_event_t *in) {
+    if (lamp_port < 0) return;
+    snd_seq_event_t ev = *in;
+    snd_seq_ev_set_source(&ev, lamp_port);
+    snd_seq_ev_set_subs(&ev);
+    snd_seq_ev_set_direct(&ev);
+    int err = snd_seq_event_output_direct(seq, &ev);
+    if (err < 0)
+        fprintf(stderr, "echo to controller failed: %s\n", snd_strerror(err));
+}
+
+static int has_led_map(int ch, int note) {
+    for (int m = 0; m < led_map_count; m++)
+        if (led_maps[m].ch == ch && led_maps[m].note == note) return 1;
+    return 0;
+}
+
 /* One of Engine's LED notes, as the controller's lamp. See --led-map. The dim
  * lamp is put out before the full one is lit, and the other way about, so the
  * two are never asked for together. */
@@ -697,16 +732,18 @@ static void handle_incoming(void) {
                 send_event(&out);
                 snd_seq_ev_clear(&out);
                 snd_seq_ev_set_controller(&out, ch, pitchbend_cc_lower, v & 0x7F);
-            } else if (ev->type == SND_SEQ_EVENT_CONTROLLER && relative_cc >= 0 &&
-                       (int)ev->data.control.param == relative_cc) {
+            } else if (ev->type == SND_SEQ_EVENT_CONTROLLER &&
+                       relative_cc_index((int)ev->data.control.param) >= 0) {
+                int r = relative_cc_index((int)ev->data.control.param);
                 int ch = ev->data.control.channel & 0x0F;
-                int pos = (relative_position[ch] + ev->data.control.value - 64) & 0x3FFF;
-                relative_position[ch] = pos;
+                int upper = relative_ccs[r].upper;
+                int pos = (relative_position[ch][upper] + ev->data.control.value - 64) & 0x3FFF;
+                relative_position[ch][upper] = pos;
                 snd_seq_ev_clear(&out);
-                snd_seq_ev_set_controller(&out, ch, relative_cc_upper, pos >> 7);
+                snd_seq_ev_set_controller(&out, ch, upper, pos >> 7);
                 send_event(&out);
                 snd_seq_ev_clear(&out);
-                snd_seq_ev_set_controller(&out, ch, relative_cc_lower, pos & 0x7F);
+                snd_seq_ev_set_controller(&out, ch, relative_ccs[r].lower, pos & 0x7F);
             } else if (ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF) {
                 for (int m = 0; m < note_map_count; m++) {
                     if (out.data.note.channel == note_maps[m].ch &&
@@ -721,12 +758,13 @@ static void handle_incoming(void) {
             if (snd_seq_event_input_pending(seq, 0) <= 0) break;
             continue;
         }
-        if (forward_client >= 0 && led_map_count > 0) {
-            if (ev->type == SND_SEQ_EVENT_NOTEON)
+        if (forward_client >= 0 && (led_map_count > 0 || echo_lamps)) {
+            int is_note = ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF;
+            if (is_note && has_led_map(ev->data.note.channel, ev->data.note.note))
                 light_lamp(ev->data.note.channel, ev->data.note.note,
-                           ev->data.note.velocity);
-            else if (ev->type == SND_SEQ_EVENT_NOTEOFF)
-                light_lamp(ev->data.note.channel, ev->data.note.note, 0);
+                           ev->type == SND_SEQ_EVENT_NOTEON ? ev->data.note.velocity : 0);
+            else if (echo_lamps && (is_note || ev->type == SND_SEQ_EVENT_CONTROLLER))
+                echo_to_controller(ev);
         }
         if (ev->type == SND_SEQ_EVENT_SYSEX) {
             const unsigned char *d = (const unsigned char *)ev->data.ext.ptr;
@@ -799,7 +837,7 @@ static int connect_forward_source(const char *match) {
                 /* The way back, for --led-map. No capabilities: nothing else
                  * has any business with this port, and one that advertised
                  * some would be a second device for Engine to enumerate. */
-                if (led_map_count > 0 || led_send_count > 0) {
+                if (led_map_count > 0 || led_send_count > 0 || echo_lamps) {
                     lamp_port = snd_seq_create_simple_port(
                         seq, "lamps", 0, SND_SEQ_PORT_TYPE_APPLICATION);
                     if (lamp_port < 0 ||
@@ -808,7 +846,10 @@ static int connect_forward_source(const char *match) {
                                         "will do nothing\n", client, port);
                         lamp_port = -1;
                     } else {
-                        printf("lighting %d lamps on it\n", led_map_count);
+                        if (led_map_count > 0)
+                            printf("lighting %d lamps on it\n", led_map_count);
+                        if (echo_lamps)
+                            printf("echoing Engine's lamps to it\n");
                         for (int n = 0; n < led_send_count; n++)
                             send_to_controller(led_sends[n].ch, led_sends[n].cc,
                                                led_sends[n].value);
@@ -843,15 +884,21 @@ int main(int argc, char **argv) {
                 return 1;
             }
         } else if (strcmp(argv[i], "--relative-cc") == 0 && i + 1 < argc) {
-            if (sscanf(argv[++i], "%i=%i,%i", &relative_cc, &relative_cc_upper,
-                       &relative_cc_lower) != 3 ||
-                relative_cc < 0 || relative_cc > 127 ||
-                relative_cc_upper < 0 || relative_cc_upper > 127 ||
-                relative_cc_lower < 0 || relative_cc_lower > 127) {
+            int cc, upper, lower;
+            if (relative_cc_count >= MAX_RELATIVE_CCS ||
+                sscanf(argv[++i], "%i=%i,%i", &cc, &upper, &lower) != 3 ||
+                cc < 0 || cc > 127 || upper < 0 || upper > 127 ||
+                lower < 0 || lower > 127) {
                 fprintf(stderr, "--relative-cc wants CC=UPPER,LOWER, "
-                                "e.g. 0x51=0x37,0x4D\n");
+                                "e.g. 0x51=0x37,0x4D (at most %d)\n", MAX_RELATIVE_CCS);
                 return 1;
             }
+            relative_ccs[relative_cc_count].cc = cc;
+            relative_ccs[relative_cc_count].upper = upper;
+            relative_ccs[relative_cc_count].lower = lower;
+            relative_cc_count++;
+        } else if (strcmp(argv[i], "--echo-lamps") == 0) {
+            echo_lamps = 1;
         } else if (strcmp(argv[i], "--note-map") == 0 && i + 1 < argc) {
             int ch, from, to_ch, to;
             const char *spec = argv[++i];
@@ -883,9 +930,9 @@ int main(int argc, char **argv) {
                     "usage: %s [client-name] [-v] [--motor-off] "
                     "[--forward <controller-name-substring>] "
                     "[--pitchbend-cc <upper>,<lower>] "
-                    "[--relative-cc <cc>=<upper>,<lower>] "
+                    "[--relative-cc <cc>=<upper>,<lower>]... "
                     "[--note-map <ch>:<from>=[<ch>:]<to>]... "
-                    "[--led-map <file>]\n", argv[0]);
+                    "[--led-map <file>] [--echo-lamps]\n", argv[0]);
             return 1;
         }
     }

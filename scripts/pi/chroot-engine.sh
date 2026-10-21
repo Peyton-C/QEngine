@@ -43,7 +43,7 @@
 #                 manifest for it and for this product. Default: none.
 #   MIDI_FORWARD_ARGS  extra midisurface options that mapping calls for; its
 #                 header lists them.
-#   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, QT_SCALE_FACTOR, ALSASHIM_*   passed through.
+#   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, QT_SCALE_FACTOR, ALSASHIM_*, MONTERO_*   passed through.
 set -uo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
@@ -166,6 +166,9 @@ ENVV=("${BASE[@]}"
 [ -n "${ALSASHIM_METER:-}" ] && ENVV+=("ALSASHIM_METER=1")
 [ -n "${ALSASHIM_MAX_CHANNELS:-}" ] && ENVV+=("ALSASHIM_MAX_CHANNELS=$ALSASHIM_MAX_CHANNELS")
 [ -n "${CURSORSHIM_DEBUG:-}" ] && ENVV+=("CURSORSHIM_DEBUG=1")
+[ -n "${MONTERO_DUMP:-}" ] && ENVV+=("MONTERO_DUMP=1")
+[ -n "${MONTERO_EXTRACT:-}" ] && ENVV+=("MONTERO_EXTRACT=$MONTERO_EXTRACT")
+[ -n "${MONTERO_LOG_URLS:-}" ] && ENVV+=("MONTERO_LOG_URLS=1")
 
 ### launch ####################################################################
 # Anchored patterns: an unanchored one also matches the shell that invoked us,

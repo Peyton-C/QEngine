@@ -18,6 +18,19 @@
  * of its compiled-in resource blobs during static initialization. The mods
  * are registered just before the first of those calls goes through.
  *
+ * A mod can also add QML of its own, beside Engine's rather than in place of
+ * any of it: every qrc:/montero/autoload/<name>.qml is created once Engine's
+ * main view has loaded, as an invisible child of its root item. Names have to
+ * be unique across mods -- the first registered wins, as for any qrc path.
+ *
+ * Mods talk to the outside world through the Montero singleton:
+ *     import Montero 1.0
+ *     Montero.send("flx10", JSON.stringify(state))   // datagram to @montero/flx10
+ *     Montero.log("...")                             // line in the log below
+ * The socket is an abstract Unix one (no file), so a listener outside the
+ * chroot reaches Engine inside it without a shared path. With nothing
+ * listening the datagram is dropped and send() returns false.
+ *
  * Diagnostics, for finding what to replace:
  *   MONTERO_DUMP=1          list every qrc path and size to /tmp/montero-qrc.txt
  *   MONTERO_EXTRACT=<dir>   also copy every qrc file into <dir>
@@ -30,9 +43,12 @@
 #include <dlfcn.h>
 #include <glob.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <QtCore/QCoreApplication>
@@ -41,11 +57,15 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QMutex>
+#include <QtCore/QObject>
 #include <QtCore/QResource>
 #include <QtCore/QSet>
 #include <QtCore/QUrl>
 #include <QtQml/QQmlAbstractUrlInterceptor>
+#include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
+#include <QtQml/qqml.h>
+#include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickView>
 
 static const char MODS_DIR[] = "/data/mods";
@@ -139,9 +159,34 @@ static void dump_qrc() {
            extract ? ", extracted to " : "", extract ? extract : "");
 }
 
+/* ---- the Montero singleton ------------------------------------------------ */
+
+class Montero : public QObject {
+    Q_OBJECT
+public:
+    Q_INVOKABLE bool send(const QString &channel, const QString &payload) {
+        if (fd < 0) fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) return false;
+        QByteArray name = "montero/" + channel.toUtf8();
+        sockaddr_un addr = {};
+        addr.sun_family = AF_UNIX;
+        if (name.size() + 1 > (int)sizeof(addr.sun_path)) return false;
+        memcpy(addr.sun_path + 1, name.constData(), name.size());  /* [0] = '\0': abstract */
+        socklen_t len = offsetof(sockaddr_un, sun_path) + 1 + name.size();
+        QByteArray data = payload.toUtf8();
+        return sendto(fd, data.constData(), data.size(), 0, (sockaddr *)&addr, len) == data.size();
+    }
+
+    Q_INVOKABLE void log(const QString &msg) { mt_log("%s", qPrintable(msg)); }
+
+private:
+    int fd = -1;
+};
+
 static void on_app_start() {
     if (!in_engine()) return;
     dump_qrc();
+    qmlRegisterSingletonInstance("Montero", 1, 0, "Montero", new Montero);
 }
 Q_COREAPP_STARTUP_FUNCTION(on_app_start)
 
@@ -164,6 +209,29 @@ private:
     QSet<QString> seen;
 };
 
+/* ---- autoloaded mod components -------------------------------------------- */
+
+static void autoload(QQuickView *view) {
+    /* Listing a qrc directory merges it across every registered resource, so
+     * this sees each mod's autoload files together. */
+    const QStringList names = QDir(QStringLiteral(":/montero/autoload"))
+                                  .entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name);
+    QQuickItem *root = view->rootObject();
+    for (const QString &name : names) {
+        QUrl url(QStringLiteral("qrc:/montero/autoload/") + name);
+        QQmlComponent component(view->engine(), url);
+        QObject *obj = component.create();
+        if (!obj) {
+            for (const QQmlError &e : component.errors())
+                mt_log("autoload %s: %s", qPrintable(name), qPrintable(e.toString()));
+            continue;
+        }
+        obj->setParent(root ? static_cast<QObject *>(root) : view);
+        if (QQuickItem *item = qobject_cast<QQuickItem *>(obj)) item->setParentItem(root);
+        mt_log("autoloaded %s", qPrintable(url.toString()));
+    }
+}
+
 typedef void (*set_source_t)(QQuickView *, const QUrl &);
 
 void QQuickView::setSource(const QUrl &url) {
@@ -176,4 +244,11 @@ void QQuickView::setSource(const QUrl &url) {
         engine()->addUrlInterceptor(new LoggingInterceptor);
     }
     real(this, url);
+    static bool autoloaded;
+    if (!autoloaded && in_engine()) {
+        autoloaded = true;
+        autoload(this);
+    }
 }
+
+#include "montero.moc"

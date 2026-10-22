@@ -366,6 +366,8 @@ static int verbose = 0;
  * needs no per-controller code here. */
 static int forward_client = -1;
 static int forward_port = -1;
+static const char *forward_match = NULL;
+static int connect_forward_source(const char *match, int kernel_only);
 
 /* The translations --forward does. "Relayed unchanged" holds for everything an
  * assignment file can describe; these are the three things one cannot, each
@@ -713,6 +715,23 @@ static void light_lamp(int ch, int note, int vel) {
 static void handle_incoming(void) {
     snd_seq_event_t *ev;
     while (snd_seq_event_input(seq, &ev) >= 0) {
+        /* The sequencer's own announcements, for a forwarded controller that
+         * is unplugged and plugged back in: its subscriptions go with it, and
+         * the new port has to be found and subscribed to again. Before this,
+         * replugging the DDJ-FLX10 left Engine deaf to it until a restart. */
+        if (ev->source.client == SND_SEQ_CLIENT_SYSTEM) {
+            if ((ev->type == SND_SEQ_EVENT_CLIENT_EXIT || ev->type == SND_SEQ_EVENT_PORT_EXIT) &&
+                forward_client >= 0 && ev->data.addr.client == forward_client) {
+                printf("forwarded controller gone (%d:%d)\n", forward_client, forward_port);
+                fflush(stdout);
+                forward_client = forward_port = -1;
+            } else if (ev->type == SND_SEQ_EVENT_PORT_START && forward_match &&
+                       forward_client < 0) {
+                connect_forward_source(forward_match, 1);
+            }
+            if (snd_seq_event_input_pending(seq, 0) <= 0) break;
+            continue;
+        }
         /* Anything from the forwarded controller goes straight out to Engine.
          * Engine's own messages to us (LEDs, pad displays, the inquiry) come
          * from a different client and must not be echoed back. */
@@ -804,8 +823,14 @@ static void handle_incoming(void) {
 /* Subscribe to the first sequencer port whose client name contains `match`
  * and that can be read from, skipping our own client and Engine's. Matching on
  * a substring rather than an exact name keeps this usable against whatever
- * name a given controller's USB descriptor produces. */
-static int connect_forward_source(const char *match) {
+ * name a given controller's USB descriptor produces.
+ *
+ * Kernel clients -- real hardware -- come first, and with kernel_only nothing
+ * else will do. Engine opens ports of its own on every MIDI device, named
+ * after it ("Midi::Out::DDJ-FLX10 MIDI 1"), and after a replug Engine's was
+ * announced before the controller's and was taken in its place. */
+static int connect_forward_source(const char *match, int kernel_only) {
+    if (!kernel_only && connect_forward_source(match, 1) == 0) return 0;
     snd_seq_client_info_t *cinfo;
     snd_seq_port_info_t *pinfo;
     snd_seq_client_info_alloca(&cinfo);
@@ -818,6 +843,7 @@ static int connect_forward_source(const char *match) {
         const char *cname = snd_seq_client_info_get_name(cinfo);
         if (client == me || client == SND_SEQ_CLIENT_SYSTEM) continue;
         if (!cname || !strstr(cname, match)) continue;
+        if (kernel_only && snd_seq_client_info_get_type(cinfo) != SND_SEQ_KERNEL_CLIENT) continue;
 
         snd_seq_port_info_set_client(pinfo, client);
         snd_seq_port_info_set_port(pinfo, -1);
@@ -838,13 +864,14 @@ static int connect_forward_source(const char *match) {
                  * has any business with this port, and one that advertised
                  * some would be a second device for Engine to enumerate. */
                 if (led_map_count > 0 || led_send_count > 0 || echo_lamps) {
-                    lamp_port = snd_seq_create_simple_port(
-                        seq, "lamps", 0, SND_SEQ_PORT_TYPE_APPLICATION);
+                    /* Made once and reconnected after a replug. */
+                    if (lamp_port < 0)
+                        lamp_port = snd_seq_create_simple_port(
+                            seq, "lamps", 0, SND_SEQ_PORT_TYPE_APPLICATION);
                     if (lamp_port < 0 ||
                         snd_seq_connect_to(seq, lamp_port, client, port) < 0) {
                         fprintf(stderr, "could not send to %d:%d; --led-map "
                                         "will do nothing\n", client, port);
-                        lamp_port = -1;
                     } else {
                         if (led_map_count > 0)
                             printf("lighting %d lamps on it\n", led_map_count);
@@ -860,13 +887,13 @@ static int connect_forward_source(const char *match) {
             }
         }
     }
-    fprintf(stderr, "no readable port found matching \"%s\"\n", match);
+    if (!kernel_only)   /* the kernel-only pass is retried on every new port */
+        fprintf(stderr, "no readable port found matching \"%s\"\n", match);
     return -1;
 }
 
 int main(int argc, char **argv) {
     const char *client_name = NULL;   /* argv[1], else named after the product */
-    const char *forward_match = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) {
@@ -991,7 +1018,14 @@ int main(int argc, char **argv) {
            client_name, snd_seq_client_id(seq), my_port);
     fflush(stdout);
 
-    if (forward_match) connect_forward_source(forward_match);
+    if (forward_match) {
+        connect_forward_source(forward_match, 0);
+        /* Announcements of clients and ports coming and going; see the top
+         * of handle_incoming. */
+        if (snd_seq_connect_from(seq, my_port, SND_SEQ_CLIENT_SYSTEM,
+                                 SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
+            fprintf(stderr, "could not watch for the controller being replugged\n");
+    }
 
     /* Poll stdin and the sequencer together: commands can arrive at any time,
      * but so can Engine's identity request, and missing that means the

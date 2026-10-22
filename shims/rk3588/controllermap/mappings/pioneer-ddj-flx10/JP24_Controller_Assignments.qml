@@ -206,6 +206,27 @@ MidiAssignment {
 				ledType: LedType.Simple
 			}
 
+			// KEY SYNC as key lock, like the MC6000MK2's KEY LOCK: the module
+			// holds for Engine's key sync and flashes the lamp while the key is
+			// shifted. The long press (0x1A) is left alone; a press sends 0x65
+			// either way. SHIFT is hardware here, so key reset is its own note.
+			KeyLock {
+				note: 0x65 // KEY SYNC
+				ledType: LedType.Simple
+			}
+
+			ValueNoteAssignment {
+				objectName: 'Key Reset Deck ' + deckConfig.name
+				note: 0x64 // KEY SYNC + SHIFT
+				channel: deckConfig.midiChannel
+				enabled: deckConfig.inDJMode
+				output: ActionOutput {
+					target: PropertyTarget {
+						path: deckConfig.activeDeckTrackPath + 'KeyReset'
+					}
+				}
+			}
+
 			Slip {
 				note: 0x40 // SLIP
 			}

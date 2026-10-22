@@ -18,7 +18,7 @@ Item {
 		"Track/SongLoaded", "Track/SongAnalyzed", "Track/SongName", "Track/ArtistName",
 		"Track/TrackNetworkPath", "Track/TrackLength", "Track/SampleRate",
 		"Track/SongPosition", "Track/PlayPosition", "Track/TrackPosition",
-		"Track/CurrentKey", "Track/CurrentKeyCents", "Track/KeyLock",
+		"Track/CurrentKey", "Track/CurrentKeyCents", "Track/KeyLock", "Track/KeyOffset",
 		"Track/OriginalTempo", "Track/MetaDataBPM",
 		"Track/LoopEnableState", "Track/CurrentLoopInPosition",
 		"Track/CurrentLoopOutPosition", "Track/CurrentLoopSizeInBeats",

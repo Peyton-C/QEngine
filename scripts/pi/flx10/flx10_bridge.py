@@ -210,14 +210,17 @@ def camelot_byte(key):
     return 0x80
 
 
-def build_xx27(deck_byte, bpm, wall_sec, wall_dur, tempo_pct, key_byte, loop):
+def build_xx27(deck_byte, bpm, wall_sec, wall_dur, tempo_pct, key_byte, loop, key_shift=0):
     """Veezuhz's final xx 27 (screen.js v5), with the BPM decimals corrected:
     b5/b6 elapsed min/sec, b7/b8 sub-second ms (0..999), b9..b12 duration,
     b13 BPM, b14 high nibble tenths, b15 hundredths, b16/b17 tempo % x100,
-    b21/b22 position counters kept in phase with b6, b27 loop, b29 key."""
+    b21/b22 position counters kept in phase with b6, b27 loop, b29 key,
+    b30 key shift in semitones + 13. Stepping b30 read 0 at 13, +12 at 25,
+    one semitone a step; 26 hid both the shift and the key."""
     p = bytearray(128)
     p[0], p[1], p[2], p[3], p[4] = deck_byte, 0x27, 0xB4, 0x88, 0x01
-    p[19], p[20], p[25], p[30] = 0x07, 0x0E, 0x80, 0x0D
+    p[19], p[20], p[25] = 0x07, 0x0E, 0x80
+    p[30] = 13 + max(-12, min(12, key_shift))
     p[31] = STATE_BYTE_31[deck_byte]
     p[32], p[33], p[34] = 0xAD, 0x05, 0x00
     p[29] = key_byte
@@ -435,6 +438,7 @@ class Deck:
         orig = field(d, "Track/OriginalTempo", "u") or 0.0
         self.ratio = self.bpm / orig if orig > 0 and self.bpm > 0 else 1.0
         self.key = field(d, "Track/CurrentKey", "s") or ""
+        self.key_shift = int(field(d, "Track/KeyOffset", "u") or 0)
         self.loop = bool(field(d, "Track/LoopEnableState", "st"))
         self.t = t
 
@@ -449,7 +453,8 @@ class Deck:
             wall = self.last_wall
         self.last_wall = wall
         return build_xx27(DECK_BYTES[self.n], self.bpm, wall, self.duration / self.ratio,
-                          (self.ratio - 1.0) * 100.0, camelot_byte(self.key), self.loop)
+                          (self.ratio - 1.0) * 100.0, camelot_byte(self.key), self.loop,
+                          self.key_shift)
 
 
 class Bridge:

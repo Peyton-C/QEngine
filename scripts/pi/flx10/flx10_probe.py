@@ -2,7 +2,9 @@
 """
 Step bytes of the xx 27 deck state through values, to find what they drive.
 Decks 1 and 2 get a fake loaded track; each byte is set to each value in turn
-for a moment while the rest stay as the bridge sends them.
+for a moment while the rest stay as the bridge sends them. The BPM readout
+shows the step, so a change on the screen can be told apart without a clock:
+23.04 is byte 23 at its fifth value.
 
 Stop the bridge first (systemctl stop flx10-bridge); Engine can keep running.
 
@@ -33,18 +35,21 @@ def main():
 
     values = [1 << i for i in range(8)] if args.values == "bits" else \
              [int(v, 0) for v in args.values.split(",")]
-    steps = [(b, v) for b in (int(x) for x in args.bytes.split(",")) for v in values]
-    steps.append((None, None))
+    steps = [(b, i, v) for b in (int(x) for x in args.bytes.split(","))
+             for i, v in enumerate(values)]
+    steps.append((None, None, None))
 
     t0 = time.monotonic()
-    for b, v in steps:
-        print(f"{time.strftime('%H:%M:%S')} " + (f"byte {b} = 0x{v:02x}" if b is not None else "baseline"),
+    for b, i, v in steps:
+        print(f"{time.strftime('%H:%M:%S')} " +
+              (f"byte {b} = 0x{v:02x} (BPM {b}.{i:02d})" if b is not None else "baseline"),
               flush=True)
         end = time.monotonic() + args.hold
         while time.monotonic() < end:
             ctl.keepalive(time.monotonic())
             t = time.monotonic() - t0
-            for deck, bpm in ((1, 128.0), (2, 174.5)):
+            for deck in (1, 2):
+                bpm = b + i / 100 if b is not None else 128.0
                 p = bytearray(B.build_xx27(B.DECK_BYTES[deck], bpm, t, 300.0, 0.0, 0x82, False))
                 if b is not None:
                     p[b] = v

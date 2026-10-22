@@ -22,6 +22,7 @@ The bridge speaks through the kernel's own drivers and claims nothing, so midisu
 | `flx10-bridge.service` | Runs the bridge at boot |
 | `flx10_screen_test.py` | Drives the screens with fake decks, for protocol work without Engine |
 | `flx10_art_test.py` | Sends one track's cover by hand, in the layouts that were tried |
+| `flx10_probe.py` | Steps bytes of the deck state packet through values, to find what they drive |
 | `rb_init_sequence.json` | rekordbox's start-up traffic to the controller, replayed to wake the screens |
 
 ## Limits

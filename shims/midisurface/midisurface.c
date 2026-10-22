@@ -670,10 +670,18 @@ static void send_to_controller(int ch, int param, int val) {
         fprintf(stderr, "send to controller failed: %s\n", snd_strerror(err));
 }
 
-/* One of Engine's events, unchanged, to the controller. See --echo-lamps. */
+/* One of Engine's events to the controller, as it is but for note offs, which
+ * go as a note on at velocity 0. Engine puts a lamp out with a note off, and
+ * the DDJ-FLX10 ignores those: its ACTIVE PART lamps stayed lit through every
+ * one Engine sent, and went out at once for a velocity-0 note on, which is the
+ * "OFF=0x00" of Pioneer's own message list. See --echo-lamps. */
 static void echo_to_controller(const snd_seq_event_t *in) {
     if (lamp_port < 0) return;
     snd_seq_event_t ev = *in;
+    if (ev.type == SND_SEQ_EVENT_NOTEOFF) {
+        ev.type = SND_SEQ_EVENT_NOTEON;
+        ev.data.note.velocity = 0;
+    }
     snd_seq_ev_set_source(&ev, lamp_port);
     snd_seq_ev_set_subs(&ev);
     snd_seq_ev_set_direct(&ev);

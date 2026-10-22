@@ -248,32 +248,87 @@ MidiAssignment {
 				rightNote: 0x53 // CUE/LOOP CALL >
 			}
 
-			// The ACTIVE PART buttons toggle their stems, as in rekordbox. The
-			// G2 uses this component for Acapella and Instrumental; the single
-			// parts are the stem pad mode's toggles, reached the same way.
-			// INST is Melody and Bass together: two entries, one note.
-			StemsOverrides {
-				ledType: LedType.Simple
-				buttonsModel: ListModel {
-					ListElement {
-						part: "Drums"
-						shiftFx: "Fx"
-						note: 0x0D // ACTIVE PART DRUMS
+			// The ACTIVE PART buttons toggle their stems, as in rekordbox: the
+			// stem pad mode's per-part toggles, and with SHIFT the part's FX.
+			// INST is Melody and Bass together.
+			//
+			// Written out rather than StemsOverrides for the lamps, which the
+			// FLX10 also shows as its jog ring colour. StemsOverrides sends 127
+			// for on and 1 for off straight to MIDI, past the device file, and
+			// the FLX10 lights at any non-zero value, so the lamps stayed lit.
+			//
+			// Plain concatenation and loops below: Engine pre-parses assignment
+			// files, and a template string ending in a substitution made it reject
+			// this whole file, leaving the controller dead.
+			Repeater {
+				model: ListModel {
+					ListElement { note: 0x0D; parts: "Drums" }       // ACTIVE PART DRUMS
+					ListElement { note: 0x0E; parts: "Vocal" }       // ACTIVE PART VOCAL
+					ListElement { note: 0x0F; parts: "Melody,Bass" } // ACTIVE PART INST
+				}
+
+				Item {
+					id: partButton
+					readonly property int note: model.note
+					readonly property var partList: model.parts.split(",")
+					readonly property QObjProperty pStemmed: Planck.getProperty(deckConfig.activeDeckTrackPath + 'Stemmed')
+					readonly property bool stemmed: pStemmed && pStemmed.translator && pStemmed.translator.state
+					// BackgroundActive is what follows a part being muted (true while
+					// it plays). StemsOverrides lights from <part>State, which stayed
+					// true through every toggle.
+					readonly property var pStates: {
+						var list = []
+						for (var i = 0; i < partList.length; i++)
+							list.push(Planck.getProperty(deckConfig.activeDeckPath + 'Stems/' + partList[i] + 'BackgroundActive'))
+						return list
 					}
-					ListElement {
-						part: "Vocal"
-						shiftFx: "Fx"
-						note: 0x0E // ACTIVE PART VOCAL
+					readonly property bool active: {
+						for (var i = 0; i < pStates.length; i++) {
+							var p = pStates[i]
+							if (p && p.translator && p.translator.state)
+								return true
+						}
+						return false
 					}
-					ListElement {
-						part: "Melody"
-						shiftFx: "Fx"
-						note: 0x0F // ACTIVE PART INST
+
+					Repeater {
+						model: partButton.partList
+
+						Item {
+							ValueNoteAssignment {
+								objectName: 'Stem %1 Deck %2'.arg(modelData).arg(deckConfig.name)
+								note: partButton.note
+								channel: deckConfig.midiChannel
+								enabled: !globalConfig.shift && deckConfig.inDJMode && partButton.stemmed
+								output: ActionOutput {
+									target: PropertyTarget {
+										path: deckConfig.activeDeckPath + 'Stems/' + modelData
+									}
+								}
+							}
+
+							ValueNoteAssignment {
+								objectName: 'Stem %1 Fx Deck %2'.arg(modelData).arg(deckConfig.name)
+								note: partButton.note
+								channel: deckConfig.midiChannel
+								enabled: globalConfig.shift && deckConfig.inDJMode && partButton.stemmed
+								output: ActionOutput {
+									target: PropertyTarget {
+										path: deckConfig.activeDeckPath + 'Stems/' + modelData + 'Fx'
+									}
+								}
+							}
+						}
 					}
-					ListElement {
-						part: "Bass"
-						shiftFx: "Fx"
-						note: 0x0F // ACTIVE PART INST
+
+					OutputAssignment {
+						objectName: 'Stem LED %1 Deck %2'.arg(model.parts).arg(deckConfig.name)
+						properties: { 'ledValue': '' }
+						readonly property int ledValue: partButton.stemmed && partButton.active ? 127 : 0
+						function send() {
+							device.sendSimpleColor(deckConfig.midiChannel, partButton.note, ledValue)
+						}
+						Component.onCompleted: send()
 					}
 				}
 			}

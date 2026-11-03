@@ -78,6 +78,42 @@ sudo AUDIO_CARD=vc4hdmi1 CUE_CARD=H630 qengine/chroot-engine.sh
 
 On a Prime 4 G2 the headphones are channels 3-4, which is the default; the master is 1-2 and is repeated on 5-6 and 7-8. For another product, start once with `ALSASHIM_METER=1` and read the per-channel levels in `engine.log`, then set `CUE_CHANNEL`. The second card runs 30-80ms behind the first and, having its own clock, may glitch briefly every several minutes; the main output is not affected.
 
+### Under sway (Wayland)
+Engine OS ships Qt with eglfs only, so by default Engine takes over the display. With the Wayland pieces added back in, it can run as a window in [sway](https://swaywm.org/) instead, next to anything else, and the screen can be captured (`grim`).
+
+Stage with `--wayland`. That adds a libEGL with the Wayland platform (from the same Mesa build as the libgallium), the libwayland libraries, and Qt's Wayland plugin, which [build_qtwayland.sh](../build_scripts/build_qtwayland.sh) builds for the rootfs's own Qt and checks against it. eglfs keeps working with all of it installed.
+
+```sh
+scripts/pi/stage_for_pi.sh --name jp24-5.1.1 --wayland
+```
+
+On the Pi, once: `sudo apt install sway seatd`. Then start sway with [sway.config](sway.config), and Engine in it:
+
+```sh
+mkdir -p ~/.config/sway && cp qengine/sway.config ~/.config/sway/config
+# Over SSH, or anywhere without a seat of its own:
+WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 LIBSEAT_BACKEND=seatd \
+    XDG_RUNTIME_DIR=/run/user/$(id -u) setsid sway > /tmp/sway.log 2>&1 < /dev/null &
+sudo PLATFORM=wayland qengine/chroot-engine.sh
+```
+
+- Start sway with Engine stopped. An eglfs Engine holds the display, sway then comes up with no output, and aborts as soon as Engine's window appears.
+- `WLR_RENDER_DRM_DEVICE` is required. sway otherwise renders through the display device, which has no render node, and tells its clients to use it; Engine's Mesa cannot, and renders on the CPU without a word in any log. With it, sway and Engine both render on the v3d render node. `ls -l /proc/$(pgrep -f ^/usr/Engine/Engine)/fd | grep renderD128` shows Engine on the GPU.
+- Engine has to be fullscreen, as sway.config makes it: the window's height over 800 is what `QT_SCALE_FACTOR` must be (1440 / 800 = 1.8), as with eglfs.
+- Engine ignores mouse clicks. The Wayland plugin, as built here, turns the left button into touch (`QT_WAYLAND_MOUSE_AS_TOUCH=1`, which chroot-engine.sh sets), so touchbridge and cursorshim are not used; sway draws the pointer.
+- A keyboard types into Engine through sway (tried in search). Engine OS's Qt is built without xkbcommon, which the Wayland plugin needs to turn keys into characters, so this build carries Qt's xkbcommon code itself and uses the rootfs's own libxkbcommon.
+- `PLATFORM=wayland` can go in `pi.env`, but qengine.service does not start sway, so it is not for booting yet.
+
+[sway-split.config](sway-split.config) instead puts Engine at its own 1280x800 in the top left of a 2560x1440 output, with a terminal beside it and one along the bottom:
+
+```sh
+WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 LIBSEAT_BACKEND=seatd \
+    XDG_RUNTIME_DIR=/run/user/$(id -u) setsid sway -c qengine/sway-split.config > /tmp/sway.log 2>&1 < /dev/null &
+sudo PLATFORM=wayland SCREEN="1280 800" QT_SCALE_FACTOR= qengine/chroot-engine.sh
+```
+
+Engine lays itself out for the screen rather than its window, so in a window smaller than the output `SCREEN` has to be the window's size: the Wayland plugin then reports the screen as that size (`QT_WAYLAND_SCREEN_SIZE`, another option of this build of it). `QT_SCALE_FACTOR=` clears the one in `pi.env`.
+
 ## Settings
 
 Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the common ones and [chroot-engine.sh](chroot-engine.sh) documents all of them. The ones you are most likely to need:
@@ -88,6 +124,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 | `CUE_CARD` | none | a second card for the headphone output; `CUE_CHANNEL` (default 3) picks the pair |
 | `SCREEN` | `1280 800` | size to run at; the monitor must offer it. Other heights need `QT_SCALE_FACTOR`, see Known limits |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |
+| `PLATFORM` | `eglfs` | `wayland` to run in a compositor; see Under sway |
 | `MIDI_FORWARD` | none | a real controller, by sequencer name |
 | `MIDI_FORWARD_ARGS` | none | `midisurface` options that controller's mapping needs |
 

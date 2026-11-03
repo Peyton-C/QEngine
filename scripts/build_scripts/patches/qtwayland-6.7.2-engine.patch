@@ -1,0 +1,310 @@
+Subject: [PATCH] client: run against Engine OS's QtGui, and take a mouse as touch
+Applies-to: qtwayland-everywhere-src-6.7.2 (download.qt.io release tarball)
+Modified-files: src/client/*.cpp, src/client/*_p.h, src/plugins/shellintegration/
+                xdg-shell/qwaylandxdgshell.cpp (LGPL-3.0-only OR GPL-2.0-only OR
+                GPL-3.0-only, per their headers); src/client/CMakeLists.txt
+                (BSD-3-Clause); new src/client/qtgui_wayland_iface.cpp, taken from
+                qtbase's src/gui/platform/unix/qunixnativeinterface.cpp (same
+                license as the client sources)
+Modified-by: Peyton Cashin <66343323+Peyton-C@users.noreply.github.com>, 2026-11-03
+License: offered under the license of each file it modifies. This patch is NOT
+         covered by the MIT LICENSE at the root of this repository. See
+         ./README.md.
+
+Engine OS ships QtGui 6.7.2 built without the cursor, sessionmanager and
+wayland features, and without QtWaylandClient. build_qtwayland.sh builds a
+qtbase configured the same way and this client against it, for the client to
+load into Engine's own QtGui. Three changes make that possible, three make
+Engine usable in it:
+
+  * qtgui_wayland_iface.cpp: the QNativeInterface::QWaylandApplication,
+    QWaylandScreen and Private::QWaylandWindow interfaces, which QtGui defines
+    only with its wayland feature on, so Engine's has none of them. Defined in
+    the client instead. build_qtwayland.sh generates the moc file it includes.
+
+  * cursor guards: the client mostly builds without QtGui's cursor feature
+    already; createPlatformCursor(), QWaylandDisplay::reconnect() and the
+    xdg-shell popup enter events did not.
+
+  * QT_WAYLAND_MOUSE_AS_TOUCH=1: QWaylandWindow delivers the left mouse button
+    as a single touch point. Engine ignores mouse clicks, and under eglfs
+    touchbridge does the same conversion; under a compositor the compositor
+    owns the mouse.
+
+  * QT_WAYLAND_SCREEN_SIZE=WxH: QWaylandScreen reports that size. Engine lays
+    itself out for the screen and not its window, so in a window smaller than
+    the output it was cropped; under eglfs the two are always the same.
+
+  * keyboard: QtGui's xkbcommon feature is off as well, and without it the
+    client drops every key. CMakeLists.txt builds QtGui's own xkbcommon helper
+    (qxkbcommon*.cpp, copied from qtbase by build_qtwayland.sh) into the client
+    and links libxkbcommon, which Engine OS ships.
+--- a/src/client/CMakeLists.txt
++++ b/src/client/CMakeLists.txt
+@@ -11,6 +11,8 @@
+     PLUGIN_TYPES wayland-graphics-integration-client wayland-inputdevice-integration wayland-decoration-client wayland-shell-integration
+     GENERATE_CPP_EXPORTS
+     SOURCES
++        qtgui_wayland_iface.cpp
++        qxkbcommon.cpp qxkbcommon_3rdparty.cpp
+         ../shared/qwaylandinputmethodeventbuilder.cpp ../shared/qwaylandinputmethodeventbuilder_p.h
+         ../shared/qwaylandmimehelper.cpp ../shared/qwaylandmimehelper_p.h
+         ../shared/qwaylandsharedmemoryformathelper_p.h
+@@ -112,6 +114,13 @@
+ ## Scopes:
+ #####################################################################
+ 
++# Engine OS: its QtGui is built without xkbcommon, so the client carries the
++# xkbcommon helper from QtGui (above) and links the library itself.
++qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_xkbcommon
++    LIBRARIES
++        xkbcommon
++)
++
+ # special case begin
+ #
+ # Do not explicitly add XKB::XKB. This is already done by Qt::GuiPrivate.
+@@ -124,22 +133,26 @@
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_tabletevent
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylandtabletv2.cpp qwaylandtabletv2_p.h
+ )
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_clipboard
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylandclipboard.cpp qwaylandclipboard_p.h
+ )
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_vulkan
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylandvulkaninstance.cpp qwaylandvulkaninstance_p.h
+         qwaylandvulkanwindow.cpp qwaylandvulkanwindow_p.h
+ )
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_cursor
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylandcursor.cpp qwaylandcursor_p.h
+     PUBLIC_LIBRARIES
+         Wayland::Cursor
+@@ -147,6 +160,7 @@
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_wayland_datadevice
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylanddatadevice.cpp qwaylanddatadevice_p.h
+         qwaylanddatadevicemanager.cpp qwaylanddatadevicemanager_p.h
+         qwaylanddataoffer.cpp qwaylanddataoffer_p.h
+@@ -155,11 +169,13 @@
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_wayland_client_primary_selection
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylandprimaryselectionv1.cpp qwaylandprimaryselectionv1_p.h
+ )
+ 
+ qt_internal_extend_target(WaylandClient CONDITION QT_FEATURE_draganddrop
+     SOURCES
++        qtgui_wayland_iface.cpp
+         qwaylanddnd.cpp qwaylanddnd_p.h
+ )
+ 
+--- a/src/client/qtgui_wayland_iface.cpp
++++ b/src/client/qtgui_wayland_iface.cpp
+@@ -0,0 +1,17 @@
++// The Wayland native interfaces from qtbase's qunixnativeinterface.cpp. Engine's
++// QtGui is built without the wayland feature, so it has none of them, and
++// QtWaylandClient implements all three; defined here they ship with it.
++#include <QtCore/private/qnativeinterface_p.h>
++#include <QtGui/qguiapplication.h>
++#include <QtGui/qguiapplication_platform.h>
++#include <QtGui/qscreen.h>
++#include <QtGui/qscreen_platform.h>
++#include <qpa/qplatformwindow_p.h>
++
++QT_BEGIN_NAMESPACE
++QT_DEFINE_NATIVE_INTERFACE(QWaylandApplication);
++QT_DEFINE_NATIVE_INTERFACE(QWaylandScreen);
++QT_DEFINE_PRIVATE_NATIVE_INTERFACE(QWaylandWindow);
++QT_END_NAMESPACE
++
++#include "qtgui_wayland_iface_moc.cpp"
+--- a/src/client/qwaylanddisplay.cpp
++++ b/src/client/qwaylanddisplay.cpp
+@@ -429,8 +429,10 @@
+ 
+     // mCompositor
+     mShm.reset();
++#if QT_CONFIG(cursor)
+     mCursorThemes.clear();
+     mCursor.reset();
++#endif
+ 
+     mGlobals = GlobalHolder();
+ 
+--- a/src/client/qwaylandintegration.cpp
++++ b/src/client/qwaylandintegration.cpp
+@@ -284,10 +284,12 @@
+    return new QWaylandScreen(waylandDisplay, version, id);
+ }
+ 
++#if QT_CONFIG(cursor)
+ QWaylandCursor *QWaylandIntegration::createPlatformCursor(QWaylandDisplay *display) const
+ {
+    return new QWaylandCursor(display);
+ }
++#endif
+ 
+ #if QT_CONFIG(vulkan)
+ QPlatformVulkanInstance *QWaylandIntegration::createPlatformVulkanInstance(QVulkanInstance *instance) const
+--- a/src/client/qwaylandintegration_p.h
++++ b/src/client/qwaylandintegration_p.h
+@@ -92,7 +92,9 @@
+ 
+     virtual QWaylandInputDevice *createInputDevice(QWaylandDisplay *display, int version, uint32_t id) const;
+     virtual QWaylandScreen *createPlatformScreen(QWaylandDisplay *waylandDisplay, int version, uint32_t id) const;
++#if QT_CONFIG(cursor)
+     virtual QWaylandCursor *createPlatformCursor(QWaylandDisplay *display) const;
++#endif
+ 
+     virtual QWaylandClientBufferIntegration *clientBufferIntegration() const;
+     virtual QWaylandServerBufferIntegration *serverBufferIntegration() const;
+--- a/src/client/qwaylandscreen.cpp
++++ b/src/client/qwaylandscreen.cpp
+@@ -104,6 +104,19 @@
+ 
+ QRect QWaylandScreen::geometry() const
+ {
++    // QT_WAYLAND_SCREEN_SIZE=WxH reports the screen as that size, at the
++    // output's position, for an application that lays itself out for the
++    // screen and not its window (Engine) in a window smaller than the output.
++    static const QSize sizeOverride = [] {
++        const QList<QByteArray> wh = qgetenv("QT_WAYLAND_SCREEN_SIZE").split('x');
++        return wh.size() == 2 ? QSize(wh[0].toInt(), wh[1].toInt()) : QSize();
++    }();
++    if (sizeOverride.isValid() && !sizeOverride.isEmpty()) {
++        const QPoint origin = zxdg_output_v1::isInitialized() ? mXdgGeometry.topLeft()
++                                                               : mGeometry.topLeft();
++        return QRect(origin, sizeOverride);
++    }
++
+     if (zxdg_output_v1::isInitialized()) {
+         return mXdgGeometry;
+     } else {
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -27,6 +27,7 @@
+ #include <QGuiApplication>
+ #include <qpa/qwindowsysteminterface.h>
+ #include <QtGui/private/qwindow_p.h>
++#include <QtGui/QPointingDevice>
+ 
+ #include <QtCore/QDebug>
+ #include <QtCore/QThread>
+@@ -1163,6 +1164,55 @@
+     return nullptr;
+ }
+ 
++// QT_WAYLAND_MOUSE_AS_TOUCH=1 delivers the left mouse button as a single touch
++// point, for an interface that only acts on touch (Engine) driven with a mouse
++// under a compositor. Hover and the other buttons stay mouse events.
++static bool deliverMouseAsTouch(QWindow *window, const QWaylandPointerEvent &e)
++{
++    static const bool enabled = qEnvironmentVariableIntValue("QT_WAYLAND_MOUSE_AS_TOUCH");
++    if (!enabled || !window->handle())
++        return false;
++    static QPointingDevice *device = [] {
++        auto *d = new QPointingDevice(QStringLiteral("mouse as touch"), 0x6d6174,
++                                      QInputDevice::DeviceType::TouchScreen,
++                                      QPointingDevice::PointerType::Finger,
++                                      QInputDevice::Capability::Position
++                                              | QInputDevice::Capability::Area,
++                                      1, 0);
++        QWindowSystemInterface::registerInputDevice(d);
++        return d;
++    }();
++    static bool down = false;
++
++    QEventPoint::State state;
++    if (e.type == QEvent::MouseButtonPress && e.button == Qt::LeftButton) {
++        if (down)
++            return true;
++        down = true;
++        state = QEventPoint::State::Pressed;
++    } else if (e.type == QEvent::MouseButtonRelease && e.button == Qt::LeftButton) {
++        if (!down)
++            return true;
++        down = false;
++        state = QEventPoint::State::Released;
++    } else if (e.type == QEvent::MouseMove && down) {
++        state = QEventPoint::State::Updated;
++    } else {
++        return false;
++    }
++
++    const QRect geometry = window->handle()->geometry();
++    QWindowSystemInterface::TouchPoint point;
++    point.id = 0;
++    point.state = state;
++    point.pressure = state == QEventPoint::State::Released ? 0 : 1;
++    point.area = QRectF(e.global - QPointF(4, 4), QSizeF(8, 8));
++    point.normalPosition = QPointF(e.local.x() / qMax(1, geometry.width()),
++                                   e.local.y() / qMax(1, geometry.height()));
++    QWindowSystemInterface::handleTouchEvent(window, e.timestamp, device, { point }, e.modifiers);
++    return true;
++}
++
+ void QWaylandWindow::handleMouse(QWaylandInputDevice *inputDevice, const QWaylandPointerEvent &e)
+ {
+     if (e.type == QEvent::Leave) {
+@@ -1188,6 +1238,8 @@
+             case QEvent::MouseButtonPress:
+             case QEvent::MouseButtonRelease:
+             case QEvent::MouseMove:
++                if (deliverMouseAsTouch(window(), e))
++                    break;
+                 QWindowSystemInterface::handleMouseEvent(window(), e.timestamp, e.local, e.global, e.buttons, e.button, e.type, e.modifiers);
+                 break;
+             case QEvent::Wheel:
+--- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
++++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+@@ -11,7 +11,9 @@
+ #include <QtWaylandClient/private/qwaylandwindow_p.h>
+ #include <QtWaylandClient/private/qwaylandinputdevice_p.h>
+ #include <QtWaylandClient/private/qwaylandscreen_p.h>
++#if QT_CONFIG(cursor)
+ #include <QtWaylandClient/private/qwaylandcursor_p.h>
++#endif
+ #include <QtWaylandClient/private/qwaylandabstractdecoration_p.h>
+ 
+ #include <QtGui/QGuiApplication>
+@@ -244,8 +246,12 @@
+         QWindow *enter = nullptr;
+         if (m_parentXdgSurface && m_parentXdgSurface->window()) {
+             enter = m_parentXdgSurface->window()->window();
++#if QT_CONFIG(cursor)
+             const auto pos = m_xdgSurface->window()->display()->waylandCursor()->pos();
+             QWindowSystemInterface::handleEnterEvent(enter, enter->handle()->mapFromGlobal(pos), pos);
++#else
++            QWindowSystemInterface::handleEnterEvent(enter);
++#endif
+         }
+     }
+ }
+@@ -599,8 +605,12 @@
+         enter = m_popup->m_xdgSurface->window()->window();
+ 
+     if (enter) {
++#if QT_CONFIG(cursor)
+         const auto pos = m_popup->m_xdgSurface->window()->display()->waylandCursor()->pos();
+         QWindowSystemInterface::handleEnterEvent(enter, enter->handle()->mapFromGlobal(pos), pos);
++#else
++        QWindowSystemInterface::handleEnterEvent(enter);
++#endif
+     }
+ }
+ 

@@ -36,6 +36,33 @@ for so in "$STAGE"/libgallium-*.so; do
     echo "installed $name"
 done
 
+# Wayland, from stage_for_pi.sh --wayland: a libEGL from the same Mesa build as
+# the libgallium above, with the Wayland platform the vendor one lacks; the
+# libwayland libraries no Engine OS rootfs has; and Qt's Wayland plugin, beside
+# the rootfs's own Qt. None of it changes how Engine runs under eglfs.
+if [ -e "$STAGE/libEGL.so.1.0.0" ]; then
+    [ -e "$R/usr/lib/libEGL.so.1.0.0.vendor" ] ||
+        cp -a "$R/usr/lib/libEGL.so.1.0.0" "$R/usr/lib/libEGL.so.1.0.0.vendor"
+    install -o 0 -g 0 -m 755 "$STAGE/libEGL.so.1.0.0" "$R/usr/lib/libEGL.so.1.0.0"
+    echo "installed libEGL.so.1.0.0"
+fi
+if [ -d "$STAGE/wayland" ]; then
+    for so in "$STAGE"/wayland/*.so.*; do
+        install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/$(basename "$so")"
+    done
+    echo "installed libwayland"
+fi
+if [ -d "$STAGE/qtwayland" ]; then
+    cp -a "$STAGE"/qtwayland/libQt6Wayland*.so.6* "$R/usr/lib/"
+    chown -h 0:0 "$R"/usr/lib/libQt6Wayland*.so.6*
+    for d in "$STAGE"/qtwayland/plugins/*/; do
+        d="$(basename "$d")"
+        mkdir -p "$R/usr/lib/plugins/$d"
+        install -o 0 -g 0 -m 755 "$STAGE/qtwayland/plugins/$d"/*.so "$R/usr/lib/plugins/$d/"
+    done
+    echo "installed qtwayland"
+fi
+
 for f in dtshim.so alsashim.so teeshim.so cursorshim.so quitshim.so drmatomic.so touchbridge midisurface; do
     [ -e "$STAGE/$f" ] || continue
     install -o 0 -g 0 -m 755 "$STAGE/$f" "$R/root/$f"

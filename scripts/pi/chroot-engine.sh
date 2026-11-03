@@ -19,6 +19,18 @@
 #
 # Environment (or $QENGINE_DIR/pi.env, which both scripts read):
 #   QENGINE_DIR, ENGINE_ROOT   as in chroot-up.sh
+#   PLATFORM      eglfs (default): Engine owns the display, as on a unit.
+#                 wayland: Engine is a window in a compositor already running
+#                 on the host, such as sway. Needs the Wayland Qt and Mesa that
+#                 stage_for_pi.sh --wayland stages. The compositor then owns the
+#                 display, mouse and pointer, so CONNECTOR, TB_ARGS and
+#                 cursorshim do not apply. SCREEN is the size Engine is told
+#                 its screen is, and has to be the size of its window, since
+#                 Engine lays out for the screen: the whole output when it is
+#                 fullscreen (the default), or e.g. "1280 800" in a window that
+#                 size. QT_SCALE_FACTOR applies to it as under eglfs.
+#   WAYLAND_PATH  with PLATFORM=wayland, the compositor's socket on the host.
+#                 Default: the newest /run/user/*/wayland-N.
 #   SCREEN        "W H" to run at. Default "1280 800", the size the UI is laid
 #                 out for. Engine hangs at start-up at any other height unless
 #                 QT_SCALE_FACTOR is set to H / 800, so that it still lays out
@@ -60,36 +72,59 @@ PRODUCT="$(cat "$R/root/fake-dt/inmusic,product-code" 2>/dev/null || true)"
 [ -n "$PRODUCT" ] || { echo "ERROR: no product code in $R/root/fake-dt." >&2; exit 1; }
 
 ### display ###################################################################
-# The size has to agree in three places: the "mode" Qt is given, the touch
-# device and the pointer. touchbridge would otherwise size itself from the
-# monitor's preferred mode, which is not the one in use.
-SCREEN="${SCREEN:-1280 800}"
-MODE="${SCREEN/ /x}"
+PLATFORM="${PLATFORM:-eglfs}"
+case "$PLATFORM" in eglfs|wayland) ;; *)
+    echo "ERROR: PLATFORM is eglfs or wayland, not '$PLATFORM'." >&2; exit 1 ;;
+esac
 
-if [ -z "${CONNECTOR:-}" ]; then
-    for c in /sys/class/drm/card*-HDMI-A-*; do
-        [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
-        CONNECTOR="${c##*/card?-}"
-        break
-    done
-fi
-[ -n "${CONNECTOR:-}" ] || {
-    echo "ERROR: no connected HDMI output; plug a display in or set CONNECTOR." >&2; exit 1; }
+if [ "$PLATFORM" = wayland ]; then
+    # The compositor runs on the host as its own user, and its socket lives in
+    # that user's runtime directory, which the chroot cannot see. The directory
+    # is bound in, not the socket, so a restarted compositor is still reachable.
+    if [ -z "${WAYLAND_PATH:-}" ]; then
+        WAYLAND_PATH="$(ls -t /run/user/*/wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -n 1)"
+    fi
+    [ -S "${WAYLAND_PATH:-}" ] || {
+        echo "ERROR: no Wayland compositor socket${WAYLAND_PATH:+ at $WAYLAND_PATH}; start one or set WAYLAND_PATH." >&2
+        exit 1; }
+    [ -e "$R/usr/lib/plugins/platforms/libqwayland-egl.so" ] || {
+        echo "ERROR: this rootfs has no Wayland Qt; stage with --wayland and reinstall." >&2; exit 1; }
+    mkdir -p "$R/run/qengine-wayland"
+    mountpoint -q "$R/run/qengine-wayland" && umount "$R/run/qengine-wayland"
+    mount --bind "$(dirname "$WAYLAND_PATH")" "$R/run/qengine-wayland"
+    # Qt wants a runtime directory of its own, private to the user it runs as.
+    mkdir -p -m 0700 "$R/run/user/0"
+else
+    # The size has to agree in three places: the "mode" Qt is given, the touch
+    # device and the pointer. touchbridge would otherwise size itself from the
+    # monitor's preferred mode, which is not the one in use.
+    SCREEN="${SCREEN:-1280 800}"
+    MODE="${SCREEN/ /x}"
 
-# Rewritten from the vendor file on every launch, so a changed port or size
-# takes effect and nothing accumulates. Three things the stock file cannot know:
-#   device  a Pi has two DRM devices -- v3d renders, vc4 owns the connectors --
-#           and Qt has to be pointed at the one with a display on it. By path,
-#           because their card numbers are not stable across boots.
-#   name    Qt ignores settings for an output it cannot match, and names
-#           connectors without punctuation (HDMI-A-2 is "HDMI2").
-#   mode    otherwise Qt takes the monitor's preferred mode.
-SCREEN_CFG="$R/usr/Engine/ScreenConfiguration/$PRODUCT/ScreenConfiguration.json"
-[ -f "$SCREEN_CFG" ] || {
-    echo "ERROR: this firmware has no screen configuration for $PRODUCT." >&2; exit 1; }
-[ -f "$SCREEN_CFG.stock" ] || cp -a "$SCREEN_CFG" "$SCREEN_CFG.stock"
-KMS_DEVICE="$(ls /dev/dri/by-path/*gpu-card 2>/dev/null | head -n 1)"
-python3 - "$SCREEN_CFG" "${CONNECTOR/-A-/}" "$MODE" "$KMS_DEVICE" <<'EOF'
+    if [ -z "${CONNECTOR:-}" ]; then
+        for c in /sys/class/drm/card*-HDMI-A-*; do
+            [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+            CONNECTOR="${c##*/card?-}"
+            break
+        done
+    fi
+    [ -n "${CONNECTOR:-}" ] || {
+        echo "ERROR: no connected HDMI output; plug a display in or set CONNECTOR." >&2; exit 1; }
+
+    # Rewritten from the vendor file on every launch, so a changed port or size
+    # takes effect and nothing accumulates. Three things the stock file cannot know:
+    #   device  a Pi has two DRM devices -- v3d renders, vc4 owns the connectors --
+    #           and Qt has to be pointed at the one with a display on it. By path,
+    #           because their card numbers are not stable across boots.
+    #   name    Qt ignores settings for an output it cannot match, and names
+    #           connectors without punctuation (HDMI-A-2 is "HDMI2").
+    #   mode    otherwise Qt takes the monitor's preferred mode.
+    SCREEN_CFG="$R/usr/Engine/ScreenConfiguration/$PRODUCT/ScreenConfiguration.json"
+    [ -f "$SCREEN_CFG" ] || {
+        echo "ERROR: this firmware has no screen configuration for $PRODUCT." >&2; exit 1; }
+    [ -f "$SCREEN_CFG.stock" ] || cp -a "$SCREEN_CFG" "$SCREEN_CFG.stock"
+    KMS_DEVICE="$(ls /dev/dri/by-path/*gpu-card 2>/dev/null | head -n 1)"
+    python3 - "$SCREEN_CFG" "${CONNECTOR/-A-/}" "$MODE" "$KMS_DEVICE" <<'EOF'
 import json, sys
 path, name, mode, device = sys.argv[1:5]
 cfg = json.load(open(path + ".stock"))
@@ -102,7 +137,8 @@ cfg["outputs"] = [out]
 json.dump(cfg, open(path, "w"), indent=4)
 EOF
 
-TB_ARGS="${TB_ARGS:---pointer --mouse --symlink /dev/input/qengine-touch0 $SCREEN}"
+    TB_ARGS="${TB_ARGS:---pointer --mouse --symlink /dev/input/qengine-touch0 $SCREEN}"
+fi
 
 ### audio #####################################################################
 # AUDIO_CARD=Loopback sends Engine's output to ALSA's loopback card, for
@@ -147,11 +183,26 @@ if [ -n "${CUE_CARD:-}" ]; then
 fi
 
 ### environment ###############################################################
-SHIMS=/root/cursorshim.so:/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
+# Under a compositor the pointer is the compositor's to draw.
+SHIMS=/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
+[ "$PLATFORM" = eglfs ] && SHIMS=/root/cursorshim.so:$SHIMS
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
+if [ "$PLATFORM" = wayland ]; then
+    # No decorations: the window is the whole interface, and the compositor
+    # can draw a frame if it wants one. Engine ignores mouse clicks, so the
+    # Wayland plugin hands the left button over as touch (what touchbridge does
+    # under eglfs) -- an option of this build of it, see build_qtwayland.sh.
+    QPA=(QT_QPA_PLATFORM=wayland-egl XDG_RUNTIME_DIR=/run/user/0
+         "WAYLAND_DISPLAY=/run/qengine-wayland/$(basename "$WAYLAND_PATH")"
+         QT_WAYLAND_DISABLE_WINDOWDECORATION=1 QT_WAYLAND_MOUSE_AS_TOUCH=1)
+    # Also this build's: the screen reported as the window's size.
+    [ -n "${SCREEN:-}" ] && QPA+=("QT_WAYLAND_SCREEN_SIZE=${SCREEN/ /x}")
+else
+    QPA=(QT_QPA_PLATFORM=eglfs EGL_PLATFORM=gbm)
+fi
 ENVV=("${BASE[@]}"
       LD_PRELOAD=$SHIMS
-      QT_QPA_PLATFORM=eglfs EGL_PLATFORM=gbm
+      "${QPA[@]}"
       # The card name on this product's allowlist is its own product code, on
       # both products tried so far (RMZ2, JP24).
       ALSASHIM_CARD=$CARD_INDEX "ALSASHIM_AS=${ALSASHIM_AS:-$PRODUCT}"
@@ -220,9 +271,11 @@ if [ -x "$R/root/controllermap/controllermap.sh" ]; then
 fi
 
 rm -f "$R/run/midisurface.fifo"; mkfifo "$R/run/midisurface.fifo"
-# shellcheck disable=SC2086  # TB_ARGS is a list of words on purpose
-setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /root/touchbridge $TB_ARGS \
-    > "$R/run/touchbridge.log" 2>&1 < /dev/null &
+if [ "$PLATFORM" = eglfs ]; then
+    # shellcheck disable=SC2086  # TB_ARGS is a list of words on purpose
+    setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /root/touchbridge $TB_ARGS \
+        > "$R/run/touchbridge.log" 2>&1 < /dev/null &
+fi
 setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /bin/sh -c \
     "exec 3<>/run/midisurface.fifo; exec /root/midisurface --motor-off ${MIDI_FORWARD:+--forward $MIDI_FORWARD ${MIDI_FORWARD_ARGS:-}} < /run/midisurface.fifo" \
     > "$R/run/midisurface.log" 2>&1 &
@@ -240,4 +293,9 @@ if [ -x "$QENGINE_DIR/powerkey.py" ]; then
         > "$R/run/powerkey.log" 2>&1 < /dev/null &
 fi
 
-echo "started $PRODUCT at $MODE on $CONNECTOR, audio on ${AUDIO_CARD:-<none>}${CUE_INDEX:+ and $CUE_CARD}${MIDI_FORWARD:+, forwarding $MIDI_FORWARD}"
+if [ "$PLATFORM" = wayland ]; then
+    WHERE="in the compositor at $WAYLAND_PATH"
+else
+    WHERE="at $MODE on $CONNECTOR"
+fi
+echo "started $PRODUCT $WHERE, audio on ${AUDIO_CARD:-<none>}${CUE_INDEX:+ and $CUE_CARD}${MIDI_FORWARD:+, forwarding $MIDI_FORWARD}"

@@ -41,8 +41,11 @@
 #                 /proc/asound/cards), since card numbers follow plug order.
 #                 Default: the first USB audio card. The monitor's speakers
 #                 are vc4hdmi0 (HDMI-A-1) or vc4hdmi1 (HDMI-A-2).
-#                 "Loopback" loads and uses ALSA's loopback card.
-#   CUE_CARD      a second sound card, by ALSA id, to play one more of Engine's
+#                 "Loopback" loads and uses ALSA's loopback card. Or a name
+#                 in /dev/snd/by-path, the USB socket the card is in, for two
+#                 cards with the same id: a DDJ-FLX10's two USB ports are two
+#                 identical cards, DDJFLX10 and DDJFLX10_1 in plug order.
+#   CUE_CARD     a second sound card, by ALSA id, to play one more of Engine's
 #                 outputs on -- headphones on a USB card while the master goes
 #                 to HDMI, say. Default: none.
 #   CUE_CHANNEL   which output that is: the first channel of its pair, counting
@@ -153,23 +156,33 @@ if [ "${AUDIO_CARD:-}" = Loopback ]; then
     ALSASHIM_BUFFER_SCALE="${ALSASHIM_BUFFER_SCALE:-8}"
 fi
 
+# A card's index: by its ALSA id, or by its name in /dev/snd/by-path.
+# /proc/asound/cards lines look like " 1 [Headset        ]: USB-Audio - ...".
+card_index() {
+    local p="/dev/snd/by-path/$1"
+    if [ -n "$1" ] && [ -L "$p" ]; then
+        basename "$(readlink "$p")" | sed -n 's/^controlC\([0-9]*\)$/\1/p'
+    else
+        grep -E "^ *[0-9]+ \[${1:-<none>} *\]:" /proc/asound/cards | awk '{print $1; exit}'
+    fi
+}
+
 # Started at boot (qengine.service), this can run before a USB card has
 # enumerated: wait up to CARD_WAIT seconds for the ones named.
 for _ in $(seq 1 "${CARD_WAIT:-0}"); do
     missing=""
     for c in "${AUDIO_CARD:-}" "${CUE_CARD:-}"; do
-        [ -z "$c" ] || grep -qE "^ *[0-9]+ \[$c *\]:" /proc/asound/cards || missing=1
+        [ -z "$c" ] || [ -n "$(card_index "$c")" ] || missing=1
     done
     [ -n "$missing" ] || break
     sleep 1
 done
 
-# /proc/asound/cards lines look like " 1 [Headset        ]: USB-Audio - ...".
 card_id() { sed -n 's/^ *[0-9]* \[\([^] ]*\) *\]:.*/\1/p'; }
 if [ -z "${AUDIO_CARD:-}" ]; then
     AUDIO_CARD="$(grep 'USB-Audio' /proc/asound/cards | card_id | head -n 1)"
 fi
-CARD_INDEX="$(grep -E "^ *[0-9]+ \[${AUDIO_CARD:-<none>} *\]:" /proc/asound/cards | awk '{print $1; exit}')"
+CARD_INDEX="$(card_index "${AUDIO_CARD:-}")"
 if [ -z "$CARD_INDEX" ]; then
     echo "WARNING: no sound card with id '${AUDIO_CARD:-<none>}'; Engine will have no audio." >&2
     echo "         Available:" >&2; grep '^ *[0-9]' /proc/asound/cards >&2
@@ -177,7 +190,7 @@ if [ -z "$CARD_INDEX" ]; then
 fi
 CUE_INDEX=""
 if [ -n "${CUE_CARD:-}" ]; then
-    CUE_INDEX="$(grep -E "^ *[0-9]+ \[$CUE_CARD *\]:" /proc/asound/cards | awk '{print $1; exit}')"
+    CUE_INDEX="$(card_index "$CUE_CARD")"
     [ -n "$CUE_INDEX" ] ||
         echo "WARNING: no sound card with id '$CUE_CARD'; no second output." >&2
 fi

@@ -120,7 +120,7 @@ Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the
 
 | Variable | Default | |
 | --- | --- | --- |
-| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` (`vc4hdmi1` is HDMI-A-2), or `Loopback` |
+| `AUDIO_CARD` | first USB audio card | ALSA id from `/proc/asound/cards` (`vc4hdmi1` is HDMI-A-2), a name in `/dev/snd/by-path` (the USB socket, for two cards with one id), or `Loopback` |
 | `CUE_CARD` | none | a second card for the headphone output; `CUE_CHANNEL` (default 3) picks the pair |
 | `SCREEN` | `1280 800` | size to run at; the monitor must offer it. Other heights need `QT_SCALE_FACTOR`, see Known limits |
 | `CONNECTOR` | first connected HDMI | e.g. `HDMI-A-2` |

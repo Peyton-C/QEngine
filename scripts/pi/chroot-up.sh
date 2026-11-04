@@ -10,6 +10,8 @@
 #   QENGINE_DIR  where rootfs.img lives and data.img is created.
 #                Default: ~/qengine of the user who ran sudo.
 #   ENGINE_ROOT  where the rootfs is mounted. Default: /srv/engine
+#   IGNORE_DRIVES  USB drives Engine is not to mount, by serial number or
+#                volume label, separated by spaces. Default: none.
 set -euo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
@@ -54,13 +56,21 @@ mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
 # a chroot it sees the host's. Engine OS marks its own internal storage with
 # these properties (90-edisks-az04.rules); this does the same for this
 # machine's, so only real removable drives are offered to Engine as media.
+# IGNORE_DRIVES adds USB drives, by serial number or volume label, for something
+# else on the machine to have, such as the XDJ-RX3 player.
 RULE=/etc/udev/rules.d/90-qengine-edisks.rules
-if [ ! -e "$RULE" ]; then
-    cat > "$RULE" <<'RULES'
-# Written by qengine chroot-up.sh: keep Engine OS's disk service off this
-# machine's own storage.
-SUBSYSTEM=="block", KERNEL=="mmcblk*|loop*|zram*|ram*|nvme*", ENV{EDISKSD_IGNORE}="1"
-RULES
+RULES='# Written by qengine chroot-up.sh: keep Engine OS'"'"'s disk service off this
+# machine'"'"'s own storage, and off the drives IGNORE_DRIVES in pi.env names.
+SUBSYSTEM=="block", KERNEL=="mmcblk*|loop*|zram*|ram*|nvme*", ENV{EDISKSD_IGNORE}="1"'
+for d in ${IGNORE_DRIVES:-}; do
+    case "$d" in *[!A-Za-z0-9._-]*)
+        echo "WARNING: IGNORE_DRIVES: skipping '$d' (letters, digits, . _ - only)" >&2; continue ;;
+    esac
+    RULES+=$'\n'"SUBSYSTEM==\"block\", ENV{ID_SERIAL_SHORT}==\"$d\", ENV{EDISKSD_IGNORE}=\"1\""
+    RULES+=$'\n'"SUBSYSTEM==\"block\", ENV{ID_FS_LABEL}==\"$d\", ENV{EDISKSD_IGNORE}=\"1\""
+done
+if [ "$(cat "$RULE" 2>/dev/null)" != "$RULES" ]; then
+    printf '%s\n' "$RULES" > "$RULE"
     udevadm control --reload
     udevadm trigger --subsystem-match=block --action=change
     udevadm settle

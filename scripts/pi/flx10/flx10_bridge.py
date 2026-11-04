@@ -75,6 +75,47 @@ def usbmidi_decode(data):
 KEEPALIVE = usbmidi_decode(bytes.fromhex("04f000400405000004040100075000f7"))[0]
 
 
+def card_index(name):
+    """A sound card's index from its /dev/snd/by-path name or its ALSA id."""
+    link = f"/dev/snd/by-path/{name}"
+    if os.path.islink(link):
+        m = re.fullmatch(r"controlC(\d+)", os.path.basename(os.path.realpath(link)))
+        return int(m[1]) if m else None
+    for idf in glob.glob("/proc/asound/card[0-9]*/id"):
+        if open(idf).read().strip() == name:
+            return int(re.search(r"card(\d+)", idf)[1])
+    return None
+
+
+def find_port(name):
+    """One port of a controller with two (each is its own USB device, with the
+    same IDs): its USB device and sequencer client, both from the sound card
+    `name`. The kernel numbers card N's sequencer client 16 + 4N."""
+    card = card_index(name)
+    if card is None:
+        return None, None
+    intf = os.path.realpath(f"/sys/class/sound/card{card}/device")
+    sysfs = "/sys/bus/usb/devices/" + os.path.basename(os.path.dirname(intf))
+    try:
+        if (int(open(f"{sysfs}/idVendor").read(), 16), int(open(f"{sysfs}/idProduct").read(), 16)) != (VID, PID):
+            return None, None
+    except (OSError, ValueError):
+        return None, None
+    client = 16 + 4 * card
+    return sysfs, (client if seq_client_name(client) is not None else None)
+
+
+def seq_client_name(client):
+    try:
+        for line in open("/proc/asound/seq/clients"):
+            m = re.match(r'Client\s+(\d+)\s*:\s*"([^"]*)"', line)
+            if m and int(m[1]) == client:
+                return m[2]
+    except OSError:
+        pass
+    return None
+
+
 def find_device():
     for vf in glob.glob("/sys/bus/usb/devices/*/idVendor"):
         d = os.path.dirname(vf)
@@ -549,9 +590,12 @@ class Bridge:
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.waveformer, daemon=True).start()
         while not self.stop.is_set():
-            sysfs = find_device()
+            if self.args.port:
+                sysfs, client = find_port(self.args.port)
+            else:
+                sysfs = find_device()
+                client = find_seq_client() if sysfs else None
             hid = find_hidraw(sysfs) if sysfs else None
-            client = find_seq_client() if sysfs else None
             if not (hid and client):
                 time.sleep(2)
                 continue
@@ -584,6 +628,9 @@ def main():
                     help="cap waveform columns (0 = none); the firmware drops bigger uploads")
     ap.add_argument("--squeeze", action="store_true",
                     help="fit long tracks into the cap instead of clipping their end")
+    ap.add_argument("--port", default="",
+                    help="with both of the controller's USB ports connected, the one Engine is on: its "
+                         "sound card's name in /dev/snd/by-path, or its ALSA id (default: the first found)")
     args = ap.parse_args()
     if os.geteuid() != 0:
         sys.exit("need root")

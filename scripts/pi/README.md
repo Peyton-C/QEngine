@@ -123,6 +123,7 @@ sudo PLATFORM=wayland SCREEN="1280 800" QT_SCALE_FACTOR= qengine/chroot-engine.s
 sudo systemctl start rx3
 ```
 
+- With the FLX10's two USB ports on Engine and the RX3, set `FLX10_PORT` in `pi.env` to Engine's port, so `flx10-bridge` drives the jog screens through it and leaves the other to the RX3. Each port's screens show the decks that port has.
 - The RX3's window can be any size. Its 1280x800 picture is scaled by sway and letterboxed, and clicks are mapped back through the same scaling.
 
 To boot into this layout, with `qengine.service` and the RX3's `rx3.service` already installed: [qengine-sway.service](qengine-sway.service) starts sway at boot, and two drop-ins put Engine ([qengine-wayland.conf](qengine-wayland.conf)) and the RX3 ([rx3-wayland.conf](rx3-wayland.conf)) in it once it is up.

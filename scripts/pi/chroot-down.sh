@@ -94,7 +94,9 @@ if mountpoint -q "$R"; then
 fi
 
 # chroot-up.sh took the login prompt off the display. Not while the machine is
-# going down, when asking for a unit to start only gets in the way.
-if [ "$(systemctl is-system-running 2>/dev/null)" != stopping ]; then
+# going down, when asking for a unit to start only gets in the way, and not
+# while qengine-sway.service has the display, which the prompt would stop.
+if [ "$(systemctl is-system-running 2>/dev/null)" != stopping ] &&
+   ! systemctl -q is-active qengine-sway.service; then
     systemctl start --no-block getty@tty1.service 2>/dev/null || true
 fi

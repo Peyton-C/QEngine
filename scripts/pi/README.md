@@ -102,7 +102,7 @@ sudo PLATFORM=wayland qengine/chroot-engine.sh
 - Engine has to be fullscreen, as sway.config makes it: the window's height over 800 is what `QT_SCALE_FACTOR` must be (1440 / 800 = 1.8), as with eglfs.
 - Engine ignores mouse clicks. The Wayland plugin, as built here, turns the left button into touch (`QT_WAYLAND_MOUSE_AS_TOUCH=1`, which chroot-engine.sh sets), so touchbridge and cursorshim are not used; sway draws the pointer.
 - A keyboard types into Engine through sway (tried in search). Engine OS's Qt is built without xkbcommon, which the Wayland plugin needs to turn keys into characters, so this build carries Qt's xkbcommon code itself and uses the rootfs's own libxkbcommon.
-- `PLATFORM=wayland` can go in `pi.env`, but qengine.service does not start sway, so it is not for booting yet.
+- `PLATFORM=wayland` can go in `pi.env`, but qengine.service does not start sway by itself; for booting under sway, see the end of this section.
 
 [sway-split.config](sway-split.config) instead puts Engine at its own 1280x800 in the top left of a 2560x1440 output, with a terminal beside it and one along the bottom:
 
@@ -113,6 +113,30 @@ sudo PLATFORM=wayland SCREEN="1280 800" QT_SCALE_FACTOR= qengine/chroot-engine.s
 ```
 
 Engine lays itself out for the screen rather than its window, so in a window smaller than the output `SCREEN` has to be the window's size: the Wayland plugin then reports the screen as that size (`QT_WAYLAND_SCREEN_SIZE`, another option of this build of it). `QT_SCALE_FACTOR=` clears the one in `pi.env`.
+
+[sway-rx3.config](sway-rx3.config) puts the XDJ-RX3 player from [Rx3-flx4](https://github.com/mutlisensor/Rx3-flx4) where the right-hand terminal was, with `RX3_DISPLAY=wayland` in its `rx3.conf`. Its `rx3-wl-present` then shows the player's picture as a window and takes clicks and touches from sway, in place of `rx3-fb-present` and `rx3-touch-bridge`:
+
+```sh
+WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 LIBSEAT_BACKEND=seatd \
+    XDG_RUNTIME_DIR=/run/user/$(id -u) setsid sway -c qengine/sway-rx3.config > /tmp/sway.log 2>&1 < /dev/null &
+sudo PLATFORM=wayland SCREEN="1280 800" QT_SCALE_FACTOR= qengine/chroot-engine.sh
+sudo systemctl start rx3
+```
+
+- The RX3's window can be any size. Its 1280x800 picture is scaled by sway and letterboxed, and clicks are mapped back through the same scaling.
+
+To boot into this layout, with `qengine.service` and the RX3's `rx3.service` already installed: [qengine-sway.service](qengine-sway.service) starts sway at boot, and two drop-ins put Engine ([qengine-wayland.conf](qengine-wayland.conf)) and the RX3 ([rx3-wayland.conf](rx3-wayland.conf)) in it once it is up.
+
+```sh
+cd ~/qengine
+sed "s|@QENGINE_DIR@|$PWD|; s|@USER@|$(id -un)|" qengine-sway.service | sudo tee /etc/systemd/system/qengine-sway.service
+sudo install -D -m644 qengine-wayland.conf /etc/systemd/system/qengine.service.d/wayland.conf
+sudo install -D -m644 rx3-wayland.conf /etc/systemd/system/rx3.service.d/wayland.conf
+sudo systemctl daemon-reload && sudo systemctl enable qengine-sway rx3
+```
+
+- sway takes tty1, so there is no login prompt on the display; `chroot-down.sh` leaves tty1 alone while `qengine-sway` is running.
+- To boot Engine alone again: `sudo rm -r /etc/systemd/system/qengine.service.d && sudo systemctl disable qengine-sway rx3`.
 
 ## Settings
 

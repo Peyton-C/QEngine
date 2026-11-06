@@ -13,23 +13,6 @@
 extract_rootfs() {
     _firmware="$1"
     _dest="$2"
-
-    # The candidate search below is written against binwalk 3's output. Debian and
-    # Ubuntu still package binwalk 2, and when that runs instead the failure surfaces
-    # later as a missing filesystem, which reads as a problem with the firmware rather
-    # than the tool, so check up front. Only binwalk 3 prints "binwalk 3.x" here.
-    if ! command -v binwalk >/dev/null 2>&1; then
-        echo "ERROR: binwalk not found. QEngine needs binwalk 3.1, see the BUILD_*.md for your target." >&2
-        return 1
-    fi
-    case "$(binwalk --version 2>/dev/null)" in
-        "binwalk 3."*) ;;
-        *)
-            echo "ERROR: QEngine needs binwalk 3.1, and $(command -v binwalk) is an older one." >&2
-            echo "       Distribution packages are often binwalk 2; install 3 with cargo or Homebrew." >&2
-            return 1 ;;
-    esac
-
     _scratch="$(mktemp -d /tmp/qengine-extract.XXXXXX)"
 
     echo "--- extracting $_firmware with binwalk (this scans the whole image, ~10s+) ---"

@@ -442,6 +442,13 @@ Environment=ALSASHIM_CARD=0
 # or set 1 to leave Engine's own buffering alone entirely.
 #Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
+# The card name each product's allowlist accepts is its own product code, so the
+# card has to claim the code this rootfs spoofs. alsashim's own default is RMZ2,
+# which a JP24 rootfs rejects: Engine skips the card and has no audio device.
+# Outside the quoted heredoc above so PRODUCT_CODE expands. chroot-engine.sh
+# does the same on the Pi.
+echo "Environment=ALSASHIM_AS=$PRODUCT_CODE" \
+    >> /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf
 
 if [ "$MONTERO" = 1 ]; then
     install_montero /mnt/rootfs "$SHIM_ARCH" /stage

@@ -210,6 +210,7 @@ static int irq_affinity_writable(long irq) {
 typedef struct {
     long irq;
     char *line; /* full real /proc/interrupts line for this IRQ, no newline */
+    int msi;    /* an MSI edge interrupt: the preferred kind, see below */
 } irq_candidate_t;
 
 /* Reads the real /proc/interrupts, returns a malloc'd fake-content string
@@ -255,8 +256,18 @@ static char *build_fake_interrupts(void) {
          * never matched — meaning ncand was always 0 here, and every
          * "successful" run on this kernel, including earlier interactive
          * tests, was silently taking the static fallback file the whole
-         * time, never actually exercising this path. */
-        if (!strstr(line, "MSI") || !strstr(line, "Edge")) continue;
+         * time, never actually exercising this path.
+         *
+         * MSI edge interrupts are a preference, not a requirement. They are
+         * what a QEMU guest has plenty of, but a machine with no PCI devices
+         * has none: a Raspberry Pi 5 lists only GICv2 and rp1_irq_chip lines,
+         * so requiring MSI left ncand at 0 there and handed Engine the static
+         * fallback, whose IRQ numbers do not exist on that machine -- its
+         * "echo N > /proc/irq/16/smp_affinity_list" then failed at open, which
+         * the write() interceptor never sees, and Engine aborted. Any IRQ that
+         * survives the write-back probe will do, so the others are kept as a
+         * second choice and used only when there is no MSI line at all. */
+        int msi = strstr(line, "MSI") && strstr(line, "Edge");
 
         char *colon = strchr(line, ':');
         if (!colon) continue;
@@ -270,10 +281,24 @@ static char *build_fake_interrupts(void) {
         }
         cands[ncand].irq = irq;
         cands[ncand].line = strdup(line);
+        cands[ncand].msi = msi;
         ncand++;
     }
     free(line);
     fclose(f);
+
+    /* Keep only the MSI candidates where there are any, so a QEMU guest picks
+     * exactly what it always did. */
+    size_t nmsi = 0;
+    for (size_t i = 0; i < ncand; i++) nmsi += cands[i].msi ? 1 : 0;
+    if (nmsi > 0 && nmsi < ncand) {
+        size_t kept = 0;
+        for (size_t i = 0; i < ncand; i++) {
+            if (cands[i].msi) cands[kept++] = cands[i];
+            else free(cands[i].line);
+        }
+        ncand = kept;
+    }
 
     if (ncand == 0) {
         free(out);

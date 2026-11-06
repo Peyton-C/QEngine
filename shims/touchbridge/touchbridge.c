@@ -45,6 +45,15 @@
  * EVIOCGABS at startup, not assumed/hardcoded — QEMU's usb-tablet reports
  * 0..32767 today, but this works unchanged if that ever changes.
  *
+ * `--mouse` swaps the source for ordinary relative mice, for running on real
+ * hardware with no touchscreen attached (a Raspberry Pi with a monitor). There is
+ * no absolute position to translate then, so this keeps one itself: it starts at
+ * the centre of the screen, adds each mouse's movement, and clamps to the edges.
+ * Every mouse present is used and grabbed, and mice plugged in later are picked
+ * up, so which one it is never has to be configured. Left button is the finger,
+ * exactly as with the tablet. Combine with --pointer, since a monitor shows no
+ * pointer of its own.
+ *
  * One instance per display. JP22 has three screens, and a single tablet cannot
  * serve them: every window would drive the same absolute device and the guest
  * could not tell which screen a click landed on. The launcher instead gives each
@@ -62,6 +71,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <dirent.h>
+#include <poll.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <linux/uinput.h>
 #include <linux/input.h>
@@ -75,6 +86,7 @@ static int opt_index = 0;
 static int opt_check = 0;
 static int opt_wait = 0;
 static int opt_pointer = 0;
+static int opt_mouse = 0;
 static int ptrfd = -1;
 
 /* Defined below main()'s helpers but called from the uinput setup above them. */
@@ -82,6 +94,8 @@ static void publish_symlink(const char *link_path);
 
 #define BITS_PER_LONG (8 * (int)sizeof(long))
 #define ABS_BITS_LEN ((ABS_MAX / BITS_PER_LONG) + 1)
+#define REL_BITS_LEN ((REL_MAX / BITS_PER_LONG) + 1)
+#define KEY_BITS_LEN ((KEY_MAX / BITS_PER_LONG) + 1)
 
 static int bit_is_set(const unsigned long *bits, int bit) {
     return (bits[bit / BITS_PER_LONG] >> (bit % BITS_PER_LONG)) & 1;
@@ -463,6 +477,169 @@ static void publish_symlink(const char *link_path) {
         fprintf(stderr, "Published %s -> %s\n", link_path, target);
 }
 
+/* One report's worth of state, whatever the source: where the pointer is and
+ * whether the finger is down. */
+static void apply_state(int x, int y, int btn_down) {
+    if (ptrfd >= 0) pointer_move(x, y);
+
+    if (btn_down && !touch_active) {
+        touch_down(x, y);
+        touch_active = 1;
+    } else if (btn_down && touch_active) {
+        touch_move(x, y);
+    } else if (!btn_down && touch_active) {
+        touch_up();
+        touch_active = 0;
+    }
+}
+
+/* A plain relative mouse: X/Y movement and a left button. Anything with absolute
+ * axes is a tablet or touchscreen and is the other mode's business, and this
+ * program's own devices must never be fed back into it. */
+static int device_looks_like_mouse(int fd, const char *name) {
+    if (strncmp(name, "TouchBridge", 11) == 0) return 0;
+
+    unsigned long relbits[REL_BITS_LEN], keybits[KEY_BITS_LEN], absbits[ABS_BITS_LEN];
+    memset(relbits, 0, sizeof(relbits));
+    memset(keybits, 0, sizeof(keybits));
+    memset(absbits, 0, sizeof(absbits));
+    if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) < 0) return 0;
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) < 0) return 0;
+    ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits);
+
+    return bit_is_set(relbits, REL_X) && bit_is_set(relbits, REL_Y) &&
+           bit_is_set(keybits, BTN_LEFT) && !bit_is_set(absbits, ABS_X);
+}
+
+#define MAX_MICE 8
+
+struct mouse {
+    int fd;
+    char path[64];
+};
+
+/* Whether sysfs says this event device reports relative X and Y, without opening
+ * it. Opening is not free for every input device: on a Raspberry Pi the HDMI
+ * ports each expose a CEC remote, and opening one takes over 100ms. Scanning by
+ * open() therefore stalled this program for a quarter of a second per pass,
+ * which with a pass per loop iteration cut pointer updates to about three a
+ * second. Only devices that pass this test are opened at all. */
+static int sysfs_says_relative(const char *event_name) {
+    char path[160];
+    snprintf(path, sizeof(path), "/sys/class/input/%.40s/device/capabilities/rel", event_name);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    /* Space-separated hex words, most significant first; REL_X and REL_Y are
+     * bits 0 and 1 of the last one. */
+    unsigned long word = 0, last = 0;
+    while (fscanf(f, "%lx", &word) == 1) last = word;
+    fclose(f);
+    return (last & 0x3) == 0x3;
+}
+
+/* Opens and grabs any mouse not already held. Returns the new count. */
+static int scan_for_mice(struct mouse *mice, int nmice) {
+    DIR *d = opendir("/dev/input");
+    if (!d) return nmice;
+    struct dirent *e;
+    while (nmice < MAX_MICE && (e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "event", 5) != 0) continue;
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/%.40s", e->d_name);
+
+        int held = 0;
+        for (int i = 0; i < nmice; i++)
+            if (strcmp(mice[i].path, path) == 0) held = 1;
+        if (held) continue;
+        if (!sysfs_says_relative(e->d_name)) continue;
+
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        char name[128] = {0};
+        if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) < 0 ||
+            !device_looks_like_mouse(fd, name)) {
+            close(fd);
+            continue;
+        }
+        if (ioctl(fd, EVIOCGRAB, 1) < 0)
+            fprintf(stderr, "EVIOCGRAB on %s failed (continuing ungrabbed): %s\n",
+                    path, strerror(errno));
+        fprintf(stderr, "Using mouse: %s (\"%s\")\n", path, name);
+        mice[nmice].fd = fd;
+        snprintf(mice[nmice].path, sizeof(mice[nmice].path), "%s", path);
+        nmice++;
+    }
+    closedir(d);
+    return nmice;
+}
+
+static int run_mouse_mode(void) {
+    struct mouse mice[MAX_MICE];
+    int nmice = 0;
+    int x = screen_w / 2, y = screen_h / 2, btn_down = 0;
+
+    struct timespec last_scan = {0, 0};
+
+    for (;;) {
+        /* Look for new mice every two seconds, not on every pass: the loop runs
+         * once per mouse report, a thousand times a second with a gaming mouse. */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (nmice == 0 || now.tv_sec - last_scan.tv_sec >= 2) {
+            nmice = scan_for_mice(mice, nmice);
+            last_scan = now;
+        }
+
+        struct pollfd pfd[MAX_MICE];
+        for (int i = 0; i < nmice; i++) {
+            pfd[i].fd = mice[i].fd;
+            pfd[i].events = POLLIN;
+            pfd[i].revents = 0;
+        }
+        /* The timeout is the hotplug check: with no mouse yet, or a second one
+         * arriving, the rescan above runs again within two seconds. */
+        if (poll(pfd, nmice, 2000) < 0 && errno != EINTR) {
+            fprintf(stderr, "poll failed: %s\n", strerror(errno));
+            return 1;
+        }
+
+        for (int i = 0; i < nmice; i++) {
+            int gone = (pfd[i].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
+            if (pfd[i].revents & POLLIN) {
+                struct input_event ev[32];
+                ssize_t n = read(mice[i].fd, ev, sizeof(ev));
+                if (n < 0 && errno != EAGAIN && errno != EINTR) gone = 1;
+                for (ssize_t k = 0; k < n / (ssize_t)sizeof(ev[0]); k++) {
+                    if (ev[k].type == EV_REL && ev[k].code == REL_X) {
+                        x += ev[k].value;
+                    } else if (ev[k].type == EV_REL && ev[k].code == REL_Y) {
+                        y += ev[k].value;
+                    } else if (ev[k].type == EV_KEY && ev[k].code == BTN_LEFT) {
+                        btn_down = ev[k].value != 0;
+                    } else if (ev[k].type == EV_SYN && ev[k].code == SYN_REPORT) {
+                        if (x < 0) x = 0;
+                        if (x >= screen_w) x = screen_w - 1;
+                        if (y < 0) y = 0;
+                        if (y >= screen_h) y = screen_h - 1;
+                        apply_state(x, y, btn_down);
+                    }
+                }
+            }
+            if (gone) {
+                fprintf(stderr, "Mouse %s went away.\n", mice[i].path);
+                close(mice[i].fd);
+                mice[i] = mice[nmice - 1];
+                pfd[i] = pfd[nmice - 1];
+                nmice--;
+                i--;
+                /* Unplugged mid-press: do not leave a finger on the screen. */
+                btn_down = 0;
+                apply_state(x, y, 0);
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     /* Flags first, then the historical positional forms:
      *   (none)                       auto-discover device, auto-detect size
@@ -482,6 +659,9 @@ int main(int argc, char **argv) {
      *   --symlink PATH   publish a stable path for Engine's touchDevice
      *   --pointer        also create a motion-only pointer device for cursorshim
      *                    to follow (see the header)
+     *   --mouse          take input from ordinary relative mice instead of the
+     *                    QEMU tablet (see the header); --index, --check and
+     *                    --wait do not apply
      */
     const char *src_path = NULL;
     char *discovered = NULL;
@@ -498,6 +678,7 @@ int main(int argc, char **argv) {
             /* --check takes no value, so it is handled before the pairing rule. */
             if (strcmp(argv[argi], "--check") == 0) { opt_check = 1; argi++; continue; }
             if (strcmp(argv[argi], "--pointer") == 0) { opt_pointer = 1; argi++; continue; }
+            if (strcmp(argv[argi], "--mouse") == 0) { opt_mouse = 1; argi++; continue; }
             fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[argi]);
             return 1;
         }
@@ -555,6 +736,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s [--head N | --index N] [--connector NAME] "
                         "[--symlink PATH] [<event-device>] [<width> <height>]\n", argv[0]);
         return 1;
+    }
+
+    if (opt_mouse) {
+        setup_uinput_device();
+        if (opt_pointer) setup_pointer_device();
+        return run_mouse_mode();
     }
 
     /* Probe only. A template instance for a head this launch did not create
@@ -649,17 +836,7 @@ int main(int argc, char **argv) {
                 if (cur_y >= screen_h) cur_y = screen_h - 1;
             }
 
-            if (ptrfd >= 0) pointer_move(cur_x, cur_y);
-
-            if (btn_down && !touch_active) {
-                touch_down(cur_x, cur_y);
-                touch_active = 1;
-            } else if (btn_down && touch_active) {
-                touch_move(cur_x, cur_y);
-            } else if (!btn_down && touch_active) {
-                touch_up();
-                touch_active = 0;
-            }
+            apply_state(cur_x, cur_y, btn_down);
         }
     }
 

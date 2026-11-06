@@ -3,6 +3,8 @@
 `PRODUCT_CODE=` selects which device identity the rootfs spoofs, the same way it does
 in the armv7 builder; the default is `RMZ2`. `JP22` and `JP24` ride the same rootfs
 and neither has been booted.
+`MONTERO=1` (`--montero` on `new_instance.sh`) also builds the MONTERO mod loader and
+every mod in `shims/montero/mods`, and preloads it into Engine.
 Requires docker, qemu, binwalk 3.1.X, e2fsprogs.
 
 The short way is one command, which does all of the below and keeps each device in its

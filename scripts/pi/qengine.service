@@ -1,0 +1,24 @@
+# qengine.service — starts Engine in its chroot when the machine boots.
+[Unit]
+Description=Engine OS in a chroot
+# chroot-up.sh stops the tty1 login prompt, which has to exist first.
+After=sound.target getty@tty1.service systemd-user-sessions.service
+
+[Service]
+# The scripts start everything in the background and return; what they started
+# stays in this unit and is stopped with it -- by chroot-down.sh, which has
+# Engine quit before anything it depends on goes away. That is also what
+# happens when the machine is shut down or rebooted.
+Type=oneshot
+RemainAfterExit=yes
+Environment=QENGINE_DIR=@QENGINE_DIR@
+# USB sound cards can take a while to appear after power-on.
+Environment=CARD_WAIT=30
+ExecStart=@QENGINE_DIR@/chroot-up.sh
+ExecStart=@QENGINE_DIR@/chroot-engine.sh
+TimeoutStartSec=120
+ExecStop=@QENGINE_DIR@/chroot-down.sh
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

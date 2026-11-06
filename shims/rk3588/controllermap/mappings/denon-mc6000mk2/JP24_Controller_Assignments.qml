@@ -1,0 +1,392 @@
+// Denon DJ MC6000MK2, as the Prime 4 G2's (JP24) control surface.
+// Decks 3 and 4, and the CH3/CH4 strips, as Engine's Left/Right decks and mixer
+// channels 1 and 2 -- the same choice, for the same reason, as this directory's
+// RMZ2 mapping. See README.md.
+//
+// Mixer and deck-button numbers are from that RMZ2 mapping, which was written
+// from the MC6000MK2 MIDI command list. Everything marked "captured" was read
+// off a real unit with aseqdump, and corrects two things the list did not say:
+//
+//   - which MIDI channel each deck sends on. Left is 0x00 (deck 1) or 0x01
+//     (deck 3); right is 0x02 (deck 2) or 0x03 (deck 4). Not 1-2-3-4 in order.
+//   - the SAMP. buttons do not follow DECK CHG. They always send on the side's
+//     first channel (0x00 left, 0x02 right), whichever deck is selected.
+//
+// Needs midisurface started with
+//
+//   --forward MC6000MK2 --pitchbend-cc 0x05,0x06 --relative-cc 0x51=0x37,0x4D
+//   --note-map 0:0x28=0x70
+//   --note-map 1:0x62=0:0x62 --note-map 2:0x63=0:0x63 --note-map 3:0x63=0:0x63
+//   --led-map /root/controllermap/mappings/denon-mc6000mk2/JP24_Controller_Leds.txt
+//
+// for the controls an assignment file cannot describe as the unit sends them:
+// the pitch faders (Pitch Bend), the jog wheels (relative ticks), the
+// browse-encoder push (the same note as the left deck's eighth pad) and the LOAD
+// buttons (sent on the deck's channel, wanted on the global one). Each is noted
+// where it is used below; midisurface.c explains the translations.
+//
+// The last line is the lamps. Engine lights a button by echoing its note; the
+// MC6000MK2 wants a Control Change naming a lamp number instead, and
+// JP24_Controller_Leds.txt is the table between the two. It is keyed on the
+// notes in this file, so a note changed here has to change there. Every LedType
+// is left at Simple: the unit's lamps are one colour, and the table reads only
+// lit, dim and dark.
+//
+// ---------------------------------------------------------------------------
+// DELIBERATELY UNMAPPED
+//
+//   The CH1/CH2 strips, FX -- the Prime 4 G2 has components for these, but
+//       with different shapes or numbers that have not been captured.
+//   Deck layers -- DECK CHG. changes the MIDI channel the deck section sends on,
+//       which Engine's DeckSelect cannot follow. Stay on decks 3 and 4.
+//   Microphones -- the G2 mixes them in software and the MC6000MK2 in hardware.
+//   Stem overrides, playlist banks, media slots -- no matching controls.
+//   VU meters -- Engine emits these in the G2's protocol, and --led-map only
+//       translates button lamps.
+
+import airAssignments 1.0
+import InputAssignment 0.1
+import OutputAssignment 0.1
+import ControlSurfaceModules 0.1
+import QtQuick 2.12
+import Planck 1.0
+
+MidiAssignment {
+	objectName: 'Denon MC6000MK2 as PRIME 4 MKII Controller Assignment'
+	id: assignment
+
+	Utility {
+		id: util
+	}
+
+	// The MC6000MK2's non-deck sections all transmit on MIDI channel 1.
+	GlobalAssignmentConfig {
+		id: globalConfig
+		midiChannel: 0x00
+	}
+
+	GlobalAction {
+		id: globalAction
+	}
+
+	// Captured: the browse section sends on channel 0x00, not per deck. The
+	// encoder sends 0x00 per click one way and 0x7F the other. BCK and FWD sit
+	// below it and take the joystick's left and right.
+	BrowseEncoderJoystick {
+		pushNote: 0x70  // TRACK SELECT KNOB SW: sends 0x28, moved by --note-map
+		leftNote: 0x30  // BCK
+		rightNote: 0x29 // FWD
+		turnCC: 0x54    // TRACK SELECT KNOB
+	}
+
+	Mixer {
+		midiChannel: 0x00
+		crossfaderCC: 0x16 // CROSS FADER (AUDIO)
+		masterCC: 0x19     // MASTER LEVEL VR
+		boothCC: 0x1B      // BOOTH LEVEL VR
+		cueMixCC: 0x43     // PAN VR
+		cueGainCC: 0x44    // PHONES VR
+	}
+
+	// The MC6000MK2 has no LEDs on these.
+	Navigation {
+		navigationButtonsModel: ListModel {
+			ListElement {
+				name: 'Source'
+				shiftName: ''
+				note: 0x4D // AREA
+				hasLed: false
+			}
+			ListElement {
+				name: 'Browse'
+				shiftName: ''
+				note: 0x65 // LIST
+				hasLed: false
+			}
+			ListElement {
+				name: 'Menu'
+				shiftName: ''
+				note: 0x64 // PANEL
+				hasLed: false
+			}
+		}
+	}
+
+	///////////////////////////////////////////////////////////////////////////
+	// Decks
+	//
+	// Deck-section controls arrive on the selected deck's channel. Change
+	// deckMidiChannel here to move to another DECK CHG. pair -- and the pad
+	// block below with it, if the pair is not on these two sides' decks.
+
+	Repeater {
+		model: ListModel {
+			ListElement {
+				deckName: 'Left'
+				deckMidiChannel: 0x01 // DECK CHG. 3 (captured)
+				shiftNote: 0x60       // SHIFT (DECK LEFT)
+				loadNote: 0x62        // LOAD, left (captured)
+			}
+			ListElement {
+				deckName: 'Right'
+				deckMidiChannel: 0x03 // DECK CHG. 4 (captured)
+				shiftNote: 0x61       // SHIFT (DECK RIGHT)
+				loadNote: 0x63        // LOAD, right (captured)
+			}
+		}
+
+		Item {
+			objectName: 'Deck %1'.arg(model.deckName)
+
+			DeckAssignmentConfig {
+				id: deckConfig
+				name: model.deckName
+				midiChannel: model.deckMidiChannel
+			}
+
+			DeckAction {
+				id: deckAction
+			}
+
+			PlayCue {
+				playNote: 0x43 // PLAY
+				cueNote: 0x42  // CUE
+				cueShiftAction: Action.SetCuePoint
+				playLedType: LedType.Simple
+			}
+
+			Sync {
+				syncNote: 0x6B // SYNC
+				syncHoldAction: Action.InstantDouble
+			}
+
+			KeyLock {
+				note: 0x06 // KEY LOCK
+				ledType: LedType.Simple
+			}
+
+			// VINYL MODE as the slip toggle. It cannot show it: the button's
+			// lamp is the unit's own vinyl mode, which the jog wheels need left
+			// on. See JP24_Controller_Leds.txt.
+			Slip {
+				note: 0x04 // VINYL MODE
+			}
+
+			Censor {
+				note: 0x50 // CENSOR
+			}
+
+			PitchBend {
+				plusNote: 0x0C  // BEND +
+				minusNote: 0x0D // BEND -
+			}
+
+			Shift {
+				note: model.shiftNote
+			}
+
+			// Captured on the left deck; the right is assumed to mirror it, as
+			// every other deck control does.
+			ManualLoop {
+				inNote: 0x37  // LOOP IN
+				outNote: 0x39 // LOOP OUT
+			}
+
+			// The G2's own auto loop is an encoder. The component also takes
+			// three buttons, which is what the MC6000MK2 has: LOOP CUT -/+ halve
+			// and double the running loop.
+			AutoLoop {
+				onOffNote: 0x1D  // AUTO LOOP
+				halveNote: 0x69  // LOOP CUT -
+				doubleNote: 0x6A // LOOP CUT +
+			}
+
+			// The four HOT CUE buttons pick the pad mode and the four SAMP
+			// buttons are pads 1-4; see README.md for why they are relabelled.
+			PadModeSelect {
+				ledType: LedType.Simple
+				buttonsModel: ListModel {
+					ListElement { note: 0x17 } // HOT CUE1
+					ListElement { note: 0x18 } // HOT CUE2
+					ListElement { note: 0x19 } // HOT CUE3
+					ListElement { note: 0x20 } // HOT CUE4
+				}
+			}
+
+			// Engine listens for Load on the global channel, whichever deck it
+			// belongs to, and the MC6000MK2 sends it on the deck's own. The
+			// --note-map lines in the header move it across.
+			Load {
+				note: model.loadNote
+			}
+
+			// Captured: the platter top sends note 0x51 on touch, and turning
+			// sends CC 0x51 as a relative count around 64 (65 forward, 63
+			// back). Engine wants an absolute position as a 14-bit pair, which
+			// is what --relative-cc turns it into; the pair and the starting
+			// jogSensitivity are the original Prime 4's. Tune jogSensitivity
+			// here if the platter feels too quick or too slow.
+			JogWheel {
+				touchNote: 0x51
+				ccUpper: 0x37
+				ccLower: 0x4D
+				jogSensitivity: 1638.7 * 3.6
+			}
+
+			// The fader sends Pitch Bend; midisurface re-sends it as this pair.
+			// Inverted because the MC6000MK2's fader counts the other way from
+			// the G2's: uninverted, pushing it away from you sped the deck up.
+			SpeedSlider {
+				ccUpper: 0x05
+				ccLower: 0x06
+				invert: true
+			}
+		}
+	}
+
+	///////////////////////////////////////////////////////////////////////////
+	// Pads
+	//
+	// A second block per deck, because the SAMP. buttons send on a different
+	// channel from the rest of the deck section: always the side's first
+	// channel, whatever DECK CHG. says. Pads 5-8 fall on 0x25-0x28, which the
+	// deck sections do not send, so they are simply dead.
+	//
+	// ActionPads and not the G2's own QuadPads, for the lamps. The G2's pads can
+	// each be split into four, and QuadPads lights them to match: nothing at all
+	// with LedType.Simple, and with LedType.RGB a SysEx per quarter carrying a
+	// colour. ActionPads is what the products with plain pads use, and echoes
+	// each pad's note as lit, dim or dark like every other button here. It logs
+	// a few warnings about properties named index and note when Engine binds;
+	// the pads and their lamps work regardless.
+
+	Repeater {
+		model: ListModel {
+			ListElement {
+				deckName: 'Left'
+				padMidiChannel: 0x00 // captured
+			}
+			ListElement {
+				deckName: 'Right'
+				padMidiChannel: 0x02 // captured
+			}
+		}
+
+		Item {
+			objectName: 'Deck %1 Pads'.arg(model.deckName)
+
+			DeckAssignmentConfig {
+				id: deckConfig
+				name: model.deckName
+				midiChannel: model.padMidiChannel
+			}
+
+			DeckAction {
+				id: deckAction
+			}
+
+			ActionPads {
+				firstPadNote: 0x21 // SAMP.1
+				ledType: LedType.Simple
+			}
+		}
+	}
+
+	///////////////////////////////////////////////////////////////////////////
+	// Mixer channels
+	//
+	// All four MC6000MK2 strips share one MIDI channel and are told apart by CC
+	// number, so mixerChannelMidiChannel is 0x00 for both.
+
+	Repeater {
+		model: ListModel {
+			ListElement {
+				mixerChannelName: '1'
+				mixerChannelMidiChannel: 0x00
+				pflNote: 0x05  // CUE MIXER CH3
+				trimCC: 0x0C   // INPUT LEVEL (CH3)
+				trebleCC: 0x0D // EQ HIGH VR (CH3)
+				midCC: 0x0E    // EQ MID VR (CH3)
+				bassCC: 0x0F   // EQ LOW VR (CH3)
+				faderCC: 0x10  // FADER (CH3)
+				filterCC: 0x66 // FILTER (L) KNOB
+				filterNote: 0x16 // FILTER ON (L)
+			}
+			ListElement {
+				mixerChannelName: '2'
+				mixerChannelMidiChannel: 0x00
+				pflNote: 0x07  // CUE MIXER CH4
+				trimCC: 0x11   // INPUT LEVEL (CH4)
+				trebleCC: 0x12 // EQ HIGH VR (CH4)
+				midCC: 0x13    // EQ MID VR (CH4)
+				bassCC: 0x14   // EQ LOW VR (CH4)
+				faderCC: 0x15  // FADER (CH4)
+				filterCC: 0x67 // FILTER (R) KNOB
+				filterNote: 0x1E // FILTER ON (R)
+			}
+		}
+
+		Item {
+			objectName: 'Mixer Channel %1'.arg(model.mixerChannelName)
+
+			MixerChannelAssignmentConfig {
+				id: mixerChannelConfig
+				name: model.mixerChannelName
+				midiChannel: model.mixerChannelMidiChannel
+			}
+
+			MixerChannelCore {
+				pflNote: model.pflNote
+				trimCC: model.trimCC
+				trebleCC: model.trebleCC
+				midCC: model.midCC
+				bassCC: model.bassCC
+				faderCC: model.faderCC
+			}
+
+			SweepFxKnob {
+				cc: model.filterCC
+			}
+
+			// FILTER ON switches the strip's EQ knobs between EQ and stem
+			// levels, as SHIFT + CUE does on the G2. The G2 has no sweep FX
+			// on/off for the button to drive instead. Notes are from the
+			// command list and agree with Mixxx's mapping; not captured.
+			//
+			// This is the vendor StemsLevel module written out, for its lamp:
+			// StemsLevel lights only while it believes a stemmed track is on
+			// the deck, and here it never does -- the switch worked and Engine
+			// sent no note for it. The lamp below follows the strip mode alone.
+			ValueNoteAssignment {
+				objectName: 'Stems Level Mixer Channel %1'.arg(mixerChannelConfig.name)
+				channel: mixerChannelConfig.midiChannel
+				note: model.filterNote
+				enabled: !mixerChannelConfig.inComputerMode
+				output: ActionOutput {
+					target: PropertyTarget {
+						path: mixerChannelConfig.channelStripModePath
+					}
+				}
+			}
+
+			OutputAssignment {
+				objectName: 'Stems Level LED Mixer Channel %1'.arg(mixerChannelConfig.name)
+				properties: { 'ledValue': '' }
+				readonly property int ledNote: model.filterNote
+				readonly property int ledValue: mixerChannelConfig.inStemsLevelMode ? 127 : 0
+				function send() {
+					device.sendSimpleColor(mixerChannelConfig.midiChannel, ledNote, ledValue)
+				}
+				Component.onCompleted: send()
+			}
+		}
+	}
+
+	// Kept from the vendor mapping: the Computer/Hybrid Mode relay to the
+	// f_midi-0 USB gadget, unrelated to which controller is attached.
+	HighSpeedForwarder {
+		master: device
+		targetDevice: "f_midi-0"
+		deviceCollection: MidiDevices
+	}
+}

@@ -6,8 +6,9 @@
 #   1. Extract the rootfs partition out of the firmware image with binwalk 3.
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build the dtshim/drmatomic/touchbridge shims for armhf. Only dtshim is
-#      RK3288-specific; the other two compile from the RK3588 sources unmodified.
+#   4. Build the dtshim/drmatomic/touchbridge/alsashim/quitshim shims for armhf.
+#      Only dtshim is RK3288-specific; the rest compile from the shared sources
+#      unmodified.
 #   5. Copy those shims + fake-dt files into /root.
 #   6. Wire touchbridge.service, midisurface.service (virtual control
 #      surface) and an engine.service.d override so
@@ -33,6 +34,10 @@
 #
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07.
+#   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
+#                 shims/montero/mods, install them in /root, and preload MONTERO
+#                 into Engine. Off by default: it is the one shim that needs Qt to
+#                 build, which costs this build its own container.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
@@ -163,6 +168,8 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/quitshim/quitshim_$SHIM_ARCH.so /shims/quitshim/quitshim.c -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
         # -lpthread for its upstream relay thread. Only this builder compiles it:
@@ -173,6 +180,12 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
+
+# MONTERO, the QML mod loader, only when asked for: see build_montero.sh.
+MONTERO="${MONTERO:-0}"
+if [ "$MONTERO" = 1 ]; then
+    "$SCRIPT_DIR_SELF/build_montero.sh" --arch "$SHIM_ARCH" --stage "$STAGE_DIR"
+fi
 
 # The virgl driver, built to match what detect_mesa found and cached in build/ the
 # way get_kernel.sh caches a kernel. Not taken from Debian's libgl1-mesa-dri: that
@@ -203,6 +216,7 @@ fi
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so \
+                quitshim/quitshim_$SHIM_ARCH.so \
                 drmatomic/drmatomic_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
                 rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
@@ -290,6 +304,7 @@ cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
 cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+cp -a /shims/quitshim/quitshim_$SHIM_ARCH.so /mnt/rootfs/root/quitshim.so
 # A service rather than a preload: it is a MIDI device Engine binds, not a
 # library Engine loads. It reads /root/fake-dt/inmusic,product-code itself to
 # decide which device to answer Engine's inquiry as, so one binary and one unit
@@ -304,6 +319,7 @@ chmod 755 /mnt/rootfs/root/dtshim.so \
           /mnt/rootfs/root/drmatomic.so \
           /mnt/rootfs/root/touchbridge \
           /mnt/rootfs/root/alsashim.so \
+          /mnt/rootfs/root/quitshim.so \
           /mnt/rootfs/root/midisurface \
           /mnt/rootfs/root/vnctouchbridge
 
@@ -351,7 +367,12 @@ Requires=touchbridge.service
 Wants=midisurface.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so
+# quitshim: turns the SIGTERM that every stop, restart and poweroff sends Engine
+# into Engine's own clean quit. Qt's eglfs handler would otherwise _exit(1) on
+# the spot, leaving whatever Engine had open on the data disk mid-write. Also
+# stands in for the firmware's splash service, which Engine aborts without on
+# its way out. TimeoutStopSec=30 in the stock unit is the SIGKILL fallback.
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/quitshim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device
@@ -377,6 +398,10 @@ Environment=EGL_PLATFORM=gbm
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
 
+if [ "$MONTERO" = 1 ]; then
+    install_montero /mnt/rootfs "$SHIM_ARCH" /stage
+fi
+
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
@@ -391,6 +416,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
+    -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \

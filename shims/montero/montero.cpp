@@ -1,0 +1,268 @@
+/* MONTERO: loads mods into Engine's QML UI.
+ *
+ * Engine's whole UI is QML compiled into the binary as Qt resources (qrc), and
+ * kept as source: there is no qmlcachegen output, so Qt compiles it at runtime.
+ * That makes a replacement file indistinguishable from the original, provided
+ * it sits at the same qrc path. This shim puts it there.
+ *
+ * A mod is a directory holding one or more .rcc files (built with
+ * `rcc -binary`), found under each directory in MONTERO_MODS, a colon-separated
+ * list that defaults to /root/montero/mods:/data/mods: the mods the rootfs
+ * builder installs, then any put on the data disk by hand. /data is a mount of
+ * its own disk wherever Engine runs, so the builder cannot install there. A
+ * directory earlier in the list is registered first, and so wins a path two
+ * mods both supply. Each is registered *ahead of* Engine's own resources.
+ * QResource answers a path from the first registered root that has it, so a
+ * mod's file shadows Engine's at the same path, while everything the mod does
+ * not supply -- sibling components, images, ../ imports -- still resolves from
+ * Engine's own tree, exactly as it did for the file being replaced. No Engine
+ * code is shipped: a mod carries only its own files.
+ *
+ * Getting ahead of Engine is done by catching qRegisterResourceData, which the
+ * Engine executable calls (through the PLT, so it can be interposed) for each
+ * of its compiled-in resource blobs during static initialization. The mods
+ * are registered just before the first of those calls goes through.
+ *
+ * A mod can also add QML of its own, beside Engine's rather than in place of
+ * any of it: every qrc:/montero/autoload/<name>.qml is created once Engine's
+ * main view has loaded, as an invisible child of its root item. Names have to
+ * be unique across mods -- the first registered wins, as for any qrc path.
+ *
+ * Mods talk to the outside world through the Montero singleton:
+ *     import Montero 1.0
+ *     Montero.send("flx10", JSON.stringify(state))   // datagram to @montero/flx10
+ *     Montero.log("...")                             // line in the log below
+ * The socket is an abstract Unix one (no file), so a listener outside the
+ * chroot reaches Engine inside it without a shared path. With nothing
+ * listening the datagram is dropped and send() returns false.
+ *
+ * Diagnostics, for finding what to replace:
+ *   MONTERO_DUMP=1          list every qrc path and size to /tmp/montero-qrc.txt
+ *   MONTERO_EXTRACT=<dir>   also copy every qrc file into <dir>
+ *   MONTERO_LOG_URLS=1      log each QML/JS/qmldir URL the view's engine loads
+ * Everything is logged to /tmp/montero.log.
+ *
+ * Only acts inside /usr/Engine/Engine; anything else that inherits the preload
+ * is left alone.
+ */
+#include <dlfcn.h>
+#include <glob.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
+#include <QtCore/QDirIterator>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QMutex>
+#include <QtCore/QObject>
+#include <QtCore/QResource>
+#include <QtCore/QSet>
+#include <QtCore/QUrl>
+#include <QtQml/QQmlAbstractUrlInterceptor>
+#include <QtQml/QQmlComponent>
+#include <QtQml/QQmlEngine>
+#include <QtQml/qqml.h>
+#include <QtQuick/QQuickItem>
+#include <QtQuick/QQuickView>
+
+static const char DEFAULT_MODS_DIRS[] = "/root/montero/mods:/data/mods";
+
+static FILE *log_file;
+
+static void mt_log(const char *fmt, ...) {
+    if (!log_file) {
+        log_file = fopen("/tmp/montero.log", "a");
+        if (!log_file) log_file = stderr;
+        setvbuf(log_file, NULL, _IOLBF, 0);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("montero: ", log_file);
+    vfprintf(log_file, fmt, ap);
+    fputc('\n', log_file);
+    va_end(ap);
+}
+
+static bool in_engine() {
+    static int cached = -1;
+    if (cached < 0) {
+        char exe[256];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        exe[n > 0 ? n : 0] = '\0';
+        cached = strcmp(exe, "/usr/Engine/Engine") == 0;
+    }
+    return cached;
+}
+
+/* ---- mod resources -------------------------------------------------------- */
+
+static void register_mods_in(const char *dir) {
+    glob_t g;
+    char pattern[512];
+    snprintf(pattern, sizeof(pattern), "%s/*/*.rcc", dir);
+    if (glob(pattern, 0, NULL, &g) != 0) {
+        mt_log("no mods in %s", dir);
+        return;
+    }
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        bool ok = QResource::registerResource(QString::fromLocal8Bit(g.gl_pathv[i]));
+        mt_log("%s %s", ok ? "registered" : "FAILED to register", g.gl_pathv[i]);
+    }
+    globfree(&g);
+}
+
+static void register_mods() {
+    const char *env = getenv("MONTERO_MODS");
+    char dirs[1024];
+    snprintf(dirs, sizeof(dirs), "%s", env && *env ? env : DEFAULT_MODS_DIRS);
+    char *save = NULL;
+    for (char *dir = strtok_r(dirs, ":", &save); dir; dir = strtok_r(NULL, ":", &save))
+        register_mods_in(dir);
+}
+
+typedef bool (*register_data_t)(int, const unsigned char *, const unsigned char *,
+                                const unsigned char *);
+
+bool qRegisterResourceData(int version, const unsigned char *tree,
+                           const unsigned char *name, const unsigned char *data) {
+    static register_data_t real;
+    static bool mods_done;
+    if (!real) real = (register_data_t)dlsym(RTLD_NEXT, "_Z21qRegisterResourceDataiPKhS0_S0_");
+    if (!mods_done && in_engine()) {
+        /* Whichever registration comes first -- a Qt library's or Engine's
+         * own -- the mods go in before it, so they are always ahead of
+         * Engine's resources. */
+        mods_done = true;
+        register_mods();
+    }
+    return real(version, tree, name, data);
+}
+
+/* ---- diagnostics ---------------------------------------------------------- */
+
+static void dump_qrc() {
+    const char *extract = getenv("MONTERO_EXTRACT");
+    if (!getenv("MONTERO_DUMP") && !extract) return;
+
+    QFile out(QStringLiteral("/tmp/montero-qrc.txt"));
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
+    int files = 0;
+    QDirIterator it(QStringLiteral(":/"), QDir::Files | QDir::Hidden,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QString path = it.next();
+        QFileInfo fi(path);
+        out.write(QStringLiteral("%1\t%2\n").arg(fi.size()).arg(path).toUtf8());
+        files++;
+        if (extract) {
+            QString dest = QString::fromLocal8Bit(extract) + path.mid(1);
+            QDir().mkpath(QFileInfo(dest).path());
+            QFile::remove(dest);
+            QFile::copy(path, dest);
+        }
+    }
+    mt_log("listed %d qrc files in /tmp/montero-qrc.txt%s%s", files,
+           extract ? ", extracted to " : "", extract ? extract : "");
+}
+
+/* ---- the Montero singleton ------------------------------------------------ */
+
+class Montero : public QObject {
+    Q_OBJECT
+public:
+    Q_INVOKABLE bool send(const QString &channel, const QString &payload) {
+        if (fd < 0) fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0) return false;
+        QByteArray name = "montero/" + channel.toUtf8();
+        sockaddr_un addr = {};
+        addr.sun_family = AF_UNIX;
+        if (name.size() + 1 > (int)sizeof(addr.sun_path)) return false;
+        memcpy(addr.sun_path + 1, name.constData(), name.size());  /* [0] = '\0': abstract */
+        socklen_t len = offsetof(sockaddr_un, sun_path) + 1 + name.size();
+        QByteArray data = payload.toUtf8();
+        return sendto(fd, data.constData(), data.size(), 0, (sockaddr *)&addr, len) == data.size();
+    }
+
+    Q_INVOKABLE void log(const QString &msg) { mt_log("%s", qPrintable(msg)); }
+
+private:
+    int fd = -1;
+};
+
+static void on_app_start() {
+    if (!in_engine()) return;
+    dump_qrc();
+    qmlRegisterSingletonInstance("Montero", 1, 0, "Montero", new Montero);
+}
+Q_COREAPP_STARTUP_FUNCTION(on_app_start)
+
+class LoggingInterceptor : public QQmlAbstractUrlInterceptor {
+public:
+    QUrl intercept(const QUrl &url, DataType type) override {
+        if (type != UrlString) {
+            QMutexLocker lock(&mutex);
+            QString s = url.toString();
+            if (!seen.contains(s)) {
+                seen.insert(s);
+                mt_log("load %s", qPrintable(s));
+            }
+        }
+        return url;
+    }
+
+private:
+    QMutex mutex;
+    QSet<QString> seen;
+};
+
+/* ---- autoloaded mod components -------------------------------------------- */
+
+static void autoload(QQuickView *view) {
+    /* Listing a qrc directory merges it across every registered resource, so
+     * this sees each mod's autoload files together. */
+    const QStringList names = QDir(QStringLiteral(":/montero/autoload"))
+                                  .entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name);
+    QQuickItem *root = view->rootObject();
+    for (const QString &name : names) {
+        QUrl url(QStringLiteral("qrc:/montero/autoload/") + name);
+        QQmlComponent component(view->engine(), url);
+        QObject *obj = component.create();
+        if (!obj) {
+            for (const QQmlError &e : component.errors())
+                mt_log("autoload %s: %s", qPrintable(name), qPrintable(e.toString()));
+            continue;
+        }
+        obj->setParent(root ? static_cast<QObject *>(root) : view);
+        if (QQuickItem *item = qobject_cast<QQuickItem *>(obj)) item->setParentItem(root);
+        mt_log("autoloaded %s", qPrintable(url.toString()));
+    }
+}
+
+typedef void (*set_source_t)(QQuickView *, const QUrl &);
+
+void QQuickView::setSource(const QUrl &url) {
+    static set_source_t real;
+    if (!real) real = (set_source_t)dlsym(RTLD_NEXT, "_ZN10QQuickView9setSourceERK4QUrl");
+    mt_log("QQuickView::setSource(%s)", qPrintable(url.toString()));
+    static bool hooked;
+    if (!hooked && in_engine() && getenv("MONTERO_LOG_URLS")) {
+        hooked = true;
+        engine()->addUrlInterceptor(new LoggingInterceptor);
+    }
+    real(this, url);
+    static bool autoloaded;
+    if (!autoloaded && in_engine()) {
+        autoloaded = true;
+        autoload(this);
+    }
+}
+
+#include "montero.moc"

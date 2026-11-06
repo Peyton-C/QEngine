@@ -1,0 +1,25 @@
+# qengine-sway.service — sway at boot, laid out by sway-rx3.config for Engine
+# beside the XDJ-RX3 player. qengine-wayland.conf and rx3-wayland.conf put
+# Engine and the player in it; see README.md, "Under sway".
+[Unit]
+Description=sway for Engine and the XDJ-RX3 player
+After=systemd-user-sessions.service seatd.service getty@tty1.service
+Wants=seatd.service
+# sway takes the display and the console it is on.
+Conflicts=getty@tty1.service
+
+[Service]
+User=@USER@
+# A login session, for the user's runtime directory (XDG_RUNTIME_DIR), where
+# the Wayland socket goes.
+PAMName=login
+Environment=WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 LIBSEAT_BACKEND=seatd
+ExecStart=/usr/bin/sway -c @QENGINE_DIR@/sway-rx3.config
+# Started means the socket is there: chroot-engine.sh and rx3-start.sh look for
+# it once and give up when it is missing.
+ExecStartPost=/bin/sh -c 'for i in $$(seq 100); do ls "$$XDG_RUNTIME_DIR"/wayland-[0-9] >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -178,7 +179,7 @@ static int open_pointer_device(void) {
         if (strncmp(e->d_name, "event", 5) != 0) continue;
         char path[300], name[128] = {0};
         snprintf(path, sizeof(path), "/dev/input/%s", e->d_name);
-        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
         if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) >= 0 &&
             strcmp(name, POINTER_NAME) == 0) {
@@ -227,12 +228,33 @@ static void *cursor_thread(void *unused) {
             sleep(2);
             continue;
         }
-        int x = 0, y = 0;
-        struct input_event ev;
-        while (read(in, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
-            if (ev.type == EV_ABS && ev.code == ABS_X) x = ev.value;
-            else if (ev.type == EV_ABS && ev.code == ABS_Y) y = ev.value;
-            else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+        /* One move per wake-up, to wherever the pointer has got to by then:
+         * everything already waiting is read first and only the newest position
+         * is sent. A move is cheap where it has been measured (about 0.06ms on a
+         * Raspberry Pi 5), so this rarely drops anything, but it guarantees the
+         * pointer can never fall behind a queue of stale positions on a driver
+         * where a move is slow. */
+        int x = 0, y = 0, alive = 1;
+        while (alive) {
+            struct pollfd pfd = { .fd = in, .events = POLLIN };
+            if (poll(&pfd, 1, -1) < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) alive = 0;
+
+            int moved = 0;
+            struct input_event ev[64];
+            ssize_t n;
+            while ((n = read(in, ev, sizeof(ev))) > 0) {
+                for (ssize_t k = 0; k < n / (ssize_t)sizeof(ev[0]); k++) {
+                    if (ev[k].type == EV_ABS && ev[k].code == ABS_X) { x = ev[k].value; moved = 1; }
+                    else if (ev[k].type == EV_ABS && ev[k].code == ABS_Y) { y = ev[k].value; moved = 1; }
+                }
+            }
+            if (n < 0 && errno != EAGAIN && errno != EINTR) alive = 0;
+
+            if (moved) {
                 memset(&cur, 0, sizeof(cur));
                 cur.flags = DRM_MODE_CURSOR_MOVE;
                 cur.crtc_id = crtc;

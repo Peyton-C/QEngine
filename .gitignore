@@ -85,3 +85,9 @@ nohup.out
 
 .idea
 **/scratch*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

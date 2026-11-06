@@ -3,9 +3,23 @@
 # virgl on the host's GPU, instead of rasterizing every frame on an emulated CPU.
 #
 # Usage: build_virgl_mesa.sh --arch <arm64|armhf> --mesa-version <ver>
-#                            --layout <gallium|dri> [--force]
+#                            --layout <gallium|dri> [--extra-drivers <list>]
+#                            [--platforms wayland] [--force]
 #   Caches its output in the repo's build/, keyed by version and architecture, and
 #   reuses it on later runs the way get_kernel.sh caches a kernel. Requires Docker.
+#
+# --extra-drivers adds gallium drivers to a gallium-layout build, for running the
+# same rootfs on real hardware instead of under QEMU -- `--extra-drivers v3d,vc4`
+# for a Raspberry Pi. virgl and softpipe stay in, so the result still works in a
+# guest; it is cached under its own name (libgallium-<ver>-<arch>+v3d+vc4.so) and
+# the plain build is left alone.
+#
+# --platforms wayland, also for real hardware, builds the libEGL from the same tree
+# as well and installs it beside the libgallium (libEGL-<ver>-<arch>+...+wayland.so):
+# the vendor libEGL has no Wayland platform, so a Qt client under a compositor
+# cannot get an EGL display from it. The two files go in together, since they come
+# from one build. The libEGL needs libwayland-client and libwayland-server, which no
+# vendor rootfs has; the Pi's stage carries them.
 #
 # The version and the layout describe the guest, so both are read off its rootfs by
 # detect_mesa.sh and passed in. Neither can be inferred from --arch: the same
@@ -56,12 +70,16 @@ mkdir -p "$OUT_DIR"
 ARCH=""
 MESA_VER=""
 LAYOUT=""
+EXTRA_DRIVERS=""
+PLATFORMS=""
 FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
         --mesa-version) MESA_VER="$2"; shift 2 ;;
         --layout) LAYOUT="$2"; shift 2 ;;
+        --extra-drivers) EXTRA_DRIVERS="$2"; shift 2 ;;
+        --platforms) PLATFORMS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -108,7 +126,27 @@ case "$LAYOUT" in
     *) echo "ERROR: --layout must be gallium or dri; see detect_mesa.sh." >&2; exit 1 ;;
 esac
 
-if [ -s "$OUT" ] && [ "$FORCE" -ne 1 ]; then
+if [ -n "$EXTRA_DRIVERS" ]; then
+    # Only the whole-library layout can take more drivers in one artifact; in the
+    # DRI layout each driver is its own file under its own name.
+    [ "$LAYOUT" = gallium ] || {
+        echo "ERROR: --extra-drivers needs --layout gallium." >&2; exit 1; }
+    GALLIUM_DRIVERS="$GALLIUM_DRIVERS,$EXTRA_DRIVERS"
+    OUT="${OUT%.so}+${EXTRA_DRIVERS//,/+}.so"
+fi
+
+case "$PLATFORMS" in
+    "") ;;
+    wayland)
+        [ "$LAYOUT" = gallium ] || {
+            echo "ERROR: --platforms needs --layout gallium." >&2; exit 1; }
+        OUT="${OUT%.so}+wayland.so"
+        EGL_OUT="${OUT/libgallium-/libEGL-}"
+        ;;
+    *) echo "ERROR: --platforms takes only wayland." >&2; exit 1 ;;
+esac
+
+if [ -s "$OUT" ] && { [ -z "$PLATFORMS" ] || [ -s "$EGL_OUT" ]; } && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
     exit 0
 fi
@@ -128,6 +166,7 @@ docker run --rm --platform linux/amd64 \
     -e TRIPLE="$TRIPLE" -e DEBARCH="$ARCH" -e MESA_VER="$MESA_VER" \
     -e CPU_FAMILY="$CPU_FAMILY" -e CPU="$CPU" \
     -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -e ARTIFACT="$ARTIFACT" \
+    -e PLATFORMS="$PLATFORMS" \
     -v "$STAGE:/out" \
     debian:trixie bash -euo pipefail -c '
         case "$(uname -m)" in x86_64|amd64) ;; *)
@@ -144,6 +183,10 @@ docker run --rm --platform linux/amd64 \
             meson ninja-build pkg-config python3 python3-mako python3-yaml \
             flex bison xz-utils ca-certificates curl \
             libdrm-dev:$DEBARCH libexpat1-dev:$DEBARCH zlib1g-dev:$DEBARCH >/dev/null
+        # wayland-scanner runs on the builder, the library on the target.
+        [ -z "$PLATFORMS" ] || apt-get install -y -qq --no-install-recommends \
+            libwayland-bin wayland-protocols libwayland-dev:$DEBARCH \
+            libwayland-egl-backend-dev:$DEBARCH >/dev/null
 
         curl -fsSL "https://archive.mesa3d.org/mesa-$MESA_VER.tar.xz" -o /mesa.tar.xz
         mkdir /src && tar xf /mesa.tar.xz -C /src --strip-components=1
@@ -180,7 +223,7 @@ EOF
             -Dbuildtype=release \
             -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
-            -Dplatforms= \
+            -Dplatforms="$PLATFORMS" \
             -Dglx=disabled \
             -Degl=enabled \
             -Dgbm=enabled \
@@ -206,6 +249,13 @@ EOF
         D=$(find build -name "$ARTIFACT" | awk 'NR==1')
         [ -n "$D" ] || { echo "ERROR: no $ARTIFACT was produced." >&2; find build -name "*.so" | head -n 10 >&2; exit 1; }
         cp "$D" "/out/$ARTIFACT"
+        if [ -n "$PLATFORMS" ]; then
+            cp build/src/egl/libEGL.so.1.0.0 /out/libEGL.so.1
+            # The rootfs has none; these are the ones this libEGL was built against.
+            mkdir -p /out/wayland
+            cp -L /usr/lib/$TRIPLE/libwayland-client.so.0 /usr/lib/$TRIPLE/libwayland-server.so.0 \
+                /usr/lib/$TRIPLE/libwayland-cursor.so.0 /usr/lib/$TRIPLE/libwayland-egl.so.1 /out/wayland/
+        fi
     '
 
 [ -s "$STAGE/$ARTIFACT" ] || {
@@ -265,6 +315,13 @@ gallium)
     ;;
 esac
 
+if [ -n "$PLATFORMS" ]; then
+    $READELF -d "$STAGE/libEGL.so.1" | grep NEEDED | grep libwayland-client >/dev/null || {
+        echo "ERROR: the libEGL has no Wayland platform." >&2; exit 1; }
+    mv "$STAGE/libEGL.so.1" "$EGL_OUT"
+    rm -rf "$OUT_DIR/wayland-$ARCH" && mv "$STAGE/wayland" "$OUT_DIR/wayland-$ARCH"
+    echo "Built: $EGL_OUT, and $OUT_DIR/wayland-$ARCH/"
+fi
 mv "$STAGE/$ARTIFACT" "$OUT"
 echo ""
 echo "Built: $OUT ($(du -h "$OUT" | cut -f1))"

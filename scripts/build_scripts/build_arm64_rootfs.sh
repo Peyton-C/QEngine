@@ -8,7 +8,7 @@
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build alsashim (the only shim built here rather than committed
 #      prebuilt — see the build step below).
-#   5. Copy the dtshim/drmatomic/alsashim/teeshim/touchbridge shims +
+#   5. Copy the dtshim/drmatomic/alsashim/teeshim/quitshim/touchbridge shims +
 #      fake-dt files into /root.
 #   6. Wire touchbridge.service, midisurface.service (virtual control
 #      surface), controllermap.service (USB controller ->
@@ -29,6 +29,10 @@
 #
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default RMZ2.
+#   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
+#                 shims/montero/mods, install them in /root, and preload MONTERO
+#                 into Engine. Off by default: it is the one shim that needs Qt to
+#                 build, which costs this build its own container.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
@@ -159,10 +163,18 @@ docker run --rm --platform linux/arm64 \
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl
         gcc -shared -fPIC -O2 -Wall \
+            -o /shims/quitshim/quitshim_$SHIM_ARCH.so /shims/quitshim/quitshim.c -ldl -lpthread
+        gcc -shared -fPIC -O2 -Wall \
             -o /shims/teeshim/teeshim_$SHIM_ARCH.so /shims/teeshim/teeshim.c
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
+
+# MONTERO, the QML mod loader, only when asked for: see build_montero.sh.
+MONTERO="${MONTERO:-0}"
+if [ "$MONTERO" = 1 ]; then
+    "$SCRIPT_DIR_SELF/build_montero.sh" --arch "$SHIM_ARCH" --stage "$STAGE_DIR"
+fi
 
 # The GL driver this guest actually loads, built to match what detect_mesa found.
 # A mismatched version is not a degradation but a break: in the gallium layout
@@ -192,6 +204,7 @@ fi
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in alsashim/alsashim_$SHIM_ARCH.so \
+                quitshim/quitshim_$SHIM_ARCH.so \
                 drmatomic/drmatomic_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
@@ -270,6 +283,7 @@ cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 cp -a /shims/drmatomic/drmatomic_$SHIM_ARCH.so /mnt/rootfs/root/drmatomic.so
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge
 cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+cp -a /shims/quitshim/quitshim_$SHIM_ARCH.so /mnt/rootfs/root/quitshim.so
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
@@ -277,6 +291,7 @@ chmod 755 /mnt/rootfs/root/dtshim.so \
           /mnt/rootfs/root/drmatomic.so \
           /mnt/rootfs/root/touchbridge \
           /mnt/rootfs/root/alsashim.so \
+          /mnt/rootfs/root/quitshim.so \
           /mnt/rootfs/root/midisurface
 
 # PRODUCT_CODE selects which device this pretends to be.
@@ -403,7 +418,7 @@ After=touchbridge.service
 Requires=touchbridge.service
 
 [Service]
-Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/teeshim.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Select virgl, and put EGL on a platform that can reach it. Having the driver in
@@ -411,6 +426,11 @@ Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # is what this guest did until now. The armv7 builder sets the same pair.
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 Environment=EGL_PLATFORM=gbm
+# quitshim: turns the SIGTERM that every stop, restart and poweroff sends Engine
+# into Engine's own clean quit. Qt's eglfs handler would otherwise _exit(1) on
+# the spot, leaving whatever Engine had open on the data disk mid-write. Also
+# stands in for the firmware's splash service, which Engine aborts without on
+# its way out. TimeoutStopSec=30 in the stock unit is the SIGKILL fallback.
 # teeshim: answers the OP-TEE attestation Engine 5.1.0 runs before starting its
 # GUI. QEMU has no TrustZone secure world, so the real call fails and Engine
 # quits into /usr/bin/test-app-launcher instead of ever showing Engine. Harmless
@@ -432,6 +452,17 @@ Environment=ALSASHIM_CARD=0
 # or set 1 to leave Engine's own buffering alone entirely.
 #Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
+# The card name each product's allowlist accepts is its own product code, so the
+# card has to claim the code this rootfs spoofs. alsashim's own default is RMZ2,
+# which a JP24 rootfs rejects: Engine skips the card and has no audio device.
+# Outside the quoted heredoc above so PRODUCT_CODE expands. chroot-engine.sh
+# does the same on the Pi.
+echo "Environment=ALSASHIM_AS=$PRODUCT_CODE" \
+    >> /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf
+
+if [ "$MONTERO" = 1 ]; then
+    install_montero /mnt/rootfs "$SHIM_ARCH" /stage
+fi
 
 # Engine must start after the control surface exists, or it will never bind it
 # (its MIDI enumerator only scans during startup).
@@ -455,6 +486,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}" \
+    -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \

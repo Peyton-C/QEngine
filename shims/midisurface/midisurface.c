@@ -366,6 +366,168 @@ static int verbose = 0;
  * needs no per-controller code here. */
 static int forward_client = -1;
 static int forward_port = -1;
+static const char *forward_match = NULL;
+static int connect_forward_source(const char *match, int kernel_only);
+
+/* The translations --forward does. "Relayed unchanged" holds for everything an
+ * assignment file can describe; these are the three things one cannot, each
+ * found by pointing a real MC6000MK2 at a Prime 4 G2 guest. All are off unless
+ * asked for, and none knows anything about a particular controller.
+ *
+ * --pitchbend-cc UPPER,LOWER
+ *
+ * A pitch fader. Engine's SpeedSlider only accepts a 14-bit
+ * value as a pair of control changes (ccUpper, ccLower), while a controller like
+ * the MC6000MK2 sends its fader as MIDI Pitch Bend, which no component reads. The
+ * two carry the same 14 bits, so a forwarded Pitch Bend is re-sent as that CC
+ * pair on the same channel -- most significant half first, so Engine has both
+ * halves by the time the second arrives -- and the mapping then names the pair in
+ * an ordinary SpeedSlider. -1 means off.
+ *
+ * --relative-cc CC=UPPER,LOWER
+ *
+ * A jog wheel. Engine's JogWheel reads a platter as an absolute position that
+ * counts up and wraps, sent as a 14-bit CC pair. A controller that instead
+ * reports movement -- one CC whose value is 64 plus or minus the number of ticks
+ * since the last message -- is read as a position that never leaves 63..65, and
+ * the platter barely responds. So the ticks are summed into a 14-bit counter per
+ * MIDI channel and that counter is sent in the CC's place. Give it more than
+ * once for a wheel that reports on several CCs -- the DDJ-FLX10 uses one for
+ * the platter top and another for its side -- and the ones naming the same
+ * pair add to the same counter.
+ *
+ * --note-map CH:FROM=TO  or  CH:FROM=TOCH:TO
+ *
+ * A note that arrives where Engine is not listening for it. Two cases so far.
+ * Controls that share a note number: Components that take a run of notes
+ * (eight pads from firstPadNote) cannot leave one out, so when the controller
+ * puts something unrelated inside the run -- the MC6000MK2's browse-encoder push
+ * is 0x28 on the channel where its sampler buttons run 0x21 upward -- the only
+ * way to tell them apart is to move one before Engine sees it. And controls on
+ * the wrong channel: Engine's Load listens on the surface's global channel and
+ * tells the decks apart by note, while the MC6000MK2 sends each LOAD on whichever
+ * channel that side's selected deck uses, so the second form moves the note to
+ * another channel as well. Applies to note on and note off. */
+static int pitchbend_cc_upper = -1;
+static int pitchbend_cc_lower = -1;
+
+#define MAX_RELATIVE_CCS 8
+static struct { int cc, upper, lower; } relative_ccs[MAX_RELATIVE_CCS];
+static int relative_cc_count = 0;
+static int relative_position[16][128];   /* per channel, per upper CC */
+
+static int relative_cc_index(int cc) {
+    for (int r = 0; r < relative_cc_count; r++)
+        if (relative_ccs[r].cc == cc) return r;
+    return -1;
+}
+
+#define MAX_NOTE_MAPS 8
+static struct { int ch, from, to_ch, to; } note_maps[MAX_NOTE_MAPS];
+static int note_map_count = 0;
+
+/* --led-map FILE: the one translation that runs the other way, Engine to the
+ * forwarded controller.
+ *
+ * Engine lights a button by echoing it: a Note On on the button's own channel
+ * and note, velocity 127 for lit and 1 for dim, and a Note Off for dark. It does
+ * its own blinking, by alternating those. With every LedType in the mapping left
+ * at Simple that is the whole protocol, and nothing here needs to know about
+ * colour.
+ *
+ * A controller that is lit the same way could be handed those notes as they
+ * are. The MC6000MK2 is not: it takes a Control Change in which the controller
+ * NUMBER says what to do (one number for on, another for off, and a different
+ * pair again for some lamps) and the VALUE says which lamp -- and a lamp's
+ * number is not its button's note. Neither half of that can be written in an
+ * assignment file, so the table lives in a file beside the mapping. One lamp
+ * per line, numbers as C spells them, # to end of line a comment:
+ *
+ *   <ch>:<note>  <ch> <on cc> <off cc> <lamp> [<dim lamp>]
+ *
+ * The left side is what Engine sends, the right what the controller wants.
+ * Where a button has a second, dimmer lamp, name it and Engine's dim state
+ * lights that one; where it has none, dim is dark, which is what dim means on
+ * every control seen so far (not playing, cue off, sync off). Notes with no line
+ * are dropped, as all of them were before this existed.
+ *
+ * A second kind of line is sent to the controller as it stands, once, when the
+ * controller is found:
+ *
+ *   send <ch> <cc> <value>
+ *
+ * for a lamp that is not Engine's to drive. The MC6000MK2's VINYL MODE lamp is
+ * the case: it is not an indicator but the mode itself, and with it dark the
+ * platter sends a different controller and touch note. Handing that lamp to
+ * Engine switched the jog wheels off whenever Engine wanted it dark. */
+#define MAX_LED_MAPS 128
+static struct { int ch, note, to_ch, on_cc, off_cc, lamp, dim_lamp; } led_maps[MAX_LED_MAPS];
+static int led_map_count = 0;
+#define MAX_LED_SENDS 16
+static struct { int ch, cc, value; } led_sends[MAX_LED_SENDS];
+static int led_send_count = 0;
+static int lamp_port = -1;
+static void send_to_controller(int ch, int param, int val);
+
+/* --echo-lamps: Engine's notes and control changes go to the forwarded
+ * controller as they are. For a controller lit by echoing its own notes -- the
+ * DDJ-FLX10 is one -- an assignment file written in the controller's numbers
+ * already makes Engine speak its lamp protocol, and anything finer (dim
+ * levels, pad colours) is the device file's to translate. Lines in --led-map
+ * still take precedence for the notes they name. */
+static int echo_lamps = 0;
+
+static int load_led_map(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        perror(path);
+        return -1;
+    }
+    char line[256];
+    for (int lineno = 1; fgets(line, sizeof line, f); lineno++) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        int ch, note, to_ch, on_cc, off_cc, lamp, dim_lamp = -1;
+        if (sscanf(line, " send %i %i %i", &ch, &on_cc, &lamp) == 3) {
+            if (led_send_count >= MAX_LED_SENDS || ch < 0 || ch > 15 ||
+                on_cc < 0 || on_cc > 127 || lamp < 0 || lamp > 127) {
+                fprintf(stderr, "%s:%d: wants send <ch> <cc> <value> "
+                                "(at most %d lines)\n", path, lineno, MAX_LED_SENDS);
+                fclose(f);
+                return -1;
+            }
+            led_sends[led_send_count].ch = ch;
+            led_sends[led_send_count].cc = on_cc;
+            led_sends[led_send_count].value = lamp;
+            led_send_count++;
+            continue;
+        }
+        int fields = sscanf(line, " %i : %i %i %i %i %i %i", &ch, &note, &to_ch,
+                            &on_cc, &off_cc, &lamp, &dim_lamp);
+        if (fields <= 0) continue;   /* blank, or only a comment */
+        if (fields < 6 || led_map_count >= MAX_LED_MAPS ||
+            ch < 0 || ch > 15 || to_ch < 0 || to_ch > 15 ||
+            note < 0 || note > 127 || on_cc < 0 || on_cc > 127 ||
+            off_cc < 0 || off_cc > 127 || lamp < 0 || lamp > 127 ||
+            dim_lamp < -1 || dim_lamp > 127) {
+            fprintf(stderr, "%s:%d: wants <ch>:<note> <ch> <on cc> <off cc> "
+                            "<lamp> [<dim lamp>] (at most %d lines)\n",
+                    path, lineno, MAX_LED_MAPS);
+            fclose(f);
+            return -1;
+        }
+        led_maps[led_map_count].ch = ch;
+        led_maps[led_map_count].note = note;
+        led_maps[led_map_count].to_ch = to_ch;
+        led_maps[led_map_count].on_cc = on_cc;
+        led_maps[led_map_count].off_cc = off_cc;
+        led_maps[led_map_count].lamp = lamp;
+        led_maps[led_map_count].dim_lamp = dim_lamp;
+        led_map_count++;
+    }
+    fclose(f);
+    return 0;
+}
 
 /* Auto motor-off. RMZ2's decks wait on platter timecode that cannot
  * exist under emulation, so play does nothing until motorized mode is toggled
@@ -490,6 +652,70 @@ static void list_ports(void) {
     fflush(stdout);
 }
 
+/* To the forwarded controller, and only to it, through a port of its own.
+ * my_port's subscribers are Engine, so the controller cannot be one of them:
+ * everything it sent would come straight back to it. And addressing it from
+ * my_port without subscribing is refused with ENODEV, because the kernel opens
+ * a USB controller's MIDI output only while something is subscribed to it. */
+static void send_to_controller(int ch, int param, int val) {
+    if (lamp_port < 0) return;
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_source(&ev, lamp_port);
+    snd_seq_ev_set_subs(&ev);
+    snd_seq_ev_set_direct(&ev);
+    snd_seq_ev_set_controller(&ev, ch, param, val);
+    int err = snd_seq_event_output_direct(seq, &ev);
+    if (err < 0)
+        fprintf(stderr, "send to controller failed: %s\n", snd_strerror(err));
+}
+
+/* One of Engine's events to the controller, as it is but for note offs, which
+ * go as a note on at velocity 0. Engine puts a lamp out with a note off, and
+ * the DDJ-FLX10 ignores those: its ACTIVE PART lamps stayed lit through every
+ * one Engine sent, and went out at once for a velocity-0 note on, which is the
+ * "OFF=0x00" of Pioneer's own message list. See --echo-lamps. */
+static void echo_to_controller(const snd_seq_event_t *in) {
+    if (lamp_port < 0) return;
+    snd_seq_event_t ev = *in;
+    if (ev.type == SND_SEQ_EVENT_NOTEOFF) {
+        ev.type = SND_SEQ_EVENT_NOTEON;
+        ev.data.note.velocity = 0;
+    }
+    snd_seq_ev_set_source(&ev, lamp_port);
+    snd_seq_ev_set_subs(&ev);
+    snd_seq_ev_set_direct(&ev);
+    int err = snd_seq_event_output_direct(seq, &ev);
+    if (err < 0)
+        fprintf(stderr, "echo to controller failed: %s\n", snd_strerror(err));
+}
+
+static int has_led_map(int ch, int note) {
+    for (int m = 0; m < led_map_count; m++)
+        if (led_maps[m].ch == ch && led_maps[m].note == note) return 1;
+    return 0;
+}
+
+/* One of Engine's LED notes, as the controller's lamp. See --led-map. The dim
+ * lamp is put out before the full one is lit, and the other way about, so the
+ * two are never asked for together. */
+static void light_lamp(int ch, int note, int vel) {
+    for (int m = 0; m < led_map_count; m++) {
+        if (led_maps[m].ch != ch || led_maps[m].note != note) continue;
+        int to_ch = led_maps[m].to_ch, dim_lamp = led_maps[m].dim_lamp;
+        int full = vel >= 64, dim = vel > 0 && !full;
+        if (verbose)
+            fprintf(stderr, "[surface] lamp 0x%02X on ch %d %s\n",
+                    led_maps[m].lamp, to_ch, full ? "on" : dim ? "dim" : "off");
+        if (!full) send_to_controller(to_ch, led_maps[m].off_cc, led_maps[m].lamp);
+        if (dim_lamp >= 0)
+            send_to_controller(to_ch, dim ? led_maps[m].on_cc : led_maps[m].off_cc,
+                               dim_lamp);
+        if (full) send_to_controller(to_ch, led_maps[m].on_cc, led_maps[m].lamp);
+        return;
+    }
+}
+
 /* Drain and act on anything Engine sends us. Two reasons this must run even
  * when we have nothing to say: the identity handshake above is mandatory
  * before Engine will honour any input, and an unread port fills its input
@@ -497,6 +723,23 @@ static void list_ports(void) {
 static void handle_incoming(void) {
     snd_seq_event_t *ev;
     while (snd_seq_event_input(seq, &ev) >= 0) {
+        /* The sequencer's own announcements, for a forwarded controller that
+         * is unplugged and plugged back in: its subscriptions go with it, and
+         * the new port has to be found and subscribed to again. Before this,
+         * replugging the DDJ-FLX10 left Engine deaf to it until a restart. */
+        if (ev->source.client == SND_SEQ_CLIENT_SYSTEM) {
+            if ((ev->type == SND_SEQ_EVENT_CLIENT_EXIT || ev->type == SND_SEQ_EVENT_PORT_EXIT) &&
+                forward_client >= 0 && ev->data.addr.client == forward_client) {
+                printf("forwarded controller gone (%d:%d)\n", forward_client, forward_port);
+                fflush(stdout);
+                forward_client = forward_port = -1;
+            } else if (ev->type == SND_SEQ_EVENT_PORT_START && forward_match &&
+                       forward_client < 0) {
+                connect_forward_source(forward_match, 1);
+            }
+            if (snd_seq_event_input_pending(seq, 0) <= 0) break;
+            continue;
+        }
         /* Anything from the forwarded controller goes straight out to Engine.
          * Engine's own messages to us (LEDs, pad displays, the inquiry) come
          * from a different client and must not be echoed back. */
@@ -505,9 +748,50 @@ static void handle_incoming(void) {
             if (verbose)
                 fprintf(stderr, "[surface] forwarding type %d from %d:%d\n",
                         ev->type, ev->source.client, ev->source.port);
+            if (ev->type == SND_SEQ_EVENT_PITCHBEND && pitchbend_cc_upper >= 0) {
+                /* ALSA reports -8192..8191; the CC pair carries 0..16383. */
+                int v = ev->data.control.value + 8192;
+                if (v < 0) v = 0;
+                if (v > 16383) v = 16383;
+                int ch = ev->data.control.channel;
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, pitchbend_cc_upper, v >> 7);
+                send_event(&out);
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, pitchbend_cc_lower, v & 0x7F);
+            } else if (ev->type == SND_SEQ_EVENT_CONTROLLER &&
+                       relative_cc_index((int)ev->data.control.param) >= 0) {
+                int r = relative_cc_index((int)ev->data.control.param);
+                int ch = ev->data.control.channel & 0x0F;
+                int upper = relative_ccs[r].upper;
+                int pos = (relative_position[ch][upper] + ev->data.control.value - 64) & 0x3FFF;
+                relative_position[ch][upper] = pos;
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, upper, pos >> 7);
+                send_event(&out);
+                snd_seq_ev_clear(&out);
+                snd_seq_ev_set_controller(&out, ch, relative_ccs[r].lower, pos & 0x7F);
+            } else if (ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF) {
+                for (int m = 0; m < note_map_count; m++) {
+                    if (out.data.note.channel == note_maps[m].ch &&
+                        out.data.note.note == note_maps[m].from) {
+                        out.data.note.channel = (unsigned char)note_maps[m].to_ch;
+                        out.data.note.note = (unsigned char)note_maps[m].to;
+                        break;
+                    }
+                }
+            }
             send_event(&out);
             if (snd_seq_event_input_pending(seq, 0) <= 0) break;
             continue;
+        }
+        if (forward_client >= 0 && (led_map_count > 0 || echo_lamps)) {
+            int is_note = ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF;
+            if (is_note && has_led_map(ev->data.note.channel, ev->data.note.note))
+                light_lamp(ev->data.note.channel, ev->data.note.note,
+                           ev->type == SND_SEQ_EVENT_NOTEON ? ev->data.note.velocity : 0);
+            else if (echo_lamps && (is_note || ev->type == SND_SEQ_EVENT_CONTROLLER))
+                echo_to_controller(ev);
         }
         if (ev->type == SND_SEQ_EVENT_SYSEX) {
             const unsigned char *d = (const unsigned char *)ev->data.ext.ptr;
@@ -547,8 +831,14 @@ static void handle_incoming(void) {
 /* Subscribe to the first sequencer port whose client name contains `match`
  * and that can be read from, skipping our own client and Engine's. Matching on
  * a substring rather than an exact name keeps this usable against whatever
- * name a given controller's USB descriptor produces. */
-static int connect_forward_source(const char *match) {
+ * name a given controller's USB descriptor produces.
+ *
+ * Kernel clients -- real hardware -- come first, and with kernel_only nothing
+ * else will do. Engine opens ports of its own on every MIDI device, named
+ * after it ("Midi::Out::DDJ-FLX10 MIDI 1"), and after a replug Engine's was
+ * announced before the controller's and was taken in its place. */
+static int connect_forward_source(const char *match, int kernel_only) {
+    if (!kernel_only && connect_forward_source(match, 1) == 0) return 0;
     snd_seq_client_info_t *cinfo;
     snd_seq_port_info_t *pinfo;
     snd_seq_client_info_alloca(&cinfo);
@@ -561,6 +851,7 @@ static int connect_forward_source(const char *match) {
         const char *cname = snd_seq_client_info_get_name(cinfo);
         if (client == me || client == SND_SEQ_CLIENT_SYSTEM) continue;
         if (!cname || !strstr(cname, match)) continue;
+        if (kernel_only && snd_seq_client_info_get_type(cinfo) != SND_SEQ_KERNEL_CLIENT) continue;
 
         snd_seq_port_info_set_client(pinfo, client);
         snd_seq_port_info_set_port(pinfo, -1);
@@ -577,18 +868,40 @@ static int connect_forward_source(const char *match) {
                 forward_client = client;
                 forward_port = port;
                 printf("forwarding from \"%s\" (%d:%d)\n", cname, client, port);
+                /* The way back, for --led-map. No capabilities: nothing else
+                 * has any business with this port, and one that advertised
+                 * some would be a second device for Engine to enumerate. */
+                if (led_map_count > 0 || led_send_count > 0 || echo_lamps) {
+                    /* Made once and reconnected after a replug. */
+                    if (lamp_port < 0)
+                        lamp_port = snd_seq_create_simple_port(
+                            seq, "lamps", 0, SND_SEQ_PORT_TYPE_APPLICATION);
+                    if (lamp_port < 0 ||
+                        snd_seq_connect_to(seq, lamp_port, client, port) < 0) {
+                        fprintf(stderr, "could not send to %d:%d; --led-map "
+                                        "will do nothing\n", client, port);
+                    } else {
+                        if (led_map_count > 0)
+                            printf("lighting %d lamps on it\n", led_map_count);
+                        if (echo_lamps)
+                            printf("echoing Engine's lamps to it\n");
+                        for (int n = 0; n < led_send_count; n++)
+                            send_to_controller(led_sends[n].ch, led_sends[n].cc,
+                                               led_sends[n].value);
+                    }
+                }
                 fflush(stdout);
                 return 0;
             }
         }
     }
-    fprintf(stderr, "no readable port found matching \"%s\"\n", match);
+    if (!kernel_only)   /* the kernel-only pass is retried on every new port */
+        fprintf(stderr, "no readable port found matching \"%s\"\n", match);
     return -1;
 }
 
 int main(int argc, char **argv) {
     const char *client_name = NULL;   /* argv[1], else named after the product */
-    const char *forward_match = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) {
@@ -597,12 +910,64 @@ int main(int argc, char **argv) {
             motor_off_enabled = 1;
         } else if (strcmp(argv[i], "--forward") == 0 && i + 1 < argc) {
             forward_match = argv[++i];
+        } else if (strcmp(argv[i], "--pitchbend-cc") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%i,%i", &pitchbend_cc_upper, &pitchbend_cc_lower) != 2 ||
+                pitchbend_cc_upper < 0 || pitchbend_cc_upper > 127 ||
+                pitchbend_cc_lower < 0 || pitchbend_cc_lower > 127) {
+                fprintf(stderr, "--pitchbend-cc wants two controller numbers, "
+                                "e.g. 0x05,0x06\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--relative-cc") == 0 && i + 1 < argc) {
+            int cc, upper, lower;
+            if (relative_cc_count >= MAX_RELATIVE_CCS ||
+                sscanf(argv[++i], "%i=%i,%i", &cc, &upper, &lower) != 3 ||
+                cc < 0 || cc > 127 || upper < 0 || upper > 127 ||
+                lower < 0 || lower > 127) {
+                fprintf(stderr, "--relative-cc wants CC=UPPER,LOWER, "
+                                "e.g. 0x51=0x37,0x4D (at most %d)\n", MAX_RELATIVE_CCS);
+                return 1;
+            }
+            relative_ccs[relative_cc_count].cc = cc;
+            relative_ccs[relative_cc_count].upper = upper;
+            relative_ccs[relative_cc_count].lower = lower;
+            relative_cc_count++;
+        } else if (strcmp(argv[i], "--echo-lamps") == 0) {
+            echo_lamps = 1;
+        } else if (strcmp(argv[i], "--note-map") == 0 && i + 1 < argc) {
+            int ch, from, to_ch, to;
+            const char *spec = argv[++i];
+            int fields = sscanf(spec, "%i:%i=%i:%i", &ch, &from, &to_ch, &to);
+            if (fields == 3) {
+                /* CH:FROM=TO -- the third number was the note, same channel. */
+                to = to_ch;
+                to_ch = ch;
+            }
+            if (note_map_count >= MAX_NOTE_MAPS || (fields != 3 && fields != 4) ||
+                ch < 0 || ch > 15 || to_ch < 0 || to_ch > 15 ||
+                from < 0 || from > 127 || to < 0 || to > 127) {
+                fprintf(stderr, "--note-map wants CH:FROM=TO or CH:FROM=TOCH:TO, "
+                                "e.g. 0:0x28=0x70 or 1:0x62=0:0x62 (at most %d)\n",
+                        MAX_NOTE_MAPS);
+                return 1;
+            }
+            note_maps[note_map_count].ch = ch;
+            note_maps[note_map_count].from = from;
+            note_maps[note_map_count].to_ch = to_ch;
+            note_maps[note_map_count].to = to;
+            note_map_count++;
+        } else if (strcmp(argv[i], "--led-map") == 0 && i + 1 < argc) {
+            if (load_led_map(argv[++i]) < 0) return 1;
         } else if (argv[i][0] != '-') {
             client_name = argv[i];
         } else {
             fprintf(stderr,
                     "usage: %s [client-name] [-v] [--motor-off] "
-                    "[--forward <controller-name-substring>]\n", argv[0]);
+                    "[--forward <controller-name-substring>] "
+                    "[--pitchbend-cc <upper>,<lower>] "
+                    "[--relative-cc <cc>=<upper>,<lower>]... "
+                    "[--note-map <ch>:<from>=[<ch>:]<to>]... "
+                    "[--led-map <file>] [--echo-lamps]\n", argv[0]);
             return 1;
         }
     }
@@ -661,7 +1026,14 @@ int main(int argc, char **argv) {
            client_name, snd_seq_client_id(seq), my_port);
     fflush(stdout);
 
-    if (forward_match) connect_forward_source(forward_match);
+    if (forward_match) {
+        connect_forward_source(forward_match, 0);
+        /* Announcements of clients and ports coming and going; see the top
+         * of handle_incoming. */
+        if (snd_seq_connect_from(seq, my_port, SND_SEQ_CLIENT_SYSTEM,
+                                 SND_SEQ_PORT_SYSTEM_ANNOUNCE) < 0)
+            fprintf(stderr, "could not watch for the controller being replugged\n");
+    }
 
     /* Poll stdin and the sequencer together: commands can arrive at any time,
      * but so can Engine's identity request, and missing that means the

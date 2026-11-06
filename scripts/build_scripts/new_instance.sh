@@ -27,6 +27,11 @@
 #               --force rebuild keeps it instead of silently reverting to the
 #               builder's default. Omit to keep what this instance already has, or
 #               to take the builder's default on a new instance.
+#   --montero   build MONTERO (the QML mod loader) and every mod in shims/montero/mods
+#               into the rootfs, and preload it into Engine. Engine only, on
+#               either architecture.
+#               Recorded in instance.env like --product-code, so a --force rebuild
+#               keeps it; --no-montero turns it back off.
 #   --force     rebuild the rootfs even if this instance already has one
 #
 # The kernel and initrd are deliberately *not* per-instance: they are generic
@@ -49,6 +54,7 @@ FIRMWARE=""
 SIZE=""
 FORCE=0
 PRODUCT_CODE_ARG=""
+MONTERO_ARG=""
 
 
 while [ $# -gt 0 ]; do
@@ -58,6 +64,8 @@ while [ $# -gt 0 ]; do
         --firmware) FIRMWARE="$2"; shift 2 ;;
         --size) SIZE="$2"; shift 2 ;;
         --product-code) PRODUCT_CODE_ARG="$2"; shift 2 ;;
+        --montero) MONTERO_ARG=1; shift ;;
+        --no-montero) MONTERO_ARG=0; shift ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -291,6 +299,25 @@ fi
 # defaults belong to which family.
 if [ -n "$PRODUCT_CODE" ]; then export PRODUCT_CODE; fi
 
+# MONTERO is build-time in the same way, so it is kept the same way.
+if [ -n "$MONTERO_ARG" ]; then
+    MONTERO="$MONTERO_ARG"
+elif [ -f "$INSTANCE_DIR/instance.env" ]; then
+    MONTERO="$(sed -n 's/^MONTERO=//p' "$INSTANCE_DIR/instance.env")"
+else
+    MONTERO=0
+fi
+MONTERO="${MONTERO:-0}"
+if [ "$MONTERO" = 1 ]; then
+    case "$ROOTFS_BUILDER" in
+        build_arm64_rootfs.sh|build_armv7_engine_rootfs.sh) ;;
+        *) echo "ERROR: --montero loads mods into Engine, and this firmware builds" >&2
+           echo "       with $ROOTFS_BUILDER, which is not an Engine builder." >&2
+           exit 1 ;;
+    esac
+fi
+export MONTERO
+
 STAMP="$INSTANCE_DIR/.rootfs.complete"
 
 if [ -e "$ROOTFS_IMG" ] && [ -e "$STAMP" ] && [ "$FORCE" -ne 1 ]; then
@@ -419,6 +446,7 @@ DATA_IMG=$DATA_IMG
 ROOT_UUID=$ROOT_UUID
 ARCH=$ARCH
 PRODUCT_CODE=$PRODUCT_CODE
+MONTERO=$MONTERO
 KERNEL_IMG=$KERNEL_IMG
 INITRD_IMG=$INITRD_IMG
 SSH_PORT=$(( 2200 + OFFSET ))

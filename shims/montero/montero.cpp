@@ -5,8 +5,13 @@
  * That makes a replacement file indistinguishable from the original, provided
  * it sits at the same qrc path. This shim puts it there.
  *
- * A mod is a directory under /data/mods holding one or more .rcc files (built
- * with `rcc -binary`). Each is registered *ahead of* Engine's own resources.
+ * A mod is a directory holding one or more .rcc files (built with
+ * `rcc -binary`), found under each directory in MONTERO_MODS, a colon-separated
+ * list that defaults to /root/montero/mods:/data/mods: the mods the rootfs
+ * builder installs, then any put on the data disk by hand. /data is a mount of
+ * its own disk wherever Engine runs, so the builder cannot install there. A
+ * directory earlier in the list is registered first, and so wins a path two
+ * mods both supply. Each is registered *ahead of* Engine's own resources.
  * QResource answers a path from the first registered root that has it, so a
  * mod's file shadows Engine's at the same path, while everything the mod does
  * not supply -- sibling components, images, ../ imports -- still resolves from
@@ -68,7 +73,7 @@
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickView>
 
-static const char MODS_DIR[] = "/data/mods";
+static const char DEFAULT_MODS_DIRS[] = "/root/montero/mods:/data/mods";
 
 static FILE *log_file;
 
@@ -99,12 +104,12 @@ static bool in_engine() {
 
 /* ---- mod resources -------------------------------------------------------- */
 
-static void register_mods() {
+static void register_mods_in(const char *dir) {
     glob_t g;
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "%s/*/*.rcc", MODS_DIR);
+    char pattern[512];
+    snprintf(pattern, sizeof(pattern), "%s/*/*.rcc", dir);
     if (glob(pattern, 0, NULL, &g) != 0) {
-        mt_log("no mods (%s matched nothing)", pattern);
+        mt_log("no mods in %s", dir);
         return;
     }
     for (size_t i = 0; i < g.gl_pathc; i++) {
@@ -112,6 +117,15 @@ static void register_mods() {
         mt_log("%s %s", ok ? "registered" : "FAILED to register", g.gl_pathv[i]);
     }
     globfree(&g);
+}
+
+static void register_mods() {
+    const char *env = getenv("MONTERO_MODS");
+    char dirs[1024];
+    snprintf(dirs, sizeof(dirs), "%s", env && *env ? env : DEFAULT_MODS_DIRS);
+    char *save = NULL;
+    for (char *dir = strtok_r(dirs, ":", &save); dir; dir = strtok_r(NULL, ":", &save))
+        register_mods_in(dir);
 }
 
 typedef bool (*register_data_t)(int, const unsigned char *, const unsigned char *,

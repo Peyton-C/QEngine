@@ -16,6 +16,9 @@ Fakes various parts of the device tree expected by Engine and other InMusic OSes
 ## midisurface
 An emulated midi surface to control Engine.
 
+## montero
+Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.
+
 ## quitshim
 Makes SIGTERM quit Engine cleanly, where Qt would exit on the spot. Used on the Pi, where Engine is stopped by a service manager.
 

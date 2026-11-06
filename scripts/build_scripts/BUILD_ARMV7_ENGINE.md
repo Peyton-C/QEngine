@@ -6,6 +6,10 @@ This is Engine OS on the RK3288 controllers (Prime, SC, Mixstream), as opposed t
 need different rootfs builders and different disk layouts; `new_instance.sh` picks
 between them from the firmware itself.
 
+`MONTERO=1` (`--montero` on `new_instance.sh`) also builds the MONTERO mod loader and
+every mod in `shims/montero/mods`, and preloads it into Engine. Needs a Qt 6 Engine
+(5.x); tested on Prime GO 5.3.0.
+
 The short way is one command, which does all of the below and keeps each device in its
 own directory — see [INSTANCES.md](INSTANCES.md):
 

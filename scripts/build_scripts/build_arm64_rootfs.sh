@@ -29,6 +29,10 @@
 #
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default RMZ2.
+#   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
+#                 shims/montero/mods, install them in /root, and preload MONTERO
+#                 into Engine. Off by default: it is the one shim that needs Qt to
+#                 build, which costs this build its own container.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
@@ -163,6 +167,12 @@ docker run --rm --platform linux/arm64 \
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
     '
+
+# MONTERO, the QML mod loader, only when asked for: see build_montero.sh.
+MONTERO="${MONTERO:-0}"
+if [ "$MONTERO" = 1 ]; then
+    "$SCRIPT_DIR_SELF/build_montero.sh" --arch "$SHIM_ARCH" --stage "$STAGE_DIR"
+fi
 
 # The GL driver this guest actually loads, built to match what detect_mesa found.
 # A mismatched version is not a degradation but a break: in the gallium layout
@@ -433,6 +443,10 @@ Environment=ALSASHIM_CARD=0
 #Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
 
+if [ "$MONTERO" = 1 ]; then
+    install_montero /mnt/rootfs "$SHIM_ARCH" /stage
+fi
+
 # Engine must start after the control surface exists, or it will never bind it
 # (its MIDI enumerator only scans during startup).
 cat > /mnt/rootfs/etc/systemd/system/engine.service.d/midisurface.conf <<'EOF'
@@ -455,6 +469,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-RMZ2}" \
+    -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \

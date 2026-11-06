@@ -33,6 +33,10 @@
 #
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07.
+#   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
+#                 shims/montero/mods, install them in /root, and preload MONTERO
+#                 into Engine. Off by default: it is the one shim that needs Qt to
+#                 build, which costs this build its own container.
 #
 # Requires: binwalk (3.x), qemu-img, docker.
 set -euo pipefail
@@ -173,6 +177,12 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
     '
+
+# MONTERO, the QML mod loader, only when asked for: see build_montero.sh.
+MONTERO="${MONTERO:-0}"
+if [ "$MONTERO" = 1 ]; then
+    "$SCRIPT_DIR_SELF/build_montero.sh" --arch "$SHIM_ARCH" --stage "$STAGE_DIR"
+fi
 
 # The virgl driver, built to match what detect_mesa found and cached in build/ the
 # way get_kernel.sh caches a kernel. Not taken from Debian's libgl1-mesa-dri: that
@@ -377,6 +387,10 @@ Environment=EGL_PLATFORM=gbm
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
 
+if [ "$MONTERO" = 1 ]; then
+    install_montero /mnt/rootfs "$SHIM_ARCH" /stage
+fi
+
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
@@ -391,6 +405,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
+    -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
     -v "$OUT_DIR:/out" \

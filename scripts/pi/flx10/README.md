@@ -3,7 +3,7 @@ Shows Engine's decks on the Pioneer/AlphaTheta DDJ-FLX10's jog screens: waveform
 
 ## Running it
 - Install ffmpeg on the Pi, which the bridge uses to build waveforms from the track files: `sudo apt install ffmpeg`.
-- Build `flx10.rcc` from `shims/montero/mods/flx10/flx10.qrc` with `rcc -binary` and put it in the rootfs at `/data/mods/flx10/`.
+- Build the instance with `--montero`, which puts MONTERO in the rootfs at `/root/montero.so` and builds the flx10 mod into `/root/montero/mods/flx10/`. A mod built by hand with `rcc -binary` can also go in `/data/mods/<mod>/`.
 - Set the FLX10 lines in `pi.env`, from `pi.env.example`. They forward the controller to Engine with its mapping and preload MONTERO.
 - Copy this directory to `~/qengine/flx10` and install the bridge as a service, which waits for the controller and picks it up again after a replug:
 

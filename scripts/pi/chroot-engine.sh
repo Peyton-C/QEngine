@@ -233,6 +233,7 @@ ENVV=("${BASE[@]}"
 [ -n "${MONTERO_DUMP:-}" ] && ENVV+=("MONTERO_DUMP=1")
 [ -n "${MONTERO_EXTRACT:-}" ] && ENVV+=("MONTERO_EXTRACT=$MONTERO_EXTRACT")
 [ -n "${MONTERO_LOG_URLS:-}" ] && ENVV+=("MONTERO_LOG_URLS=1")
+[ -n "${MONTERO_MODS:-}" ] && ENVV+=("MONTERO_MODS=$MONTERO_MODS")
 
 ### launch ####################################################################
 # Anchored patterns: an unanchored one also matches the shell that invoked us,

@@ -16,10 +16,10 @@
 #               extraction (a few seconds). Pass it to skip that, or to state the
 #               intent explicitly — a wrong value is still caught either way.
 #                 engine = Engine OS (RANE SYSTEM ONE and relatives)
-#                 mpc    = Akai MPC
-#               Passing --device engine does not skip the extraction: Engine OS
-#               ships on both architectures and they need different builders, so
-#               the firmware still has to be looked at to tell which.
+#                 mpc    = Akai MPC and Force (Gen 2), Gen 1 or Gen 2
+#               Passing --device does not skip the extraction: both families ship
+#               on both architectures and need different builders or builds per
+#               architecture, so the firmware still has to be looked at to tell which.
 #   --firmware  path to the firmware .img to extract
 #   --size      rootfs image size in bytes, passed through to the builder
 #   --product-code  which device identity to spoof, e.g. JP14, RMZ2, ACV5. Passed to
@@ -136,13 +136,18 @@ esac
 # and it wants the single-partition 'mpc' disk layout rather than the RK3588
 # data+factory pair, because its data.mount asks for PARTUUID
 # 931ad49d-ad59-0849-833a-9bf00af5b60e. Disk layout tracks the platform generation,
-# not the application.
+# not the application: Gen 2 MPC's data.mount and factory.mount ask for exactly the
+# PARTUUIDs RMZ2's do, so it takes the 'engine' layout.
+#
+# One builder can serve two rows. build_mpc_rootfs.sh covers both MPC generations
+# and is told which by ARCH, exported below from the row.
 #
 # The QEMU command line is not per-row: run_qemu.sh takes the family and the arch
 # from instance.env.
 DEVICE_FAMILIES="\
 engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img
 engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img
+mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img"
 
 family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | sort -u | tr '\n' ' '; }
@@ -307,6 +312,9 @@ fi
 # already have, and it keeps this script out of the business of knowing which
 # defaults belong to which family.
 if [ -n "$PRODUCT_CODE" ]; then export PRODUCT_CODE; fi
+# The row's architecture, for a builder that serves more than one. The single-arch
+# builders ignore it and guard their own.
+export ARCH="$ROW_ARCH"
 
 # MONTERO is build-time in the same way, so it is kept the same way.
 if [ -n "$MONTERO_ARG" ]; then
@@ -420,13 +428,13 @@ else
 fi
 
 # run_qemu.sh takes its machine type and device models from ARCH, so either
-# architecture boots. Only an untried combination is worth a word: an arm64 MPC has
-# never been run, and the audio path in particular differs (mmio virtio-sound rather
-# than PCI hda). Flag it as unproven rather than implying it is broken. armv7 Engine
-# reaches a rendered UI but has no audio or control surface yet — see the note at the
-# top of build_armv7_engine_rootfs.sh.
+# architecture boots. Only an untried combination is worth a word, flagged as
+# unproven rather than implying it is broken; every row today has been booted. armv7
+# Engine reaches a rendered UI but has no audio or control surface yet — see the note
+# at the top of build_armv7_engine_rootfs.sh. arm64 MPC (3.10.0 Gen 2, as ACVA3)
+# reaches a rendered UI with touch and, like Gen 1, no audio device.
 case "$DEVICE:$ARCH" in
-    engine:arm64|engine:armhf|mpc:armhf) ;;
+    engine:arm64|engine:armhf|mpc:arm64|mpc:armhf) ;;
     *) echo "NOTE: $DEVICE on $ARCH is an untried combination. A command line will be"
        echo "      built for it, but nothing here has booted one yet." ;;
 esac

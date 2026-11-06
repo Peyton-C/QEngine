@@ -1,13 +1,16 @@
 #!/bin/bash
 # Automates extraction and modification of a stock Akai MPC rootfs for QEngine.
-# The armv7/RK3288 sibling of build_arm64_rootfs.sh; MPC needs far less doing to
-# it than Engine does, because it drives KMS directly and links no Mali/EGL.
+# Covers both generations: Gen 1 on RK3288 (armhf) and Gen 2 on RK3588 (arm64),
+# which also carries Force (Gen 2). MPC needs far less doing to it than Engine
+# does, because it drives KMS directly and links no Mali/EGL, and that holds on
+# both: /usr/bin/MPC in 3.10.0 Gen 2 links libdrm and nothing GL, and no libteec,
+# so none of the arm64 Engine stack (drmatomic, teeshim, alsashim) applies.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge and dtshim for armhf (the shared sources under shims/
+#   4. Build touchbridge and dtshim for $ARCH (the shared sources under shims/
 #      are architecture-independent — see the build step below).
 #   5. Copy them into /root, wire touchbridge_mpc.service ahead of acvs.service,
 #      and preload dtshim into acvs.service so MPC can read a product code.
@@ -23,7 +26,10 @@
 #   --force     Overwrite --out if it already exists.
 #
 # Environment:
-#   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5.
+#   ARCH          armhf (Gen 1, the default) or arm64 (Gen 2). The same variable
+#                 run_qemu.sh reads; new_instance.sh sets it from the firmware.
+#   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5
+#                 (MPC X) on armhf, ACVA3 (MPC One Gen 2) on arm64.
 #   BINWALK       1 to extract with binwalk instead of QEngine's readers. See
 #                 extract_rootfs.sh.
 #
@@ -33,12 +39,28 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
+
+# What differs between the generations is only what the shims are built for, which
+# dtshim table they get, and the default identity. The app, its units and its shim
+# needs are otherwise the same. The arm64 default is ACVA3 because Gen 2 has no MPC X
+# to match Gen 1's, and the One is the simplest model in the image.
+ARCH="${ARCH:-armhf}"
+case "$ARCH" in
+    armhf) SHIM_PLATFORM="linux/arm/v7"; SHIM_MACHINE="armv7l|armv8l|armhf"
+           DT_SOC="SOC_RK3288"; LOADER="ld-linux-armhf.so.3"
+           DEFAULT_CODE="ACV5"; DISK_LAYOUT="mpc" ;;
+    arm64) SHIM_PLATFORM="linux/arm64"; SHIM_MACHINE="aarch64|arm64"
+           DT_SOC="SOC_RK3588"; LOADER="ld-linux-aarch64.so.1"
+           DEFAULT_CODE="ACVA3"; DISK_LAYOUT="engine" ;;
+    *) echo "ERROR: ARCH must be armhf or arm64 (got '$ARCH')." >&2; exit 1 ;;
+esac
+PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
 # The builders mount the whole shims tree, so a shim shared between them is
 # reached at the same path in either: /shims/<name> for the shared ones,
 # /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
 # Names the compiled output of the shared shims, so one source yields one
 # artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
-SHIM_ARCH="armhf"
+SHIM_ARCH="$ARCH"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
@@ -120,23 +142,24 @@ echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
 # depends on pull order. The comment above pins intent; this pull makes it true.
-docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
-docker run --rm --platform linux/arm/v7 \
+docker pull -q --platform "$SHIM_PLATFORM" debian:bookworm >/dev/null
+docker run --rm --platform "$SHIM_PLATFORM" \
     -e SHIM_ARCH="$SHIM_ARCH" \
+    -e SHIM_MACHINE="$SHIM_MACHINE" \
+    -e DT_SOC="$DT_SOC" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
-        # These shims are copied straight into an armv7 rootfs, so a
+        # These shims are copied straight into a $SHIM_ARCH rootfs, so a
         # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
-        case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
-            echo "ERROR: shim container is $(uname -m), expected armv7l." >&2; exit 1 ;;
-        esac
+        uname -m | grep -qxE "$SHIM_MACHINE" || {
+            echo "ERROR: shim container is $(uname -m), expected $SHIM_MACHINE." >&2; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
     '
@@ -160,10 +183,10 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
-# NOTE: this container intentionally runs the *host* architecture, not armhf —
+# NOTE: this container intentionally runs the *host* architecture, not the guest's —
 # e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
 # So it must never be the source of anything that ends up inside the guest
-# rootfs. Nothing here is: the shims come from the armhf container above.
+# rootfs. Nothing here is: the shims come from the $ARCH container above.
 
 IMG="/out/$OUT_NAME"
 
@@ -196,10 +219,10 @@ trap cleanup EXIT
 # "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
 # the wrong architecture. The dynamic loader's filename is architecture-specific,
 # so its presence is an unambiguous check.
-if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
-    echo "ERROR: this firmware's rootfs is not 32-bit ARM (no /lib/ld-linux-armhf.so.3)." >&2
-    echo "       This builds armv7/RK3288 MPC firmware only." >&2
-    echo "       The Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
+if [ ! -e "/mnt/rootfs/lib/$LOADER" ]; then
+    echo "ERROR: this firmware's rootfs is not $ARCH (no /lib/$LOADER)." >&2
+    echo "       Gen 1 MPC images are armhf and Gen 2 are arm64; set ARCH to match," >&2
+    echo "       or build through new_instance.sh, which reads it off the firmware." >&2
     exit 1
 fi
 if [ ! -f /mnt/rootfs/usr/bin/MPC ]; then
@@ -214,22 +237,23 @@ echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 chmod 755 /mnt/rootfs/root/dtshim.so
 
-# The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
-# only the values are ours. Every one of them must exist, because the shim remaps
-# unconditionally and a missing target turns a working read into ENOENT.
+# The devicetree properties dtshim.c remaps, at the real paths for this SoC; only
+# the values are ours. Every one of them must exist, because the shim remaps
+# unconditionally and a missing target turns a working read into ENOENT. The
+# Gen 2 dtbs in 3.10.0 declare inmusic,product-code and nothing else at the root,
+# so RK3588's table, written for Engine, already covers them.
 #
 # PRODUCT_CODE selects which device this pretends to be.
-write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-ACV5}"
+write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
 
 echo "--- wiring touchbridge.service ---"
-# QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
-# so no USB controller), and the virtio tablet that replaces them presents as an
-# absolute *mouse*. MPC only responds to a real touchscreen, so the bridge
-# re-emits that pointer as a uinput multitouch device. It must start before
-# acvs.service: MPC enumerates input once, at its own startup.
+# QEMU's tablet, usb-tablet or the virtio one, presents as an absolute *mouse*.
+# MPC only responds to a real touchscreen, so the bridge re-emits that pointer as
+# a uinput multitouch device. It must start before acvs.service: MPC enumerates
+# input once, at its own startup.
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge_mpc
 chmod 755 /mnt/rootfs/root/touchbridge_mpc
-cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
+cp -a /shims/touchbridge/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
 ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
 
 echo "--- disabling the tty1 getty (Application's display) ---"
@@ -284,7 +308,9 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
-    -e PRODUCT_CODE="${PRODUCT_CODE:-ACV5}" \
+    -e ARCH="$ARCH" \
+    -e LOADER="$LOADER" \
+    -e PRODUCT_CODE="$PRODUCT_CODE" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
@@ -301,5 +327,5 @@ echo "Built: $OUT_PATH"
 echo ""
 file "$OUT_PATH"
 echo ""
-echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch armhf) and an"
-echo "/data disk (make_disk.sh --family mpc) — see BUILD_MPC.md."
+echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch $ARCH) and an"
+echo "/data disk (make_disk.sh --family $DISK_LAYOUT) — see BUILD_MPC.md."

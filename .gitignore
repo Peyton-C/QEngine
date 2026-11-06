@@ -61,6 +61,7 @@ build/
 
 # Built Files
 shims/touchbridge/touchbridge_*
+!shims/touchbridge/touchbridge_*.service
 shims/midisurface/midisurface_*
 shims/rk3288/vnctouchbridge/vnctouchbridge_*
 

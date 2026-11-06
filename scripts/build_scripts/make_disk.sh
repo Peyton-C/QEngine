@@ -29,7 +29,8 @@ done
 # match exactly, or systemd never finds the partition.
 case "$FAMILY" in
     engine)
-        # usr/lib/systemd/system/data.mount and factory.mount on RMZ2.
+        # usr/lib/systemd/system/data.mount and factory.mount on RMZ2, and the same
+        # PARTUUIDs on Gen 2 MPC.
         PARTITIONS=(
             "data:1MiB:2049MiB:d6a62570-4c37-4a42-ae77-8f45bcbfda65"
             "factory:2049MiB:100%:f2a055c0-1536-5020-a0c9-3944f89ba52b"

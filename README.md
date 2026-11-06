@@ -55,10 +55,7 @@ and `debian:trixie` tags at different architectures, and Docker caches a tag at 
 one architecture at a time, so building an arm64 and an armv7 target concurrently
 will fight over them. Sequentially is fine — each build pulls what it needs.
 
-**Picking the right firmware.** `--device mpc` refers to the armv7 / RK3288 MPC family
-(product codes `ACV*`). Akai also ships an arm64 "Gen 2" MPC image; that one belongs
-to a different pipeline, and the build now rejects it up front rather than producing
-an image that panics partway into boot.
+**Picking the right firmware.** `--device mpc` covers both MPC images Akai ships, Gen 1 (RK3288, armv7) and Gen 2 (RK3588, arm64), and QEngine reads which one it has off the firmware.
 
 In the MPC guest, failing units for LoadPin verity trustpoints and XMOS USB audio
 firmware are expected: none of that hardware exists here. `AZ0x system info logging`
@@ -117,18 +114,24 @@ Same shape as the table above. **Code** is again the `inmusic,product-code` valu
 read here from the `model` and `inmusic,product-code` properties of the
 `/boot/rk3288-*.dtb` files the firmware ships. Version cells hold the exact firmware
 version booted, `?` for untested. The Gen 1 MPCs all ship from one image covering
-eight models, so a version column is the *image* version.
+eight models, so a version column is the *image* version. The six Gen 2 models share one image too, which carries its dtbs in the update image rather than in `/boot`; their codes are read from there.
 
-|               | Code  | SOC    | Signed FW | Arch  | 2.x | 3.x   |
-|---------------|-------|--------|-----------|-------|-----|-------|
-| MPC X         | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC X SE      | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC Live      | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC Live Mk 2 | ACVB  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC One       | ACVA  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC One+      | ACVA2 | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC Key 61    | ACVM  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
-| MPC Key 37    | ACVR  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1 |
+|                    | Code  | SOC    | Signed FW | Arch  | 2.x | 3.x          |
+|--------------------|-------|--------|-----------|-------|-----|--------------|
+| MPC X              | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC X SE           | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC XL             | ACVC  | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| MPC Live           | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC Live Mk 2      | ACVB  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC Live III       | ACVG  | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| MPC One            | ACVA  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC One+           | ACVA2 | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC One (Gen 2)    | ACVA3 | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| MPC Key 61         | ACVM  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC Key 61 (Gen 2) | ACVM2 | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| MPC Key 37         | ACVR  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC Key 37 (Gen 2) | ACVR2 | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| Force (Gen 2)      | ADA2S | RK3588 | Y         | arm64 | –   | 3.10.0       |
 
 The MPC build spoofs a product code the same way the Engine builds do: `PRODUCT_CODE`
 (or `--product-code`) selects it, and the RK3288 `dtshim` is preloaded into
@@ -165,8 +168,7 @@ firmware is in the same archive and the extraction recipe is the same:
 
 | Line | Codes | Notes |
 |------|-------|-------|
-| Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line |
-| Akai MPC Gen 2 | `MPC-GEN2` | arm64 — a different pipeline; the MPC build rejects it up front |
+| Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line. Force (Gen 2) ships in the MPC Gen 2 image and builds as an MPC |
 | Akai MPC Sample | `AC50` | |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
 | Alesis drum module | `LDMD`, `LDMF` | Shipped as `drummodule-*-update.img` |

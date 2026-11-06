@@ -53,9 +53,11 @@ case "$ARCH" in
     arm64) _kern="vmlinuz-generic-arm64"; _init="initrd-generic-arm64" ;;
     armhf) _kern="vmlinuz-generic-armhf"; _init="initrd-generic-armhf" ;;
 esac
-case "$DEVICE" in
-    engine) _data="data_disk.img" ;;
-    mpc)    _data="emmc.img" ;;
+case "$DEVICE:$ARCH" in
+    engine:*)  _data="data_disk.img" ;;
+    # Gen 2 MPC uses RK3588's data+factory layout, the same disk Engine does.
+    mpc:arm64) _data="data_disk.img" ;;
+    mpc:*)     _data="emmc.img" ;;
     *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine or mpc)." >&2; exit 1 ;;
 esac
 

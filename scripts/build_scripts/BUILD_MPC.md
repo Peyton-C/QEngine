@@ -1,11 +1,11 @@
-# Setup everything required to emulate an armv7 Akai MPC
+# Setup everything required to emulate an Akai MPC
 Requires docker, qemu, python3, e2fsprogs.
 
-1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/) — the **Gen 1** `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37).
-2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`.
-3. Get the kernel and initrd with `get_kernel.sh --arch armhf`.
-4. Make a /data disk for MPC with `make_disk.sh --family mpc`.
-5. Boot with `DEVICE=mpc ARCH=armhf scripts/qemu/run_qemu.sh`.
+1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/). The Gen 1 `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37) and is armv7. The Gen 2 `.img` covers the RK3588 models (MPC One Gen 2, Key 37 Gen 2, Key 61 Gen 2, XL, Live III, Force Gen 2) and is arm64.
+2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`, prefixed with `ARCH=arm64` for Gen 2.
+3. Get the kernel and initrd with `get_kernel.sh --arch armhf`, or `--arch arm64` for Gen 2.
+4. Make a /data disk with `make_disk.sh --family mpc`, or `--family engine` for Gen 2, which uses the same `data` and `factory` partitions as RK3588 Engine OS.
+5. Boot with `DEVICE=mpc ARCH=armhf scripts/qemu/run_qemu.sh`, or `ARCH=arm64` for Gen 2.
 
 Or let one command do all of it, with the device family and architecture identified from
 the firmware — see [INSTANCES.md](INSTANCES.md):
@@ -15,10 +15,23 @@ scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --firmware PATH_TO_MPC_UP
 scripts/qemu/run_instance.sh --name mpc-3.9.1
 ```
 
-Touch works out of the box: the rootfs build installs `touchbridge_mpc` and starts it
-before `acvs.service`. MPC only responds to a real touchscreen, and QEMU's virtio
-tablet presents as an absolute mouse, so the bridge re-emits it as a uinput
-multitouch device.
+Touch works out of the box: the rootfs build installs `touchbridge_mpc` and holds `acvs.service` back until its touchscreen exists, since MPC looks for touchscreens only when it starts. MPC only responds to a real touchscreen, and QEMU's tablet presents as an absolute mouse, so the bridge re-emits it as a uinput multitouch device. Taps need to be held briefly, as an instant press and release from a scripted VNC client does not register.
+
+## Gen 2
+Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so none of arm64 Engine's shims apply. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
+
+| Model | Code |
+| --- | --- |
+| MPC One (Gen 2) | `ACVA3` |
+| MPC Key 37 (Gen 2) | `ACVR2` |
+| MPC Key 61 (Gen 2) | `ACVM2` |
+| MPC XL | `ACVC` |
+| MPC Live III | `ACVG` |
+| Force (Gen 2) | `ADA2S` |
+
+The dtbs also set `chosen` flags per model that QEngine does not serve: `acvs-loopback-content`, `emmc-synths` and `nvme-fitted`. Without them the guest skips `storage.mount`, `content.mount` and `nvme.mount`. Where MPC then keeps user content is untested.
+
+`az0x-info` reports "No data available" on Gen 2, even with `dtshim` preloaded, and MPC logs `Unhandled board platform: <unknown>`. Neither stops the UI.
 
 To build and run several devices or firmware versions side by side, see
 [INSTANCES.md](INSTANCES.md).

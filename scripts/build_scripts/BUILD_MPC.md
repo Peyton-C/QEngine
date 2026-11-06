@@ -1,5 +1,5 @@
 # Setup everything required to emulate an armv7 Akai MPC
-Requires docker, qemu, binwalk 3.1.X, e2fsprogs.
+Requires docker, qemu, python3, e2fsprogs.
 
 1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/) — the **Gen 1** `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37).
 2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`.
@@ -28,7 +28,7 @@ To build and run several devices or firmware versions side by side, see
 - Used directly as above, the rootfs is written to `build/rootfs_out.img` — the
   same path the arm64 build uses, so building one target overwrites the other.
   Use an instance (see INSTANCES.md) to keep several targets side by side.
-- Plain FIT images (`d00dfeed`: MPC 2.x, Prime GO 4.3.0 and earlier, HeadRush Pedalboard and Looperboard) go through `extract_fit_rootfs.py`, since binwalk 3 reads each as a single DTB. `AZ0x` images (MPC Gen2) go through `extract_az0x_rootfs.py`. Only `AZ01` (MPC Gen1) still goes through binwalk.
+- Plain FIT images (`d00dfeed`: MPC 2.x, Prime GO 4.3.0 and earlier, HeadRush Pedalboard and Looperboard) go through `extract_fit_rootfs.py`, since binwalk 3 reads each as a single DTB. `AZ01` (MPC Gen1) and `AZ0x` (MPC Gen2) go through `extract_az01_rootfs.py` and `extract_az0x_rootfs.py`.
 - MPC drives KMS directly and links no Mali or EGL, which is why it needs none of
   the shim stack Engine does. `readelf -d <app-binary> | grep -iE 'mali|EGL'`
   coming back empty is a good predictor that a device will work here.

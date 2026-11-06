@@ -1,5 +1,5 @@
 # Setup everything required to emulate armv7 Engine OS
-Requires docker, qemu, binwalk 3.1.X, e2fsprogs.
+Requires docker, qemu, python3, e2fsprogs.
 
 This is Engine OS on the RK3288 controllers (Prime, SC, Mixstream), as opposed to
 [BUILD_ARM64.md](BUILD_ARM64.md), which is the same application on RK3588. The two

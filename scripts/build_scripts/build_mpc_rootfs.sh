@@ -4,7 +4,7 @@
 # it than Engine does, because it drives KMS directly and links no Mali/EGL.
 #
 # Steps:
-#   1. Extract the rootfs partition out of the firmware image with binwalk 3.
+#   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
 #   4. Build touchbridge and dtshim for armhf (the shared sources under shims/
@@ -24,8 +24,10 @@
 #
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5.
+#   BINWALK       1 to extract with binwalk instead of QEngine's readers. See
+#                 extract_rootfs.sh.
 #
-# Requires: binwalk (3.x), qemu-img, docker.
+# Requires: python3 (binwalk with BINWALK=1), qemu-img, docker.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -65,7 +67,8 @@ if [ -e "$OUT_PATH" ] && [ "$FORCE" -ne 1 ]; then
     exit 1
 fi
 
-for bin in binwalk qemu-img docker file; do
+EXTRACTOR=python3; [ "${BINWALK:-0}" = 1 ] && EXTRACTOR=binwalk
+for bin in "$EXTRACTOR" qemu-img docker file; do
     command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: '$bin' is required but not found on PATH." >&2; exit 1; }
 done
 
@@ -85,7 +88,7 @@ case "$(uname -m)" in
     *)              HOST_PLATFORM="" ;;
 esac
 
-### 1. Extract the rootfs partition with binwalk ############################
+### 1. Extract the rootfs partition #########################################
 
 # Shared with the other rootfs builder and with new_instance.sh, which needs the
 # same extraction to identify a firmware's device family before it can choose

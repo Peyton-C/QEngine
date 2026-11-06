@@ -32,6 +32,11 @@
 #               either architecture.
 #               Recorded in instance.env like --product-code, so a --force rebuild
 #               keeps it; --no-montero turns it back off.
+#   --binwalk   extract with binwalk instead of QEngine's readers, for a container
+#               none of them knows or to check one against binwalk. Unverified,
+#               and binwalk 3 cannot unpack plain FIT images while binwalk 2
+#               builds a broken SYSTEM ONE 5.2.0 rootfs. Applies to this run
+#               only, as it changes how the rootfs is found, not what it is.
 #   --force     rebuild the rootfs even if this instance already has one
 #
 # The kernel and initrd are deliberately *not* per-instance: they are generic
@@ -55,6 +60,7 @@ SIZE=""
 FORCE=0
 PRODUCT_CODE_ARG=""
 MONTERO_ARG=""
+BINWALK="${BINWALK:-0}"
 
 
 while [ $# -gt 0 ]; do
@@ -66,6 +72,7 @@ while [ $# -gt 0 ]; do
         --product-code) PRODUCT_CODE_ARG="$2"; shift 2 ;;
         --montero) MONTERO_ARG=1; shift ;;
         --no-montero) MONTERO_ARG=0; shift ;;
+        --binwalk) BINWALK=1; shift ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -77,6 +84,8 @@ done
 case "$NAME" in
     */*|"") echo "ERROR: --name must not be empty or contain a slash." >&2; exit 1 ;;
 esac
+# Read by extract_rootfs, both for the probe below and inside the builder.
+export BINWALK
 
 # The display backend depends on the host OS, not on the device. Recorded in
 # instance.env rather than resolved at boot so it stays visible and editable there:

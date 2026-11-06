@@ -10,9 +10,30 @@
 # On success the destination holds a raw ext2/3/4 image and EXTRACTED_ROOTFS_SIZE is
 # set to its size in bytes. The caller owns the destination; the scratch directory
 # used along the way is removed before returning.
+#
+# A container QEngine can parse goes to its own reader, picked by the first four
+# bytes, and everything else to binwalk. Plain FIT images (d00dfeed) have to: binwalk 3
+# claims the whole file as one devicetree and never reaches the rootfs inside it.
+_EXTRACT_ROOTFS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 extract_rootfs() {
     _firmware="$1"
     _dest="$2"
+
+    _reader=""
+    case "$(od -An -tx1 -N4 "$_firmware" | tr -d ' \n')" in
+        d00dfeed) _reader="extract_fit_rootfs.py" ;;
+    esac
+    if [ -n "$_reader" ]; then
+        echo "--- extracting $_firmware with $_reader ---"
+        if ! EXTRACTED_ROOTFS_SIZE="$(python3 -I "$_EXTRACT_ROOTFS_DIR/$_reader" "$_firmware" "$_dest")"; then
+            echo "ERROR: $_reader failed on $_firmware." >&2
+            return 1
+        fi
+        echo "--- extracted verified rootfs ($((EXTRACTED_ROOTFS_SIZE / 1024 / 1024)) MiB) ---"
+        return 0
+    fi
+
     _scratch="$(mktemp -d /tmp/qengine-extract.XXXXXX)"
 
     echo "--- extracting $_firmware with binwalk (this scans the whole image, ~10s+) ---"

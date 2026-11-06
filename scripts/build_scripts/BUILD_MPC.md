@@ -28,9 +28,7 @@ To build and run several devices or firmware versions side by side, see
 - Used directly as above, the rootfs is written to `build/rootfs_out.img` — the
   same path the arm64 build uses, so building one target overwrites the other.
   Use an instance (see INSTANCES.md) to keep several targets side by side.
-- Only the **signed** firmware images extract with `binwalk` alone. Unsigned ones
-  (Prime 4, most HeadRush) come out as a single bogus "DTB" and need `mpcimg`
-  first — see [../../docs/BUILDING.md](../../docs/BUILDING.md).
+- Plain FIT images (`d00dfeed`: MPC 2.x, Prime GO 4.3.0 and earlier, HeadRush Pedalboard and Looperboard) go through `extract_fit_rootfs.py`, since binwalk 3 reads each as a single DTB. Everything else still goes through binwalk.
 - MPC drives KMS directly and links no Mali or EGL, which is why it needs none of
   the shim stack Engine does. `readelf -d <app-binary> | grep -iE 'mali|EGL'`
   coming back empty is a good predictor that a device will work here.

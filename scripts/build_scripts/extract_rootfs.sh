@@ -14,6 +14,9 @@
 # A container QEngine can parse goes to its own reader, picked by the first four
 # bytes, and everything else to binwalk. Plain FIT images (d00dfeed) have to: binwalk 3
 # claims the whole file as one devicetree and never reaches the rootfs inside it.
+# AZ0x is parsed too: binwalk only carves it, expanding a 474 MB Prime 4+ image to
+# ~8 GB of scratch, and binwalk 2 glues the boot partition onto the rootfs on any
+# image where boot precedes it, as on SYSTEM ONE 5.2.0.
 _EXTRACT_ROOTFS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 extract_rootfs() {
@@ -23,6 +26,7 @@ extract_rootfs() {
     _reader=""
     case "$(od -An -tx1 -N4 "$_firmware" | tr -d ' \n')" in
         d00dfeed) _reader="extract_fit_rootfs.py" ;;
+        415a3078) _reader="extract_az0x_rootfs.py" ;;
     esac
     if [ -n "$_reader" ]; then
         echo "--- extracting $_firmware with $_reader ---"

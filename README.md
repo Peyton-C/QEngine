@@ -159,6 +159,16 @@ so on). The `az01`/`az05` platform split the dtb filenames show is dropped here 
 keep the columns parallel with the controllers table; `ACVA2`, `ACVR` and a second
 `ACVM` variant are az05, the rest az01.
 
+### Alesis drum module
+The drum module runs MPC's codebase on Gen 1's RK3288 platform, and `--device drummodule` builds it with the MPC builder. It boots to the kit screen with touch and the shipped factory kits, and like MPC it has no audio device. The full sample library ships on the module's internal SD card, not in the update image, so QEngine gives each instance a blank card.
+
+|                          | Code | SOC    | Arch  | 1.x     |
+|--------------------------|------|--------|-------|---------|
+| Alesis Prime Drum Module | LDMD | RK3288 | armv7 | 1.5.2.3 |
+| Alesis Core Drum Module  | LDMF | RK3288 | armv7 | –       |
+
+LDMF does not build yet: it keeps its content on an eMMC partition QEngine does not provide. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md).
+
 ### Emulated Akai and HeadRush Oroducts
 
 The same `az0x` base distribution carries several product lines this project has
@@ -171,7 +181,6 @@ firmware is in the same archive and the extraction recipe is the same:
 | Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line. Force (Gen 2) ships in the MPC Gen 2 image and builds as an MPC |
 | Akai MPC Sample | `AC50` | |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
-| Alesis drum module | `LDMD`, `LDMF` | Shipped as `drummodule-*-update.img` |
 
 **"Evil" is HeadRush.** The HeadRush application binary is built around a namespace
 called `Evil` — `EvilApp`, `EvilGui`, `EvilClient`, `EvilDB`, `EvilAPI`,

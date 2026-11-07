@@ -5,13 +5,13 @@
 # Normally reached through scripts/qemu/run_instance.sh, which reads these values out
 # of an instance's instance.env. Run it directly by setting them yourself.
 #
-#   DEVICE        engine | mpc      which shim stack the guest has, and so whether it
+#   DEVICE        engine | mpc | drummodule  which shim stack the guest has, and so whether it
 #                                   gets an audio card
 #   DISPLAY_MODE  see display_modes.sh
 #   ARCH          arm64 | armhf     machine type and device models, see arch_devices.sh
 #
 # Anything else the wrappers used to hardcode is an override with the same default:
-# ROOTFS_IMG, DATA_IMG, KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
+# ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
 # ACCEL, CPU, MEM, SMP, RENDERNODE.
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
@@ -58,7 +58,10 @@ case "$DEVICE:$ARCH" in
     # Gen 2 MPC uses RK3588's data+factory layout, the same disk Engine does.
     mpc:arm64) _data="data_disk.img" ;;
     mpc:*)     _data="emmc.img" ;;
-    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine or mpc)." >&2; exit 1 ;;
+    # The drum module is Gen 1 MPC's platform, and its data.mount asks for the same
+    # PARTUUID.
+    drummodule:*) _data="emmc.img" ;;
+    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc or drummodule)." >&2; exit 1 ;;
 esac
 
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
@@ -114,7 +117,15 @@ case "$(uname -s):$(uname -m)" in
     *)                     ACCEL="${ACCEL:-tcg}"; CPU="${CPU:-$ARCH_CPU_DEFAULT}" ;;
 esac
 
-# Only the engine family gets a card; MPC never had one and does not want one.
+# A third drive, for a family whose registry row in new_instance.sh names one: the
+# drum module's internal SD card. Its order among the virtio drives does not matter,
+# the guest finds every disk by UUID.
+SD_ARGS=""
+if [ -n "${SD_IMG:-}" ]; then
+    SD_ARGS="-drive if=none,file=$SD_IMG,format=raw,id=sd -device virtio-blk-device,drive=sd"
+fi
+
+# Only the engine family gets a card; MPC and the drum module never had one.
 AUDIO_ARGS=""
 if [ "$DEVICE" = engine ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
@@ -134,6 +145,7 @@ exec "$QEMU_BIN" \
   -device virtio-blk-device,drive=hd \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
+  $SD_ARGS \
   -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \

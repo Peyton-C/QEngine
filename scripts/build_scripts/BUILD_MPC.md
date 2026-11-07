@@ -36,6 +36,27 @@ The dtbs also set `chosen` flags per model that QEngine does not serve: `acvs-lo
 To build and run several devices or firmware versions side by side, see
 [INSTANCES.md](INSTANCES.md).
 
+## Alesis drum module
+The drum module's `/usr/bin/DrumModule` is MPC's codebase on Gen 1's platform, armv7 with the same `/data` PARTUUID, and `build_mpc_rootfs.sh` builds it. It reads the app off the rootfs and preloads `dtshim` into `alesis-drummodule.service` in place of `acvs.service`. The default product code is `LDMD`.
+
+```sh
+scripts/build_scripts/new_instance.sh --name drummodule-1.5.2.3 --firmware drummodule-1.5.2.3-update.img
+```
+
+The module keeps its kit library and everything it writes on an internal SD card at `/sdcard`, with a writable overlay on `/sdcard/bfd`. The rootfs is mounted read-only. `new_instance.sh` makes the card as `sdcard.img`, a blank ext4 that `make_disk.sh --family internal-sd` formats, and `run_qemu.sh` attaches it as a third drive. The build makes the guest use it:
+
+| What | Why |
+| --- | --- |
+| `/etc/systemd/system-generators/ldmx-content-*-generator` | The vendor generators pick the storage layout from the product code with a plain `cat`, before any unit runs, so they see none and set up LDMF's. Each wrapper runs the vendor script with `dtshim` preloaded. |
+| `90-qengine-internal-sd.rules` | Names the card `/dev/disk/by-path/platform-ff0c0000.dwmmc-part1`, the RK3288 SD path `sdcard.mount` and the app's fsck check look for, matched by the UUID `make_disk.sh` formats it with. |
+| `qengine.conf` drop-ins | Clear the `chosen/inmusic,internal-sd-fitted` condition on `sdcard.mount`, `sdcard-bfd.mount`, the card's device unit and its fsck, which systemd tests without `dtshim`. |
+
+The overlay's lower layer is `/usr/share/Alesis/ldmd-content-update`, which carries the factory kits and presets. The full sample library ships on the card at the factory and is in no update image, and with no audio device it is untested what a kit plays without it. Without the card the app stops at "File system problem".
+
+`LDMF` is refused. It keeps its content on an eMMC partition, `content.mount` with PARTUUID `4054a70b-cc6a-4ac8-9a97-2a716b05bbb4`, that no QEngine disk provides.
+
+The launcher runs `az01-firmware-tool` against the pad controller's firmware on every start. With no controller it reports MCU version 0.0.0.000 and carries on.
+
 ## Notes
 
 - Used directly as above, the rootfs is written to `build/rootfs_out.img` — the

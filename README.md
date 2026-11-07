@@ -13,12 +13,13 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 
 ## Quick setup
 
-**Prerequisites:** `docker`, `qemu-system-aarch64` and `qemu-system-arm`, `binwalk`
-3.1.x, `e2fsprogs` (for `dumpe2fs`, `debugfs`, `resize2fs`), `file`.
+**Prerequisites:** `docker`, `qemu-system-aarch64` and `qemu-system-arm`, `python3`,
+`e2fsprogs` (for `dumpe2fs`, `debugfs`, `resize2fs`), `file`.
 
 ```sh
 # 1. One instance per device + firmware version. Point --firmware straight at an
-#    update image; there is no firmware directory to populate. The matching kernel
+#    update image, or at the Mac .app zip or Windows .exe updater that carries
+#    one; there is no firmware directory to populate. The matching kernel
 #    is detected from the rootfs and built on demand -- once per architecture,
 #    then reused (~7 min arm64, ~2 min armv7, ~1 min per rootfs).
 scripts/build_scripts/new_instance.sh --name rmz2-4.6.0 --device engine \
@@ -140,12 +141,7 @@ Two rows of MPC's own info screen stay unresolved on every model: the serial num
 and the control surface. Neither comes from the devicetree — both come from the
 control-surface MCU over USB at fixed bus positions, which nothing here emulates yet.
 
-**Signed FW is a version boundary here, not a per-model one.** Every 2.x image
-begins `d00dfeed` — a DTB wrapper around the whole file, which `binwalk` alone
-cannot unpack, so those need `mpcimg` first. Every 3.x image begins `415a3031`
-(ASCII `AZ01`), the signed container `binwalk` reads directly. That is also why the
-2.x column is untested: `new_instance.sh` cannot ingest those images as they stand.
-The latest 2.x is `2.15.1.1`.
+**Signed FW is a version boundary here, not a per-model one.** Every 2.x image begins `d00dfeed`, a plain U-Boot FIT, which QEngine unpacks with its own reader. Every 3.x image begins `415a3031` (ASCII `AZ01`), which has a reader of its own. The 2.x column is untested: 2.7.0 extracts and is identified as MPC, but no 2.x instance has been booted. The latest 2.x is `2.15.1.1`.
 
 All eight models appear in both majors, joining at different points — `ACV5` and
 `ACV8` from 2.2.0, `ACVA`/`ACVB` from 2.7.2, `ACVM` from 2.10.0, `ACV5S` from

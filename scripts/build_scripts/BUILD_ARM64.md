@@ -5,7 +5,7 @@ in the armv7 builder; the default is `RMZ2`. `JP22` and `JP24` ride the same roo
 and neither has been booted.
 `MONTERO=1` (`--montero` on `new_instance.sh`) also builds the MONTERO mod loader and
 every mod in `shims/montero/mods`, and preloads it into Engine.
-Requires docker, qemu, binwalk 3.1.X, e2fsprogs.
+Requires docker, qemu, python3, e2fsprogs.
 
 The short way is one command, which does all of the below and keeps each device in its
 own directory — see [INSTANCES.md](INSTANCES.md):

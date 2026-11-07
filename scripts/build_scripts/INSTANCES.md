@@ -27,6 +27,8 @@ reused by every later instance that needs it.
 layout: `engine` (Engine OS) or `mpc` (Akai MPC). Add `--force` to rebuild an
 existing rootfs, `--size` to change the image size.
 
+QEngine extracts the rootfs with its own reader for each firmware container. `--firmware` also takes a desktop updater in place of the image, the zipped Mac `.app` or the Windows `.exe`, and `extract_updater.py` unpacks the `Update.img` inside it first, with no 7-Zip needed. HeadRush ships only updaters. `--binwalk` uses binwalk instead, for a container none of the readers knows. Nothing is verified that way, binwalk 3 cannot unpack plain FIT images (Prime GO 4.3.0 and earlier, MPC 2.x), and binwalk 2 builds a broken SYSTEM ONE 5.2.0 rootfs. It applies to that run only and is not recorded in `instance.env`.
+
 ### Device families are a registry, and the choice is checked
 
 The families live in one table in `new_instance.sh`, a row per family/architecture

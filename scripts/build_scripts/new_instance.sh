@@ -20,7 +20,8 @@
 #               Passing --device engine does not skip the extraction: Engine OS
 #               ships on both architectures and they need different builders, so
 #               the firmware still has to be looked at to tell which.
-#   --firmware  path to the firmware .img to extract
+#   --firmware  path to the firmware .img to extract, or to a desktop updater
+#               carrying one: the zipped Mac .app or the Windows .exe
 #   --size      rootfs image size in bytes, passed through to the builder
 #   --product-code  which device identity to spoof, e.g. JP14, RMZ2, ACV5. Passed to
 #               the builder as PRODUCT_CODE and recorded in instance.env, so a later

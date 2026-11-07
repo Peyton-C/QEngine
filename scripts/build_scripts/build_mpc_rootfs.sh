@@ -1,16 +1,22 @@
 #!/bin/bash
 # Automates extraction and modification of a stock Akai MPC rootfs for QEngine.
-# The armv7/RK3288 sibling of build_arm64_rootfs.sh; MPC needs far less doing to
-# it than Engine does, because it drives KMS directly and links no Mali/EGL.
+# Covers both generations: Gen 1 on RK3288 (armhf) and Gen 2 on RK3588 (arm64),
+# which also carries Force (Gen 2). It also builds the Alesis drum module, whose
+# /usr/bin/DrumModule is MPC's JUCE codebase on Gen 1's RK3288 platform, linking
+# libdrm and nothing GL the same way, and started from alesis-drummodule.service
+# rather than acvs.service. Which app this is gets read off the rootfs. MPC needs far less doing to it than Engine
+# does, because it drives KMS directly and links no Mali/EGL, and that holds on
+# both: /usr/bin/MPC in 3.10.0 Gen 2 links libdrm and nothing GL, and no libteec,
+# so none of the arm64 Engine stack (drmatomic, teeshim, alsashim) applies.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge and dtshim for armhf (the shared sources under shims/
+#   4. Build touchbridge and dtshim for $ARCH (the shared sources under shims/
 #      are architecture-independent — see the build step below).
-#   5. Copy them into /root, wire touchbridge_mpc.service ahead of acvs.service,
-#      and preload dtshim into acvs.service so MPC can read a product code.
+#   5. Copy them into /root, wire touchbridge_mpc.service ahead of the app's
+#      unit, and preload dtshim into that unit so the app can read a product code.
 #   6. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind the fullscreen display.
@@ -23,7 +29,11 @@
 #   --force     Overwrite --out if it already exists.
 #
 # Environment:
-#   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5.
+#   ARCH          armhf (Gen 1, the default) or arm64 (Gen 2). The same variable
+#                 run_qemu.sh reads; new_instance.sh sets it from the firmware.
+#   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5
+#                 (MPC X) on armhf, ACVA3 (MPC One Gen 2) on arm64, LDMD on a
+#                 drum module.
 #   BINWALK       1 to extract with binwalk instead of QEngine's readers. See
 #                 extract_rootfs.sh.
 #
@@ -33,12 +43,30 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHIMS_DIR="$REPO_ROOT/shims"
+
+# What differs between the generations is only what the shims are built for, which
+# dtshim table they get, and the default identity. The app, its units and its shim
+# needs are otherwise the same. The arm64 default is ACVA3 because Gen 2 has no MPC X
+# to match Gen 1's, and the One is the simplest model in the image.
+ARCH="${ARCH:-armhf}"
+case "$ARCH" in
+    armhf) SHIM_PLATFORM="linux/arm/v7"; SHIM_MACHINE="armv7l|armv8l|armhf"
+           DT_SOC="SOC_RK3288"; LOADER="ld-linux-armhf.so.3"
+           MPC_DEFAULT_CODE="ACV5"; DISK_LAYOUT="mpc" ;;
+    arm64) SHIM_PLATFORM="linux/arm64"; SHIM_MACHINE="aarch64|arm64"
+           DT_SOC="SOC_RK3588"; LOADER="ld-linux-aarch64.so.1"
+           MPC_DEFAULT_CODE="ACVA3"; DISK_LAYOUT="engine" ;;
+    *) echo "ERROR: ARCH must be armhf or arm64 (got '$ARCH')." >&2; exit 1 ;;
+esac
+# Left empty when not given: the default depends on which app the rootfs holds,
+# which is only known once it is mounted, so the privileged container resolves it.
+PRODUCT_CODE="${PRODUCT_CODE:-}"
 # The builders mount the whole shims tree, so a shim shared between them is
 # reached at the same path in either: /shims/<name> for the shared ones,
 # /shims/rk3288 or /shims/rk3588 for the two that are genuinely per-SoC.
 # Names the compiled output of the shared shims, so one source yields one
 # artifact per architecture: shims/<name>/<name>_$SHIM_ARCH.
-SHIM_ARCH="armhf"
+SHIM_ARCH="$ARCH"
 
 OUT_PATH="$REPO_ROOT/build/rootfs_out.img"
 SIZE=4294967296
@@ -120,23 +148,24 @@ echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
 # depends on pull order. The comment above pins intent; this pull makes it true.
-docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
-docker run --rm --platform linux/arm/v7 \
+docker pull -q --platform "$SHIM_PLATFORM" debian:bookworm >/dev/null
+docker run --rm --platform "$SHIM_PLATFORM" \
     -e SHIM_ARCH="$SHIM_ARCH" \
+    -e SHIM_MACHINE="$SHIM_MACHINE" \
+    -e DT_SOC="$DT_SOC" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
-        # These shims are copied straight into an armv7 rootfs, so a
+        # These shims are copied straight into a $SHIM_ARCH rootfs, so a
         # wrong-architecture container here would graft foreign binaries in. Fail loudly instead.
-        case "$(uname -m)" in armv7l|armv8l|armhf) ;; *)
-            echo "ERROR: shim container is $(uname -m), expected armv7l." >&2; exit 1 ;;
-        esac
+        uname -m | grep -qxE "$SHIM_MACHINE" || {
+            echo "ERROR: shim container is $(uname -m), expected $SHIM_MACHINE." >&2; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
-            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
+            -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
     '
@@ -160,10 +189,10 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq e2fsprogs util-linux >/dev/null 2>&1
-# NOTE: this container intentionally runs the *host* architecture, not armhf —
+# NOTE: this container intentionally runs the *host* architecture, not the guest's —
 # e2fsck/resize2fs on a multi-GB image is far slower under qemu-user emulation.
 # So it must never be the source of anything that ends up inside the guest
-# rootfs. Nothing here is: the shims come from the armhf container above.
+# rootfs. Nothing here is: the shims come from the $ARCH container above.
 
 IMG="/out/$OUT_NAME"
 
@@ -196,16 +225,37 @@ trap cleanup EXIT
 # "request_module: modprobe binfmt-464c" as run-init fails to exec an /sbin/init of
 # the wrong architecture. The dynamic loader's filename is architecture-specific,
 # so its presence is an unambiguous check.
-if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
-    echo "ERROR: this firmware's rootfs is not 32-bit ARM (no /lib/ld-linux-armhf.so.3)." >&2
-    echo "       This builds armv7/RK3288 MPC firmware only." >&2
-    echo "       The Gen 2 MPC image is arm64 and will not boot the armhf kernel." >&2
+if [ ! -e "/mnt/rootfs/lib/$LOADER" ]; then
+    echo "ERROR: this firmware's rootfs is not $ARCH (no /lib/$LOADER)." >&2
+    echo "       Gen 1 MPC images are armhf and Gen 2 are arm64; set ARCH to match," >&2
+    echo "       or build through new_instance.sh, which reads it off the firmware." >&2
     exit 1
 fi
-if [ ! -f /mnt/rootfs/usr/bin/MPC ]; then
-    echo "ERROR: no /usr/bin/MPC in this rootfs, so it is not an MPC image." >&2
+# The app decides the unit everything below hangs off and the default identity.
+# LDMD is the drum module's default because it is the code the app names its USB
+# volume after; the image also carries LDMF, and both have controller firmware in
+# /usr/share/Alesis/DrumModule/Resources/firmware.
+if [ -f /mnt/rootfs/usr/bin/MPC ]; then
+    APP_UNIT="acvs.service"; DEFAULT_CODE="$MPC_DEFAULT_CODE"
+elif [ -f /mnt/rootfs/usr/bin/DrumModule ]; then
+    [ "$ARCH" = armhf ] || {
+        echo "ERROR: drum module images are armhf; nothing here knows an $ARCH one." >&2; exit 1; }
+    APP_UNIT="alesis-drummodule.service"; DEFAULT_CODE="LDMD"
+else
+    echo "ERROR: neither /usr/bin/MPC nor /usr/bin/DrumModule in this rootfs." >&2
     exit 1
 fi
+PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
+# LDMF keeps its kit content on an eMMC partition (content.mount, PARTUUID
+# 4054a70b-...) that no QEngine disk provides, so its overlay on /sdcard/bfd has no
+# lower layer and the app comes up without storage. Refused rather than built into
+# an instance that boots and looks fine until it is used.
+if [ "$APP_UNIT" = alesis-drummodule.service ] && [ "$PRODUCT_CODE" != LDMD ]; then
+    echo "ERROR: only LDMD builds as a drum module; $PRODUCT_CODE needs a content" >&2
+    echo "       partition QEngine does not provide yet." >&2
+    exit 1
+fi
+echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
@@ -214,22 +264,24 @@ echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so
 chmod 755 /mnt/rootfs/root/dtshim.so
 
-# The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
-# only the values are ours. Every one of them must exist, because the shim remaps
-# unconditionally and a missing target turns a working read into ENOENT.
+# The devicetree properties dtshim.c remaps, at the real paths for this SoC; only
+# the values are ours. Every one of them must exist, because the shim remaps
+# unconditionally and a missing target turns a working read into ENOENT. The
+# Gen 2 dtbs in 3.10.0 declare inmusic,product-code and nothing else at the root,
+# so RK3588's table, written for Engine, already covers them.
 #
 # PRODUCT_CODE selects which device this pretends to be.
-write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-ACV5}"
+write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
 
 echo "--- wiring touchbridge.service ---"
-# QEMU's usb-kbd/usb-tablet are unreachable on the 32-bit virt machine (no PCI,
-# so no USB controller), and the virtio tablet that replaces them presents as an
-# absolute *mouse*. MPC only responds to a real touchscreen, so the bridge
-# re-emits that pointer as a uinput multitouch device. It must start before
-# acvs.service: MPC enumerates input once, at its own startup.
+# QEMU's tablet, usb-tablet or the virtio one, presents as an absolute *mouse*.
+# MPC only responds to a real touchscreen, so the bridge re-emits that pointer as
+# a uinput multitouch device. It must start before the app's unit, which the
+# shipped touchbridge unit names for both apps: MPC enumerates input once, at its
+# own startup, and the drum module is the same code.
 cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge_mpc
 chmod 755 /mnt/rootfs/root/touchbridge_mpc
-cp -a /shims/rk3288/touchbridge_mpc/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
+cp -a /shims/touchbridge/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
 ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
 
 echo "--- disabling the tty1 getty (Application's display) ---"
@@ -249,15 +301,17 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 
-echo "--- preloading dtshim into acvs.service ---"
+echo "--- preloading dtshim into $APP_UNIT ---"
 # A drop-in rather than an edit, so the vendor unit stays as shipped. systemd
 # reads drop-ins after the main unit and last assignment wins for a given
 # variable, so this would silently replace an LD_PRELOAD the vendor unit set.
 # Nothing in this firmware sets one; the guard keeps that from becoming a silent
-# breakage if a future firmware does.
-for _unit in /mnt/rootfs/etc/systemd/system/acvs.service \
-             /mnt/rootfs/lib/systemd/system/acvs.service \
-             /mnt/rootfs/usr/lib/systemd/system/acvs.service; do
+# breakage if a future firmware does. On the drum module the preload also reaches
+# the plain `cat` az01-launch-DrumModule reads its product code with, which is
+# what picks the controller firmware it hands az01-firmware-tool.
+for _unit in /mnt/rootfs/etc/systemd/system/$APP_UNIT \
+             /mnt/rootfs/lib/systemd/system/$APP_UNIT \
+             /mnt/rootfs/usr/lib/systemd/system/$APP_UNIT; do
     [ -f "$_unit" ] || continue
     if grep -q 'LD_PRELOAD' "$_unit"; then
         echo "ERROR: $_unit already sets LD_PRELOAD; this drop-in would replace it." >&2
@@ -265,11 +319,54 @@ for _unit in /mnt/rootfs/etc/systemd/system/acvs.service \
         exit 1
     fi
 done
-mkdir -p /mnt/rootfs/etc/systemd/system/acvs.service.d
-cat > /mnt/rootfs/etc/systemd/system/acvs.service.d/override.conf <<'EOF'
+mkdir -p "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d"
+cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so
 EOF
+
+if [ "$APP_UNIT" = alesis-drummodule.service ]; then
+    echo "--- wiring the drum module's internal SD card ---"
+    # The drum module keeps its kit library and everything the user writes on an
+    # internal SD card, /sdcard, with a writable overlay on /sdcard/bfd. The update
+    # image carries only the rootfs, so new_instance.sh supplies the card as a blank
+    # disk (make_disk.sh --family internal-sd) and the shipped
+    # /usr/share/Alesis/ldmd-content-update is what fills the overlay's lower layer.
+    # Without the card, 1.5.2.3 stops at "File system problem" and every write under
+    # /root fails, since the rootfs is mounted read-only.
+    #
+    # Two vendor generators pick the storage layout from the product code, reading it
+    # with a plain cat before any unit runs, so the preload on the app's unit never
+    # reaches them. They see no code, take the LDMF branch, and bind the empty
+    # /content over /sdcard while the app runs as LDMD. A same-named generator in
+    # /etc overrides the one in /usr/lib, so each is wrapped to run the vendor
+    # script, unchanged, with dtshim preloaded.
+    mkdir -p /mnt/rootfs/etc/systemd/system-generators
+    for _gen in ldmx-content-mount-generator ldmx-content-overlay-generator; do
+        [ -x "/mnt/rootfs/usr/lib/systemd/system-generators/$_gen" ] || {
+            echo "ERROR: no vendor $_gen in this rootfs to wrap." >&2; exit 1; }
+        printf '#!/bin/sh\nLD_PRELOAD=/root/dtshim.so exec /usr/lib/systemd/system-generators/%s "$@"\n' \
+            "$_gen" > "/mnt/rootfs/etc/systemd/system-generators/$_gen"
+        chmod 755 "/mnt/rootfs/etc/systemd/system-generators/$_gen"
+    done
+
+    # The SD card's units are gated on chosen/inmusic,internal-sd-fitted, which
+    # systemd tests itself, again without dtshim. An empty ConditionPathExists=
+    # clears the list. media-az01-internal-sd.mount ships its own such drop-in.
+    _sd_dev='dev-disk-by\x2dpath-platform\x2dff0c0000.dwmmc\x2dpart1'
+    for _unit in sdcard.mount sdcard-bfd.mount "$_sd_dev.device" \
+                 "systemd-fsck@$_sd_dev.service"; do
+        mkdir -p "/mnt/rootfs/etc/systemd/system/$_unit.d"
+        printf '[Unit]\nConditionPathExists=\n' > "/mnt/rootfs/etc/systemd/system/$_unit.d/qengine.conf"
+    done
+
+    # sdcard.mount and the app's fsck check both name the card by its RK3288 path,
+    # ff0c0000.dwmmc. udev gives the QEngine disk that name, found by the filesystem
+    # UUID make_disk.sh formats it with. The two must match.
+    cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-internal-sd.rules <<'EOF'
+SUBSYSTEM=="block", ENV{ID_FS_UUID}=="5d2a1e5c-0a1b-4c2d-9e3f-51d0c0a1e5d0", SYMLINK+="disk/by-path/platform-ff0c0000.dwmmc-part1"
+EOF
+fi
 
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
@@ -284,7 +381,10 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
-    -e PRODUCT_CODE="${PRODUCT_CODE:-ACV5}" \
+    -e ARCH="$ARCH" \
+    -e LOADER="$LOADER" \
+    -e MPC_DEFAULT_CODE="$MPC_DEFAULT_CODE" \
+    -e PRODUCT_CODE="$PRODUCT_CODE" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
@@ -301,5 +401,5 @@ echo "Built: $OUT_PATH"
 echo ""
 file "$OUT_PATH"
 echo ""
-echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch armhf) and an"
-echo "/data disk (make_disk.sh --family mpc) — see BUILD_MPC.md."
+echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch $ARCH) and an"
+echo "/data disk (make_disk.sh --family $DISK_LAYOUT) — see BUILD_MPC.md."

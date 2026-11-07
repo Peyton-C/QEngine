@@ -1,11 +1,11 @@
-# Setup everything required to emulate an armv7 Akai MPC
+# Setup everything required to emulate an Akai MPC
 Requires docker, qemu, python3, e2fsprogs.
 
-1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/) — the **Gen 1** `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37).
-2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`.
-3. Get the kernel and initrd with `get_kernel.sh --arch armhf`.
-4. Make a /data disk for MPC with `make_disk.sh --family mpc`.
-5. Boot with `DEVICE=mpc ARCH=armhf scripts/qemu/run_qemu.sh`.
+1. [Download MPC firmware from Akai](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/). The Gen 1 `.img` covers the RK3288 models (MPC X, X SE, Live, Live 2, One, One+, Key 61, Key 37) and is armv7. The Gen 2 `.img` covers the RK3588 models (MPC One Gen 2, Key 37 Gen 2, Key 61 Gen 2, XL, Live III, Force Gen 2) and is arm64.
+2. Build the rootfs with `build_mpc_rootfs.sh --firmware PATH_TO_MPC_UPDATE.img`, prefixed with `ARCH=arm64` for Gen 2.
+3. Get the kernel and initrd with `get_kernel.sh --arch armhf`, or `--arch arm64` for Gen 2.
+4. Make a /data disk with `make_disk.sh --family mpc`, or `--family engine` for Gen 2, which uses the same `data` and `factory` partitions as RK3588 Engine OS.
+5. Boot with `DEVICE=mpc ARCH=armhf scripts/qemu/run_qemu.sh`, or `ARCH=arm64` for Gen 2.
 
 Or let one command do all of it, with the device family and architecture identified from
 the firmware — see [INSTANCES.md](INSTANCES.md):
@@ -15,13 +15,47 @@ scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --firmware PATH_TO_MPC_UP
 scripts/qemu/run_instance.sh --name mpc-3.9.1
 ```
 
-Touch works out of the box: the rootfs build installs `touchbridge_mpc` and starts it
-before `acvs.service`. MPC only responds to a real touchscreen, and QEMU's virtio
-tablet presents as an absolute mouse, so the bridge re-emits it as a uinput
-multitouch device.
+Touch works out of the box: the rootfs build installs `touchbridge_mpc` and holds `acvs.service` back until its touchscreen exists, since MPC looks for touchscreens only when it starts. MPC only responds to a real touchscreen, and QEMU's tablet presents as an absolute mouse, so the bridge re-emits it as a uinput multitouch device. Taps need to be held briefly, as an instant press and release from a scripted VNC client does not register.
+
+## Gen 2
+Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so none of arm64 Engine's shims apply. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
+
+| Model | Code |
+| --- | --- |
+| MPC One (Gen 2) | `ACVA3` |
+| MPC Key 37 (Gen 2) | `ACVR2` |
+| MPC Key 61 (Gen 2) | `ACVM2` |
+| MPC XL | `ACVC` |
+| MPC Live III | `ACVG` |
+| Force (Gen 2) | `ADA2S` |
+
+The dtbs also set `chosen` flags per model that QEngine does not serve: `acvs-loopback-content`, `emmc-synths` and `nvme-fitted`. Without them the guest skips `storage.mount`, `content.mount` and `nvme.mount`. Where MPC then keeps user content is untested.
+
+`az0x-info` reports "No data available" on Gen 2, even with `dtshim` preloaded, and MPC logs `Unhandled board platform: <unknown>`. Neither stops the UI.
 
 To build and run several devices or firmware versions side by side, see
 [INSTANCES.md](INSTANCES.md).
+
+## Alesis drum module
+The drum module's `/usr/bin/DrumModule` is MPC's codebase on Gen 1's platform, armv7 with the same `/data` PARTUUID, and `build_mpc_rootfs.sh` builds it. It reads the app off the rootfs and preloads `dtshim` into `alesis-drummodule.service` in place of `acvs.service`. The default product code is `LDMD`.
+
+```sh
+scripts/build_scripts/new_instance.sh --name drummodule-1.5.2.3 --firmware drummodule-1.5.2.3-update.img
+```
+
+The module keeps its kit library and everything it writes on an internal SD card at `/sdcard`, with a writable overlay on `/sdcard/bfd`. The rootfs is mounted read-only. `new_instance.sh` makes the card as `sdcard.img`, a blank ext4 that `make_disk.sh --family internal-sd` formats, and `run_qemu.sh` attaches it as a third drive. The build makes the guest use it:
+
+| What | Why |
+| --- | --- |
+| `/etc/systemd/system-generators/ldmx-content-*-generator` | The vendor generators pick the storage layout from the product code with a plain `cat`, before any unit runs, so they see none and set up LDMF's. Each wrapper runs the vendor script with `dtshim` preloaded. |
+| `90-qengine-internal-sd.rules` | Names the card `/dev/disk/by-path/platform-ff0c0000.dwmmc-part1`, the RK3288 SD path `sdcard.mount` and the app's fsck check look for, matched by the UUID `make_disk.sh` formats it with. |
+| `qengine.conf` drop-ins | Clear the `chosen/inmusic,internal-sd-fitted` condition on `sdcard.mount`, `sdcard-bfd.mount`, the card's device unit and its fsck, which systemd tests without `dtshim`. |
+
+The overlay's lower layer is `/usr/share/Alesis/ldmd-content-update`, which carries the factory kits and presets. The full sample library ships on the card at the factory and is in no update image, and with no audio device it is untested what a kit plays without it. Without the card the app stops at "File system problem".
+
+`LDMF` is refused. It keeps its content on an eMMC partition, `content.mount` with PARTUUID `4054a70b-cc6a-4ac8-9a97-2a716b05bbb4`, that no QEngine disk provides.
+
+The launcher runs `az01-firmware-tool` against the pad controller's firmware on every start. With no controller it reports MCU version 0.0.0.000 and carries on.
 
 ## Notes
 

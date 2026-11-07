@@ -82,7 +82,7 @@ if [ -z "${DISPLAY_MODE:-}" ] && [ -n "${LAUNCHER:-}" ]; then
 fi
 DISPLAY_MODE="${DISPLAY_MODE:-sdl}"
 
-for f in "$ROOTFS_IMG" "$DATA_IMG"; do
+for f in "$ROOTFS_IMG" "$DATA_IMG" ${SD_IMG:+"$SD_IMG"}; do
     [ -s "$f" ] || { echo "ERROR: required image missing or empty: $f" >&2; exit 1; }
 done
 
@@ -127,7 +127,7 @@ fi
 echo ""
 
 [ -n "$VIRGL_OVERRIDE" ] && export VIRGL="$VIRGL_OVERRIDE"
-export ROOTFS_IMG DATA_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
+export ROOTFS_IMG DATA_IMG SD_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 export DEVICE DISPLAY_MODE
 # Optional, and absent from most instance.envs. Exported only when the file set
 # it, so arch_devices.sh's own default applies otherwise. An `if` rather than a

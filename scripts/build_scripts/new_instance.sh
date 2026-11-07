@@ -16,10 +16,11 @@
 #               extraction (a few seconds). Pass it to skip that, or to state the
 #               intent explicitly — a wrong value is still caught either way.
 #                 engine = Engine OS (RANE SYSTEM ONE and relatives)
-#                 mpc    = Akai MPC
-#               Passing --device engine does not skip the extraction: Engine OS
-#               ships on both architectures and they need different builders, so
-#               the firmware still has to be looked at to tell which.
+#                 mpc    = Akai MPC and Force (Gen 2), Gen 1 or Gen 2
+#                 drummodule = Alesis drum module (Prime Drum Module, LDMD)
+#               Passing --device does not skip the extraction: both families ship
+#               on both architectures and need different builders or builds per
+#               architecture, so the firmware still has to be looked at to tell which.
 #   --firmware  path to the firmware .img to extract, or to a desktop updater
 #               carrying one: the zipped Mac .app or the Windows .exe
 #   --size      rootfs image size in bytes, passed through to the builder
@@ -116,7 +117,7 @@ esac
 
 # Device family registry. One row per family/architecture combination:
 #
-#   <family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>
+#   <family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>|<extra disk>
 #
 # The markers are paths that must ALL exist in the built rootfs for the row to
 # match, space separated, so a family that needs more than one piece of evidence
@@ -137,14 +138,27 @@ esac
 # and it wants the single-partition 'mpc' disk layout rather than the RK3588
 # data+factory pair, because its data.mount asks for PARTUUID
 # 931ad49d-ad59-0849-833a-9bf00af5b60e. Disk layout tracks the platform generation,
-# not the application.
+# not the application: Gen 2 MPC's data.mount and factory.mount ask for exactly the
+# PARTUUIDs RMZ2's do, so it takes the 'engine' layout.
+#
+# One builder can serve several rows. build_mpc_rootfs.sh covers both MPC generations,
+# told which by ARCH, exported below from the row, and the Alesis drum module, whose
+# app is MPC's codebase on the same RK3288 platform and whose /data asks for the same
+# PARTUUID Gen 1 MPC's does. It tells the two apps apart from the rootfs itself.
+#
+# The extra disk is a third drive some families need beside /data, as
+# <make_disk.sh family>:<image name>, or - for none. Only the drum module has one, its
+# internal SD card. It is kept across --force like /data, and recorded in instance.env
+# as SD_IMG for run_qemu.sh to attach.
 #
 # The QEMU command line is not per-row: run_qemu.sh takes the family and the arch
 # from instance.env.
 DEVICE_FAMILIES="\
-engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img
-engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img
-mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img"
+engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
+engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
+mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
+drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img"
 
 family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | sort -u | tr '\n' ' '; }
 
@@ -267,7 +281,7 @@ fi
 rm -f "$PROBE_IMG"
 trap - EXIT
 
-IFS='|' read -r _ ROW_ARCH DEVICE_MARKERS ROOTFS_BUILDER DISK_LAYOUT DATA_NAME <<EOF
+IFS='|' read -r _ ROW_ARCH DEVICE_MARKERS ROOTFS_BUILDER DISK_LAYOUT DATA_NAME EXTRA_DISK <<EOF
 $DEVICE_ROW
 EOF
 
@@ -308,6 +322,9 @@ fi
 # already have, and it keeps this script out of the business of knowing which
 # defaults belong to which family.
 if [ -n "$PRODUCT_CODE" ]; then export PRODUCT_CODE; fi
+# The row's architecture, for a builder that serves more than one. The single-arch
+# builders ignore it and guard their own.
+export ARCH="$ROW_ARCH"
 
 # MONTERO is build-time in the same way, so it is kept the same way.
 if [ -n "$MONTERO_ARG" ]; then
@@ -381,6 +398,17 @@ else
     "$SCRIPT_DIR/make_disk.sh" --family "$DISK_LAYOUT" "$DATA_IMG"
 fi
 
+# Kept the same way as /data, since it holds what the guest writes.
+SD_IMG=""
+if [ "$EXTRA_DISK" != - ]; then
+    SD_IMG="$INSTANCE_DIR/${EXTRA_DISK#*:}"
+    if [ -e "$SD_IMG" ]; then
+        echo "--- $(basename "$SD_IMG") exists, keeping it (delete it by hand for a blank card) ---"
+    else
+        "$SCRIPT_DIR/make_disk.sh" --family "${EXTRA_DISK%%:*}" "$SD_IMG"
+    fi
+fi
+
 ### kernel ####################################################################
 # The kernel has to match the rootfs's architecture, and that is not implied by
 # --device: Engine OS ships on both RK3288 (armv7) and RK3588 (arm64), and so does
@@ -421,13 +449,13 @@ else
 fi
 
 # run_qemu.sh takes its machine type and device models from ARCH, so either
-# architecture boots. Only an untried combination is worth a word: an arm64 MPC has
-# never been run, and the audio path in particular differs (mmio virtio-sound rather
-# than PCI hda). Flag it as unproven rather than implying it is broken. armv7 Engine
-# reaches a rendered UI but has no audio or control surface yet — see the note at the
-# top of build_armv7_engine_rootfs.sh.
+# architecture boots. Only an untried combination is worth a word, flagged as
+# unproven rather than implying it is broken; every row today has been booted. armv7
+# Engine reaches a rendered UI but has no audio or control surface yet — see the note
+# at the top of build_armv7_engine_rootfs.sh. arm64 MPC (3.10.0 Gen 2, as ACVA3)
+# reaches a rendered UI with touch and, like Gen 1, no audio device.
 case "$DEVICE:$ARCH" in
-    engine:arm64|engine:armhf|mpc:armhf) ;;
+    engine:arm64|engine:armhf|mpc:arm64|mpc:armhf|drummodule:armhf) ;;
     *) echo "NOTE: $DEVICE on $ARCH is an untried combination. A command line will be"
        echo "      built for it, but nothing here has booted one yet." ;;
 esac
@@ -453,6 +481,7 @@ FIRMWARE_IMG=$FIRMWARE
 DISPLAY_MODE=$DISPLAY_MODE
 ROOTFS_IMG=$ROOTFS_IMG
 DATA_IMG=$DATA_IMG
+SD_IMG=$SD_IMG
 ROOT_UUID=$ROOT_UUID
 ARCH=$ARCH
 PRODUCT_CODE=$PRODUCT_CODE

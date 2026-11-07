@@ -24,7 +24,7 @@ That is the whole setup — the kernel is built on demand, once per architecture
 reused by every later instance that needs it.
 
 `--device` selects the device family, which decides the shim stack and the disk
-layout: `engine` (Engine OS) or `mpc` (Akai MPC). Add `--force` to rebuild an
+layout: `engine` (Engine OS), `mpc` (Akai MPC) or `drummodule` (Alesis drum module). Add `--force` to rebuild an
 existing rootfs, `--size` to change the image size.
 
 QEngine extracts the rootfs with its own reader for each firmware container. `--firmware` also takes a desktop updater in place of the image, the zipped Mac `.app` or the Windows `.exe`, and `extract_updater.py` unpacks the `Update.img` inside it first, with no 7-Zip needed. HeadRush ships only updaters. `--binwalk` uses binwalk instead, for a container none of the readers knows. Nothing is verified that way, binwalk 3 cannot unpack plain FIT images (Prime GO 4.3.0 and earlier, MPC 2.x), and binwalk 2 builds a broken SYSTEM ONE 5.2.0 rootfs. It applies to that run only and is not recorded in `instance.env`.
@@ -35,11 +35,15 @@ The families live in one table in `new_instance.sh`, a row per family/architectu
 combination:
 
 ```
-<family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>
-engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img
-engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img
-mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img
+<family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>|<extra disk>
+engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
+engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
+mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
+drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img
 ```
+
+The extra disk is a third drive beside `/data`, as `<make_disk.sh family>:<image name>`, or `-` for none. Only the drum module has one, its internal SD card. It is kept across `--force` like `/data` and recorded in `instance.env` as `SD_IMG`.
 
 The markers are paths that must **all** exist in the built rootfs for the row to
 match, so a family needing more than one piece of evidence lists more. Rows are
@@ -60,9 +64,7 @@ order of cost: what was asked for, then what this instance was built as before (
 its rootfs is already on disk), then the firmware itself, which costs one extraction
 of a few seconds.
 
-Passing `--device` skips that extraction only when the family pins a single row —
-`mpc` today. `--device engine` still has to look inside the firmware, because Engine
-OS ships on both architectures and they take different builders. Either way, stating
+Passing `--device` skips that extraction only when the family pins a single row, which today is only `drummodule`: Engine OS and MPC both ship on both architectures, so the firmware is looked at to pick the row. Gen 1 and Gen 2 MPC share `build_mpc_rootfs.sh`, which `new_instance.sh` tells which by exporting the row's `ARCH`. Gen 2 takes the `engine` disk layout, because its `data.mount` and `factory.mount` ask for the same PARTUUIDs as RMZ2's. Either way, stating
 the family records the intent in `instance.env` and in shell history.
 
 Either way it is verified rather than trusted: once the rootfs exists it is identified
@@ -146,9 +148,7 @@ overrides the choice.
 
 armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one,
 and it boots to a rendered UI with a virtual control surface bound, rendering through
-virgl in a GL display mode. Audio is what it still lacks. arm64
-MPC remains untried — no builder produces that rootfs, so the command line has never
-been booted, and `new_instance.sh` says so when it sees one.
+virgl in a GL display mode. Audio is what it still lacks. arm64 MPC (Gen 2) boots too, to a rendered UI with touch, and without audio, as on Gen 1.
 
 ## Run
 

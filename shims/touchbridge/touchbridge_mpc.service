@@ -1,0 +1,29 @@
+[Unit]
+Description=MPC QEMU tablet -> synthetic multitouch bridge
+# acvs.service is MPC, alesis-drummodule.service the drum module. Ordering against a
+# unit that is not installed is a no-op, so one file serves both.
+Before=acvs.service alesis-drummodule.service
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# MPC enumerates touchscreens once, when it starts, so this unit has to hold
+# acvs.service back until the touchscreen exists, and Before= alone does not. On MPC
+# 3.10.0 Gen 2 the USB tablet enumerates ~1s into boot, after touchbridge first
+# looks, so the first attempt exits, the start job fails, and MPC starts without
+# touch while Restart= brings the bridge up behind it. And a Type=simple unit counts
+# as started as soon as it execs, so even a good attempt raced MPC by ~0.5s.
+# Waiting for the tablet before, and the touchscreen after, closes both. Each wait
+# is bounded so that a missing tablet still lets MPC start, untouchable rather than
+# absent.
+ExecStartPre=/bin/sh -c 'i=0; until grep -qE "Name=.*(USB|Virtio) Tablet" /proc/bus/input/devices; do i=$((i+1)); [ "$i" -ge 100 ] && exit 0; sleep 0.1; done'
+ExecStart=/root/touchbridge_mpc
+ExecStartPost=/bin/sh -c 'i=0; until grep -q "TouchBridge Virtual Touchscreen" /proc/bus/input/devices; do i=$((i+1)); [ "$i" -ge 100 ] && exit 0; sleep 0.1; done'
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

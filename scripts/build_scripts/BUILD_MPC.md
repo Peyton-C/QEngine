@@ -62,7 +62,7 @@ The launcher runs `az01-firmware-tool` against the pad controller's firmware on 
 - Used directly as above, the rootfs is written to `build/rootfs_out.img` — the
   same path the arm64 build uses, so building one target overwrites the other.
   Use an instance (see INSTANCES.md) to keep several targets side by side.
-- Plain FIT images (`d00dfeed`: MPC 2.x, Prime GO 4.3.0 and earlier, HeadRush Pedalboard and Looperboard) go through `extract_fit_rootfs.py`, since binwalk 3 reads each as a single DTB. `AZ01` (MPC Gen1) and `AZ0x` (MPC Gen2) go through `extract_az01_rootfs.py` and `extract_az0x_rootfs.py`.
+- Plain FIT images (`d00dfeed`: MPC 2.x, Prime GO 4.3.0 and earlier, HeadRush Pedalboard and Looperboard) go through `extract_fit_rootfs.py`, since binwalk 3 reads each as a single DTB. `AZ01` (MPC Gen1) and `AZ0x` (MPC Gen2) go through `extract_az01_rootfs.py` and `extract_az0x_rootfs.py`. A Mac `.app` zip or Windows `.exe` updater is unpacked by `extract_updater.py` first.
 - MPC drives KMS directly and links no Mali or EGL, which is why it needs none of
   the shim stack Engine does. `readelf -d <app-binary> | grep -iE 'mali|EGL'`
   coming back empty is a good predictor that a device will work here.

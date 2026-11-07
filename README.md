@@ -18,7 +18,8 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 
 ```sh
 # 1. One instance per device + firmware version. Point --firmware straight at an
-#    update image; there is no firmware directory to populate. The matching kernel
+#    update image, or at the Mac .app zip or Windows .exe updater that carries
+#    one; there is no firmware directory to populate. The matching kernel
 #    is detected from the rootfs and built on demand -- once per architecture,
 #    then reused (~7 min arm64, ~2 min armv7, ~1 min per rootfs).
 scripts/build_scripts/new_instance.sh --name rmz2-4.6.0 --device engine \

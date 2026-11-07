@@ -21,9 +21,33 @@
 #
 # BINWALK=1 goes back to binwalk anyway, for a container no reader knows yet or to
 # check a reader against it. Nothing is verified on that path.
+#
+# A desktop updater, the zipped Mac .app or the Windows .exe, is accepted in place of
+# the image: extract_updater.py unpacks the Update.img it carries, byte-identical to
+# the bare one, beside the destination, and that goes through the readers or binwalk
+# as usual. HeadRush ships only updaters, and an updater may be all that survives of
+# a build. The copy is removed afterwards, but is left behind if the run is killed.
 _EXTRACT_ROOTFS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 extract_rootfs() {
+    _updater_img=""
+    case "$(od -An -tx1 -N4 "$1" | tr -d ' \n')" in
+        504b0304|4d5a*|377abcaf)
+            _updater_img="$2.update.img"
+            echo "--- unpacking the update image from updater $1 ---"
+            if ! python3 -I "$_EXTRACT_ROOTFS_DIR/extract_updater.py" "$1" "$_updater_img" >/dev/null; then
+                echo "ERROR: extract_updater.py failed on $1." >&2
+                return 1
+            fi ;;
+    esac
+
+    # Tested in an if so a failure still reaches the cleanup under a caller's set -e.
+    if _extract_rootfs_image "${_updater_img:-$1}" "$2"; then _status=0; else _status=$?; fi
+    [ -z "$_updater_img" ] || rm -f "$_updater_img"
+    return "$_status"
+}
+
+_extract_rootfs_image() {
     _firmware="$1"
     _dest="$2"
 
@@ -39,7 +63,8 @@ extract_rootfs() {
         415a3078) _reader="extract_az0x_rootfs.py" ;;
         *)
             echo "ERROR: $_firmware is not a firmware container QEngine reads (magic '$_magic')." >&2
-            echo "       Known: plain FIT (d00dfeed), AZ01 (415a3031) and AZ0x (415a3078)." >&2
+            echo "       Known: plain FIT (d00dfeed), AZ01 (415a3031) and AZ0x (415a3078)," >&2
+            echo "       or an updater carrying one: Mac .app zip or Windows .exe." >&2
             echo "       BINWALK=1 (--binwalk on new_instance.sh) tries binwalk instead." >&2
             return 1 ;;
     esac

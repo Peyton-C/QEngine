@@ -70,14 +70,23 @@ cleanly against Engine OS's userland, while still containing a working Mesa
 anything compiled or extracted for the guest.
 
 ### Replacing the Mali GPU driver with Mesa
-Real hardware ships a proprietary `libmali.so.14.0`, which only works against
-actual Mali GPU hardware and does nothing under QEMU. Substitute a full
-Mesa/EGL/GLES/DRM/X11 stack (Debian 11 armhf packages) system-wide instead, so
-`virtio-gpu-pci` renders via Mesa's `virtio_gpu_dri.so`/`swrast_dri.so`.
+Engine OS 4.3.4 and earlier on armv7, and HeadRush, get GL from a proprietary `libmali.so.14.0` that only drives a real Mali, and every Qt library names it directly. `build_armv7_engine_rootfs.sh` replaces it whenever `detect_mesa.sh` reports the `mali` layout, with no option to set.
 
-A companion `libmali_shim.so` stub (compiled from `mali_shim.c`) — empty aside
-from linking against real EGL/GLES symbols — satisfies anything that
-`dlopen`s "the Mali driver" by name, transparently redirecting it to Mesa.
+| Piece | Built by | What it is |
+| --- | --- | --- |
+| Mesa 24.0.9 | `build_mali_mesa.sh` | libEGL, libGLESv2, libgbm and the virtio_gpu, kms_swrast and swrast drivers, built on bookworm for the rootfs's glibc 2.36 |
+| `libmali.so.14.0` | `build_mali_mesa.sh` | a stand-in with no code that loads Mesa's EGL, GLES and gbm, so the blob is never mapped; the blob is kept as `.vendor` |
+| eglfs_kms | `build_qt5_eglfs_kms.sh` | Qt 5.15.2's KMS device integration, which this Qt was built without, checked against the rootfs's own Qt |
+
+Engine then runs on `eglfs_kms` through virgl, as 5.x does. Tried on Prime GO 4.3.0 as JC11, where it reaches the main screen with every icon drawn, and on HeadRush Prime 5.2.0 as HG06. Not yet tried on other 4.x versions.
+
+HeadRush's Qt has `qreal` as float where Engine's has double, so its eglfs_kms is a separate build, which the builder picks by reading the rootfs's QtGui. Evil also needs three things Engine does not:
+
+| Need | What QEngine does |
+| --- | --- |
+| Its own sound card, `hw:HV01`, 8 out and 2 in, or it segfaults | the kernel's `snd-aloop` card, renamed to HV01 and held to that shape by `pcmhold` |
+| `/dev/loop1`, for the USB storage image it keeps on `/data` | `get_kernel.sh` bundles `loop` |
+| A portrait panel, which it rotates its UI for | `qmlrotate` turns the UI back for the landscape screen; `SCREEN=800x1280` gives the panel as it is |
 
 ## 3. Preparing the eMMC overlay image
 `emmc.img` backs the `/media/az01-internal` mount that Engine's systemd units

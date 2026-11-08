@@ -15,10 +15,13 @@
 #   dri      /usr/lib/dri/*_dri.so — Mesa 24.1 and earlier. The several dozen
 #            entries are hardlinks to a single megadriver, so reading any one of
 #            them answers for all.
-#   none     no Mesa. Engine OS before 5.0.0 on armv7 gets GL from a proprietary
-#            Mali blob that provides libEGL/libGLESv2/libGLESv1_CM itself; there
-#            is no /usr/lib/dri, no libgbm, and nothing for a virgl driver to plug
-#            into. MESA_VERSION is empty.
+#   mali     no Mesa, but a proprietary Mali blob, libmali.so.14.0: Engine OS 4.3.4
+#            and earlier on armv7, and HeadRush. It provides EGL, GLES and nothing
+#            else, libEGL.so and libGLESv2.so are symlinks to it, and every Qt
+#            library records NEEDED libmali.so.14.0. There is nothing to match, so
+#            MESA_VERSION is MALI_MESA_VERSION, the Mesa QEngine installs in its
+#            place (see build_virgl_mesa.sh).
+#   none     no Mesa and no Mali blob either. MESA_VERSION is empty.
 #
 # Why detect rather than tabulate: both the version and the layout are set by the
 # firmware, not by the architecture, and neither follows the other. The same
@@ -102,12 +105,25 @@ detect_mesa() {
         return 0
     fi
 
-    MESA_LAYOUT=none
-    _blob="$(printf '%s\n' "$_ls_usrlib" | awk '/^libmali/ && !seen++')"
-    if [ -n "$_blob" ]; then
-        echo "--- guest has no Mesa: GL comes from $_blob ---"
-    else
-        echo "--- guest has no Mesa and no Mali blob either ---"
+    # Matched by the exact name the Qt libraries record, so that a rootfs whose
+    # blob install_virgl_mesa has already swapped (keeping libmali.so.14.0.vendor
+    # beside it) is still reported as mali.
+    if printf '%s\n' "$_ls_usrlib" | awk '$0 == "libmali.so.14.0" {f=1} END {exit !f}'; then
+        MESA_LAYOUT=mali
+        MESA_VERSION="$MALI_MESA_VERSION"
+        echo "--- guest has no Mesa: GL comes from libmali.so.14.0, Mesa $MESA_VERSION replaces it ---"
+        return 0
     fi
+
+    MESA_LAYOUT=none
+    echo "--- guest has no Mesa and no Mali blob either ---"
     return 0
 }
+
+# The Mesa that replaces libmali. Any version would do as far as the guest is
+# concerned, since nothing in it was built against Mesa. It is built on Debian
+# bookworm, for a glibc no newer than these rootfs images' (2.34 on Prime GO 2.4.0
+# to 2.38 on HeadRush Prime 5.2.0), with libstdc++ linked in, and 24.0 builds with
+# bookworm's meson 1.0. Checked against Prime GO 4.3.0: every libdrm symbol it
+# imports is in the rootfs's own libdrm.
+MALI_MESA_VERSION=24.0.9

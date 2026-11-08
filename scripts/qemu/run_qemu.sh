@@ -5,7 +5,7 @@
 # Normally reached through scripts/qemu/run_instance.sh, which reads these values out
 # of an instance's instance.env. Run it directly by setting them yourself.
 #
-#   DEVICE        engine | mpc | drummodule  which shim stack the guest has, and so whether it
+#   DEVICE        engine | mpc | drummodule | headrush  which shim stack the guest has, and so whether it
 #                                   gets an audio card
 #   DISPLAY_MODE  see display_modes.sh
 #   ARCH          arm64 | armhf     machine type and device models, see arch_devices.sh
@@ -32,6 +32,12 @@ QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 
 DEVICE="${DEVICE:-engine}"
+
+# The guest's screen, WIDTHxHEIGHT. 1280x800 for every family, HeadRush included:
+# its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
+# SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
+SCREEN="${SCREEN:-1280x800}"
+SCREEN_W="${SCREEN%x*}" SCREEN_H="${SCREEN#*x}"
 
 # Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
 # devices from ARCH — and, for armhf, a lower default MEM than the one below, which
@@ -61,7 +67,9 @@ case "$DEVICE:$ARCH" in
     # The drum module is Gen 1 MPC's platform, and its data.mount asks for the same
     # PARTUUID.
     drummodule:*) _data="emmc.img" ;;
-    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc or drummodule)." >&2; exit 1 ;;
+    # HeadRush is Engine 4.3.4's platform, with the same single az01-internal disk.
+    headrush:*) _data="emmc.img" ;;
+    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc, drummodule or headrush)." >&2; exit 1 ;;
 esac
 
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"

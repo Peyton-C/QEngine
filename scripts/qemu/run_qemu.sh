@@ -33,13 +33,14 @@ BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 
 DEVICE="${DEVICE:-engine}"
 
-# The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush included:
+# The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush Prime included:
 # its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
 # SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
-# MPC Sample 1.3.0 renders a fixed 320x240 UI, regardless of the KMS mode.
+# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs.
 # Match that mode so the framebuffer does not surround it with unused space.
-case "$DEVICE" in
-    mpc-sample) SCREEN="${SCREEN:-320x240}" ;;
+case "$DEVICE:${ARCH:-arm64}" in
+    mpc-sample:*) SCREEN="${SCREEN:-320x240}" ;;
+    headrush:arm64) SCREEN="${SCREEN:-160x128}" ;;
     *) SCREEN="${SCREEN:-1280x800}" ;;
 esac
 SCREEN_W="${SCREEN%x*}" SCREEN_H="${SCREEN#*x}"
@@ -67,7 +68,7 @@ esac
 case "$DEVICE:$ARCH" in
     engine:*)  _data="data_disk.img" ;;
     # Gen 2 MPC uses RK3588's data+factory layout, the same disk Engine does.
-    mpc:arm64|mpc-sample:arm64) _data="data_disk.img" ;;
+    mpc:arm64|mpc-sample:arm64|headrush:arm64) _data="data_disk.img" ;;
     mpc:*)     _data="emmc.img" ;;
     # The drum module is Gen 1 MPC's platform, and its data.mount asks for the same
     # PARTUUID.

@@ -8,6 +8,7 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 - [ENGINEOS.md](docs/ENGINEOS.md) — Engine OS internals, product spoofing, known limitations
 - [BLOCKING_TELEMETRY.md](docs/BLOCKING_TELEMETRY.md) — stopping Engine's crash/analytics reporting from reaching InMusic's real Sentry project
 - [BUILD_ARM64.md](scripts/build_scripts/BUILD_ARM64.md) / [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) / [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md) — what each target needs
+- [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md), building Prime and VX5
 - [INSTANCES.md](scripts/build_scripts/INSTANCES.md) — running several emulated devices side by side
 - [MACOS_VIRGL.md.md](docs/MACOS_VIRGL.md.md) — Build QEMU w/ Virgl on macOS
 
@@ -172,7 +173,7 @@ LDMF does not build yet: it keeps its content on an eMMC partition QEngine does 
 
 ### Emulated Akai and HeadRush Products
 
-The same `az0x` base distribution carries several more product lines. HeadRush Prime builds with `--device headrush` from its desktop updater, and boots 5.2.0 as `HG06` to the rig screen, landscape, with touch and no audio. The table lists the other product lines and their build support:
+The same `az0x` base distribution carries several more product lines. HeadRush builds with `--device headrush`: Prime boots 5.2.0 as `HG06` on armv7, and VX5 boots 1.2.2 as `HV03` on arm64. Both use silent loopback audio; VX5 has no control surface. See [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md).
 
 ```sh
 scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headrush \
@@ -185,13 +186,7 @@ scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headr
 | Akai MPC Sample | `AC50` | Boots 1.3.0 on RK3566/arm64 with `--device mpc-sample`, display works, no audio or control surface. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md#mpc-sample) |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
 
-**"Evil" is HeadRush.** The HeadRush application binary is built around a namespace
-called `Evil` — `EvilApp`, `EvilGui`, `EvilClient`, `EvilDB`, `EvilAPI`,
-`EvilAppRunner`, `Evil::BoardModes` — with its database tables named for
-amp-modeller concepts (`RigDescriptorsList`, `SetlistDescriptorsList`). The binary
-also identifies itself as `headrushfx`. It is an internal codename, not a separate
-product line: anything labelled "Evil" in an extracted rootfs is the HeadRush
-application. Confirmed against `HV01` (HeadRush Core).
+HeadRush Prime and the older models run the `Evil` application. VX5 runs a separate JUCE application, `/usr/bin/HV03`.
 
 **"Looper" is the Looperboard.** `HG03` is the HeadRush Looperboard, and
 `LooperController` lives inside that same `Evil` binary — the looper is a mode of

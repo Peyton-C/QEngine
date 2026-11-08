@@ -1,6 +1,8 @@
 #!/bin/bash
 # Automates extraction and modification of a stock Akai MPC rootfs for QEngine.
-# Also builds MPC Sample 1.3.0 on RK3566 (arm64), using ac50.service.
+# Also builds MPC Sample 1.3.0 and HeadRush VX5 1.2.2 on RK3566 (arm64),
+# using ac50.service and HV03.service respectively. VX5 uses JUCE/DRM, unlike
+# the Qt/EGL Evil application on the RK3288 HeadRush models.
 # Covers both generations: Gen 1 on RK3288 (armhf) and Gen 2 on RK3588 (arm64),
 # which also carries Force (Gen 2). It also builds the Alesis drum module, whose
 # /usr/bin/DrumModule is MPC's JUCE codebase on Gen 1's RK3288 platform, linking
@@ -34,7 +36,7 @@
 #                 run_qemu.sh reads; new_instance.sh sets it from the firmware.
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default ACV5
 #                 (MPC X) on armhf, ACVA3 (MPC One Gen 2) on arm64, LDMD on a
-#                 drum module.
+#                 drum module, AC50 on MPC Sample and HV03 on VX5.
 #   BINWALK       1 to extract with binwalk instead of QEngine's readers. See
 #                 extract_rootfs.sh.
 #
@@ -127,14 +129,19 @@ esac
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
-# MPC Sample 1.3.0 is arm64 like Gen 2, but its RK3566 PCB and SPI panel
+# MPC Sample 1.3.0 and VX5 1.2.2 are arm64 like Gen 2, but their RK3566 PCB and SPI panel
 # properties differ. Select the table from the extracted app, not a product code
 # supplied by the caller, so identity overrides cannot pick the wrong SoC.
 DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 [ -x "$DEBUGFS" ] || { echo "ERROR: debugfs is required (e2fsprogs)." >&2; exit 1; }
-if "$DEBUGFS" -R 'stat /usr/bin/launch-ac50' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
-    [ "$ARCH" = arm64 ] || { echo "ERROR: MPC Sample requires ARCH=arm64." >&2; exit 1; }
+if "$DEBUGFS" -R 'stat /usr/bin/launch-ac50' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+   "$DEBUGFS" -R 'stat /usr/bin/HV03' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+    [ "$ARCH" = arm64 ] || { echo "ERROR: AZ07 applications require ARCH=arm64." >&2; exit 1; }
     DT_SOC="SOC_RK3566"
+fi
+BUILD_PCMHOLD=0
+if "$DEBUGFS" -R 'stat /usr/bin/HV03' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+    BUILD_PCMHOLD=1
 fi
 
 ### 2. Grow the image and filesystem #########################################
@@ -164,6 +171,7 @@ docker run --rm --platform "$SHIM_PLATFORM" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e SHIM_MACHINE="$SHIM_MACHINE" \
     -e DT_SOC="$DT_SOC" \
+    -e BUILD_PCMHOLD="$BUILD_PCMHOLD" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
@@ -179,6 +187,10 @@ docker run --rm --platform "$SHIM_PLATFORM" \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+        if [ "$BUILD_PCMHOLD" = 1 ]; then
+            apt-get install -y -qq libasound2-dev >/dev/null 2>&1
+            gcc -O2 -Wall -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
+        fi
     '
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
@@ -251,12 +263,15 @@ if [ -f /mnt/rootfs/usr/bin/MPC ]; then
 elif [ -f "/mnt/rootfs/usr/bin/MPC Sample" ]; then
     [ "$ARCH" = arm64 ] || { echo "ERROR: MPC Sample requires arm64." >&2; exit 1; }
     APP_UNIT="ac50.service"; DEFAULT_CODE="AC50"
+elif [ -f /mnt/rootfs/usr/bin/HV03 ]; then
+    [ "$ARCH" = arm64 ] || { echo "ERROR: VX5 requires arm64." >&2; exit 1; }
+    APP_UNIT="HV03.service"; DEFAULT_CODE="HV03"
 elif [ -f /mnt/rootfs/usr/bin/DrumModule ]; then
     [ "$ARCH" = armhf ] || {
         echo "ERROR: drum module images are armhf; nothing here knows an $ARCH one." >&2; exit 1; }
     APP_UNIT="alesis-drummodule.service"; DEFAULT_CODE="LDMD"
 else
-    echo "ERROR: no MPC, MPC Sample or DrumModule application in this rootfs." >&2
+    echo "ERROR: no MPC, MPC Sample, VX5 or DrumModule application in this rootfs." >&2
     exit 1
 fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
@@ -287,8 +302,8 @@ chmod 755 /mnt/rootfs/root/dtshim.so
 # PRODUCT_CODE selects which device this pretends to be.
 write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
 
-# MPC Sample has a button-driven SPI display, not a touchscreen.
-if [ "$APP_UNIT" != ac50.service ]; then
+# MPC Sample and VX5 use physical controls rather than touchscreens.
+if [ "$APP_UNIT" != ac50.service ] && [ "$APP_UNIT" != HV03.service ]; then
     echo "--- wiring touchbridge.service ---"
     # QEMU's tablet, usb-tablet or the virtio one, presents as an absolute *mouse*.
     # MPC only responds to a real touchscreen, so the bridge re-emits that pointer as
@@ -342,6 +357,48 @@ cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so
 EOF
+
+if [ "$APP_UNIT" = HV03.service ]; then
+    # VX5 1.2.2 crashes without onboard audio. The same loopback/pcmhold pairing
+    # Prime uses supplies its declared stereo 48 kHz card, with capture fed silence
+    # and playback discarded. VX5 finds this card by udev path, not Prime's HV01 id.
+    cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
+    chmod 755 /mnt/rootfs/root/pcmhold
+    mkdir -p /mnt/rootfs/etc/udev/rules.d
+    cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-vx5-audio.rules <<'EOF'
+SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Loopback", SYMLINK+="snd/by-path/platform-sound"
+EOF
+    cat > /mnt/rootfs/etc/systemd/system/qengine-vx5-audio.service <<'EOF'
+[Unit]
+Description=Supply VX5 with stereo loopback audio
+After=systemd-udevd.service
+Before=HV03.service
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe snd-aloop
+# The initrd loads snd-aloop before the rootfs rules are available.
+ExecStartPre=/usr/bin/udevadm trigger --subsystem-match=sound --action=add
+ExecStartPre=/usr/bin/udevadm settle --timeout=10
+ExecStart=/root/pcmhold Loopback 2 2 48000
+ExecStartPost=/bin/sleep 1
+Restart=on-failure
+EOF
+    cat >> /mnt/rootfs/etc/systemd/system/HV03.service.d/override.conf <<'EOF'
+
+[Unit]
+Requires=qengine-vx5-audio.service
+After=qengine-vx5-audio.service
+
+[Service]
+# VX5 1.2.2's DSP worker can start with a garbage sample count. Zero fresh
+# allocations, including small blocks normally returned
+# from tcache, so it starts with no samples rather than a garbage-sized buffer.
+# MALLOC_PERTURB_ alone leaves tcache allocations uninitialized.
+Environment=MALLOC_PERTURB_=255
+Environment=GLIBC_TUNABLES=glibc.malloc.tcache_count=0
+EOF
+fi
 
 if [ "$APP_UNIT" = alesis-drummodule.service ]; then
     echo "--- wiring the drum module's internal SD card ---"

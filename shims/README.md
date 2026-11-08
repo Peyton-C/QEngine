@@ -20,7 +20,7 @@ An emulated midi surface to control Engine.
 Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.
 
 ## pcmhold
-Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush uses it to stand in for HV01, 8 out and 2 in.
+Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush Prime uses 8 out and 2 in; VX5 uses 2 out and 2 in.
 
 ## qmlrotate
 Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush uses it to turn Evil's UI, rotated for a sideways portrait panel, back to landscape.

@@ -5,7 +5,7 @@
 # Normally reached through scripts/qemu/run_instance.sh, which reads these values out
 # of an instance's instance.env. Run it directly by setting them yourself.
 #
-#   DEVICE        engine | mpc | drummodule | headrush  which shim stack the guest has, and so whether it
+#   DEVICE        engine | mpc | mpc-sample | drummodule | headrush  which shim stack the guest has, and so whether it
 #                                   gets an audio card
 #   DISPLAY_MODE  see display_modes.sh
 #   ARCH          arm64 | armhf     machine type and device models, see arch_devices.sh
@@ -33,10 +33,15 @@ BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 
 DEVICE="${DEVICE:-engine}"
 
-# The guest's screen, WIDTHxHEIGHT. 1280x800 for every family, HeadRush included:
+# The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush included:
 # its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
 # SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
-SCREEN="${SCREEN:-1280x800}"
+# MPC Sample 1.3.0 renders a fixed 320x240 UI, regardless of the KMS mode.
+# Match that mode so the framebuffer does not surround it with unused space.
+case "$DEVICE" in
+    mpc-sample) SCREEN="${SCREEN:-320x240}" ;;
+    *) SCREEN="${SCREEN:-1280x800}" ;;
+esac
 SCREEN_W="${SCREEN%x*}" SCREEN_H="${SCREEN#*x}"
 
 # Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
@@ -62,14 +67,14 @@ esac
 case "$DEVICE:$ARCH" in
     engine:*)  _data="data_disk.img" ;;
     # Gen 2 MPC uses RK3588's data+factory layout, the same disk Engine does.
-    mpc:arm64) _data="data_disk.img" ;;
+    mpc:arm64|mpc-sample:arm64) _data="data_disk.img" ;;
     mpc:*)     _data="emmc.img" ;;
     # The drum module is Gen 1 MPC's platform, and its data.mount asks for the same
     # PARTUUID.
     drummodule:*) _data="emmc.img" ;;
     # HeadRush is Engine 4.3.4's platform, with the same single az01-internal disk.
     headrush:*) _data="emmc.img" ;;
-    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc, drummodule or headrush)." >&2; exit 1 ;;
+    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc, mpc-sample, drummodule or headrush)." >&2; exit 1 ;;
 esac
 
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"

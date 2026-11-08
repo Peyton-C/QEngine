@@ -1,5 +1,6 @@
 #!/bin/bash
 # Automates extraction and modification of a stock Akai MPC rootfs for QEngine.
+# Also builds MPC Sample 1.3.0 on RK3566 (arm64), using ac50.service.
 # Covers both generations: Gen 1 on RK3288 (armhf) and Gen 2 on RK3588 (arm64),
 # which also carries Force (Gen 2). It also builds the Alesis drum module, whose
 # /usr/bin/DrumModule is MPC's JUCE codebase on Gen 1's RK3288 platform, linking
@@ -37,7 +38,7 @@
 #   BINWALK       1 to extract with binwalk instead of QEngine's readers. See
 #                 extract_rootfs.sh.
 #
-# Requires: python3 (binwalk with BINWALK=1), qemu-img, docker.
+# Requires: python3 (binwalk with BINWALK=1), qemu-img, docker, debugfs.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -125,6 +126,16 @@ esac
 . "$SCRIPT_DIR_SELF/extract_rootfs.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
+
+# MPC Sample 1.3.0 is arm64 like Gen 2, but its RK3566 PCB and SPI panel
+# properties differ. Select the table from the extracted app, not a product code
+# supplied by the caller, so identity overrides cannot pick the wrong SoC.
+DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
+[ -x "$DEBUGFS" ] || { echo "ERROR: debugfs is required (e2fsprogs)." >&2; exit 1; }
+if "$DEBUGFS" -R 'stat /usr/bin/launch-ac50' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+    [ "$ARCH" = arm64 ] || { echo "ERROR: MPC Sample requires ARCH=arm64." >&2; exit 1; }
+    DT_SOC="SOC_RK3566"
+fi
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -237,12 +248,15 @@ fi
 # /usr/share/Alesis/DrumModule/Resources/firmware.
 if [ -f /mnt/rootfs/usr/bin/MPC ]; then
     APP_UNIT="acvs.service"; DEFAULT_CODE="$MPC_DEFAULT_CODE"
+elif [ -f "/mnt/rootfs/usr/bin/MPC Sample" ]; then
+    [ "$ARCH" = arm64 ] || { echo "ERROR: MPC Sample requires arm64." >&2; exit 1; }
+    APP_UNIT="ac50.service"; DEFAULT_CODE="AC50"
 elif [ -f /mnt/rootfs/usr/bin/DrumModule ]; then
     [ "$ARCH" = armhf ] || {
         echo "ERROR: drum module images are armhf; nothing here knows an $ARCH one." >&2; exit 1; }
     APP_UNIT="alesis-drummodule.service"; DEFAULT_CODE="LDMD"
 else
-    echo "ERROR: neither /usr/bin/MPC nor /usr/bin/DrumModule in this rootfs." >&2
+    echo "ERROR: no MPC, MPC Sample or DrumModule application in this rootfs." >&2
     exit 1
 fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
@@ -273,16 +287,20 @@ chmod 755 /mnt/rootfs/root/dtshim.so
 # PRODUCT_CODE selects which device this pretends to be.
 write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
 
-echo "--- wiring touchbridge.service ---"
-# QEMU's tablet, usb-tablet or the virtio one, presents as an absolute *mouse*.
-# MPC only responds to a real touchscreen, so the bridge re-emits that pointer as
-# a uinput multitouch device. It must start before the app's unit, which the
-# shipped touchbridge unit names for both apps: MPC enumerates input once, at its
-# own startup, and the drum module is the same code.
-cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge_mpc
-chmod 755 /mnt/rootfs/root/touchbridge_mpc
-cp -a /shims/touchbridge/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
-ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
+# MPC Sample has a button-driven SPI display, not a touchscreen.
+if [ "$APP_UNIT" != ac50.service ]; then
+    echo "--- wiring touchbridge.service ---"
+    # QEMU's tablet, usb-tablet or the virtio one, presents as an absolute *mouse*.
+    # MPC only responds to a real touchscreen, so the bridge re-emits that pointer as
+    # a uinput multitouch device. It must start before the app's unit, which the
+    # shipped touchbridge unit names for both apps: MPC enumerates input once, at its
+    # own startup, and the drum module is the same code.
+    cp -a /shims/touchbridge/touchbridge_$SHIM_ARCH /mnt/rootfs/root/touchbridge_mpc
+    chmod 755 /mnt/rootfs/root/touchbridge_mpc
+    cp -a /shims/touchbridge/touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/touchbridge_mpc.service
+    ln -sf ../touchbridge_mpc.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/touchbridge_mpc.service
+
+fi
 
 echo "--- disabling the tty1 getty (Application's display) ---"
 # MPC renders fullscreen via KMS on the same VT the console getty

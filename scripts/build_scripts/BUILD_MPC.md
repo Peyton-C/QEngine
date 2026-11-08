@@ -36,6 +36,26 @@ The dtbs also set `chosen` flags per model that QEngine does not serve: `acvs-lo
 To build and run several devices or firmware versions side by side, see
 [INSTANCES.md](INSTANCES.md).
 
+## MPC Sample
+QEngine boots MPC Sample 1.3.0 as `AC50` on arm64, using the RK3566 devicetree table and a 320×240 virtual display. Point `--firmware` at the desktop updater zip:
+
+```sh
+scripts/build_scripts/new_instance.sh --name mpc-sample-1.3.0 --product-code AC50 --firmware "MPC Sample 1.3.0 Updater.app.zip"
+scripts/qemu/run_instance.sh --name mpc-sample-1.3.0 --display vnc
+```
+
+| Item | Status |
+| --- | --- |
+| Application | `ac50.service` reaches the sample trim screen |
+| Display | Landscape, software rendering, no SPI panel emulation |
+| Storage | `/data` and `/factory` mount with the existing arm64 disk layout |
+| Factory content | Separate content partition absent from the updater, not supplied by QEngine; bundled temporary project loads |
+| Audio | No audio device supplied |
+| Controls | No control surface supplied; clicking the virtual mouse does not switch tabs |
+| TEE | No additional shim needed to reach the UI |
+
+MPC Sample uses physical buttons rather than a touchscreen, so the build skips touchbridge. Only arm64, `AC50`, firmware 1.3.0 has been booted.
+
 ## Alesis drum module
 The drum module's `/usr/bin/DrumModule` is MPC's codebase on Gen 1's platform, armv7 with the same `/data` PARTUUID, and `build_mpc_rootfs.sh` builds it. It reads the app off the rootfs and preloads `dtshim` into `alesis-drummodule.service` in place of `acvs.service`. The default product code is `LDMD`.
 

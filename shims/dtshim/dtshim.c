@@ -4,7 +4,7 @@
  * write interposition, the runtime /proc/interrupts generation and its IRQ
  * affinity probing, the /dev/mem neutering -- is the same on both, which is why
  * this was two files that had diverged rather than two different shims. Define
- * SOC_RK3588 or SOC_RK3288 to pick which devicetree properties it serves; that
+ * SOC_RK3588, SOC_RK3566 or SOC_RK3288 to pick which devicetree properties it serves; that
  * choice is the whole of the difference, and it lives in DT_REMAPS below.
  *
  * How the two devicetrees differ, for the record:
@@ -366,6 +366,14 @@ static const char FALLBACK_INTERRUPTS[] =
     " 23:          0          0          0          0          0          0          0          0   ITS-MSI 49152 Edge      ttyS0\n"
     "IPI0:       246        143        230        259        212        204        285        216       Rescheduling interrupts\n"
     "Err:          0\n";
+#elif defined(SOC_RK3566)
+/* MPC Sample 1.3.0 declares revision A. IRQs normally come from the guest;
+ * this fallback only keeps board probing alive when /proc is unavailable. */
+static const char DT_PCB_REV[] = "A";
+static const char FALLBACK_INTERRUPTS[] =
+    "           CPU0       CPU1       CPU2       CPU3\n"
+    "  1:      12345      11111      10000       9999     GIC-0  29 Level     arch_timer\n"
+    "  2:        512          0          0          0     GIC-0  33 Level     uart-pl011\n";
 #elif defined(SOC_RK3288)
 static const char FALLBACK_INTERRUPTS[] =
     "           CPU0       CPU1       CPU2       CPU3\n"
@@ -582,13 +590,18 @@ static const struct dt_remap DT_REMAPS[] = {
     {"/sys/firmware/devicetree/base/dsi@fde30000/panel@0/rotation",  NULL, DT_U32_ZERO, 4},
     {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", NULL, DT_U32_ZERO, 4},
     {"/sys/firmware/devicetree/base/edp-panel/rotation",             NULL, DT_U32_ZERO, 4},
+#elif defined(SOC_RK3566)
+    {"/sys/firmware/devicetree/base/inmusic,az07-pcb-rev", NULL, DT_PCB_REV, 0},
+    /* The virtual display is already landscape; do not rotate it like AC50's SPI panel. */
+    {"/sys/firmware/devicetree/base/spi@fe640000/display@0/rotation", NULL, DT_U32_ZERO, 4},
+    {"/sys/firmware/devicetree/base/inmusic,panel-rotation", NULL, DT_U32_ZERO, 4},
 #elif defined(SOC_RK3288)
     {"/sys/firmware/devicetree/base/inmusic,az01-pcb-rev", NULL, DT_PCB_REV, 0},
     {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", NULL, DT_U32_ZERO, 4},
     {"/sys/firmware/devicetree/base/chosen/inmusic,internal-sd-fitted",
                                                           NULL, DT_U32_ZERO, 4},
 #else
-# error "define SOC_RK3288 or SOC_RK3588 so dtshim knows which properties to serve"
+# error "define SOC_RK3288, SOC_RK3566 or SOC_RK3588 so dtshim knows which properties to serve"
 #endif
     /* Not a devicetree property, and the same on every SoC: /dev/mem is remapped
      * to a plain file so a mmap of it fails cleanly rather than handing out real

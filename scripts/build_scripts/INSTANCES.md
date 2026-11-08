@@ -24,7 +24,7 @@ That is the whole setup — the kernel is built on demand, once per architecture
 reused by every later instance that needs it.
 
 `--device` selects the device family, which decides the shim stack and the disk
-layout: `engine` (Engine OS), `mpc` (Akai MPC) or `drummodule` (Alesis drum module). Add `--force` to rebuild an
+layout: `engine` (Engine OS), `mpc` (Akai MPC), `mpc-sample` (MPC Sample), or `drummodule` (Alesis drum module). Add `--force` to rebuild an
 existing rootfs, `--size` to change the image size.
 
 QEngine extracts the rootfs with its own reader for each firmware container. `--firmware` also takes a desktop updater in place of the image, the zipped Mac `.app` or the Windows `.exe`, and `extract_updater.py` unpacks the `Update.img` inside it first, with no 7-Zip needed. HeadRush ships only updaters. `--binwalk` uses binwalk instead, for a container none of the readers knows. Nothing is verified that way, binwalk 3 cannot unpack plain FIT images (Prime GO 4.3.0 and earlier, MPC 2.x), and binwalk 2 builds a broken SYSTEM ONE 5.2.0 rootfs. It applies to that run only and is not recorded in `instance.env`.
@@ -38,6 +38,7 @@ combination:
 <family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>|<extra disk>
 engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
 engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+mpc-sample|arm64|/usr/bin/launch-ac50|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
 drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img

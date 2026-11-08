@@ -157,6 +157,7 @@ esac
 DEVICE_FAMILIES="\
 engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
 engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+mpc-sample|arm64|/usr/bin/launch-ac50|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
 drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img
@@ -456,8 +457,9 @@ fi
 # Engine reaches a rendered UI but has no audio or control surface yet — see the note
 # at the top of build_armv7_engine_rootfs.sh. arm64 MPC (3.10.0 Gen 2, as ACVA3)
 # reaches a rendered UI with touch and, like Gen 1, no audio device.
+# MPC Sample (1.3.0, AC50, arm64) reaches the trim UI without audio or a control surface.
 case "$DEVICE:$ARCH" in
-    engine:arm64|engine:armhf|mpc:arm64|mpc:armhf|drummodule:armhf) ;;
+    engine:arm64|engine:armhf|mpc:arm64|mpc:armhf|mpc-sample:arm64|drummodule:armhf) ;;
     *) echo "NOTE: $DEVICE on $ARCH is an untried combination. A command line will be"
        echo "      built for it, but nothing here has booted one yet." ;;
 esac

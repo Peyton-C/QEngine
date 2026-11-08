@@ -170,9 +170,9 @@ The drum module runs MPC's codebase on Gen 1's RK3288 platform, and `--device dr
 
 LDMF does not build yet: it keeps its content on an eMMC partition QEngine does not provide. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md).
 
-### Emulated Akai and HeadRush Oroducts
+### Emulated Akai and HeadRush Products
 
-The same `az0x` base distribution carries several more product lines. HeadRush Prime builds with `--device headrush` from its desktop updater, and boots 5.2.0 as `HG06` to the rig screen, landscape, with touch and no audio. The other lines have no builder yet:
+The same `az0x` base distribution carries several more product lines. HeadRush Prime builds with `--device headrush` from its desktop updater, and boots 5.2.0 as `HG06` to the rig screen, landscape, with touch and no audio. The table lists the other product lines and their build support:
 
 ```sh
 scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headrush \
@@ -182,7 +182,7 @@ scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headr
 | Line | Codes | Notes |
 |------|-------|-------|
 | Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line. Force (Gen 2) ships in the MPC Gen 2 image and builds as an MPC |
-| Akai MPC Sample | `AC50` | |
+| Akai MPC Sample | `AC50` | Boots 1.3.0 on RK3566/arm64 with `--device mpc-sample`, display works, no audio or control surface. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md#mpc-sample) |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
 
 **"Evil" is HeadRush.** The HeadRush application binary is built around a namespace

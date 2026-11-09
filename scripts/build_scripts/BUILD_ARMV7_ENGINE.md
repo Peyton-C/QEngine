@@ -18,15 +18,19 @@ For current firmware, use the same commands with its image and instance name. Ea
 | `--size BYTES` | Changes the rootfs size from its 4 GiB default |
 
 ## Legacy firmware
-QEngine recognises `/usr/JP07/JP07` and `/usr/Engine/JP07` and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. It installs a static VNC-to-touch bridge, selects software rendering, rotates the UI to landscape and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
+QEngine recognises `/usr/JP07/JP07`, `/usr/Engine/JP07` and `/usr/Engine/JC11` and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. It installs a static VNC-to-touch bridge, selects software rendering, selects the device's landscape rotation and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
 
 Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`. The separate QEMU VNC address shows the guest console. Use a viewer that negotiates RichCursor; Qt 5.9 can crash when a client without cursor support disconnects.
 
-| Firmware tried as JP07 | Application | Display and input |
-| --- | --- | --- |
-| SC5000 1.2.0 | `/usr/JP07/JP07` | Landscape UI and touch taps |
-| SC5000 1.2.2 | `/usr/Engine/JP07` | Landscape UI and touch taps |
-| SC5000 1.3.1 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| Firmware | Product code | Application | Display and input |
+| --- | --- | --- | --- |
+| SC5000 1.2.0 | JP07 | `/usr/JP07/JP07` | Landscape UI and touch taps |
+| SC5000 1.2.2 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| SC5000 1.3.1 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| Prime 4 1.3.2, 1.3.3 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup-notice touch verified, source browser stays open |
+| Prime 4 1.4.1 | JC11 | `/usr/Engine/JC11` | Landscape UI; settings touch navigation worked once, but the shortcut did not reopen settings after a cold boot |
+
+Use `--product-code JC11` for Prime 4. Its Qt 5.9 runtime needs a 270-degree correction; its Qt 5.12 runtime already renders in landscape. SC5000 keeps the 90-degree correction.
 
 | Legacy `instance.env` setting | Default |
 | --- | --- |

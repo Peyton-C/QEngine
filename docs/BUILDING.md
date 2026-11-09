@@ -70,7 +70,7 @@ cleanly against Engine OS's userland, while still containing a working Mesa
 anything compiled or extracted for the guest.
 
 ### Early Engine builds
-`new_instance.sh` recognises SC5000 1.2.0, 1.2.2 and 1.3.1 and selects the legacy path in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, `qmlrotate` restores the full 1280x800 landscape UI, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
+`new_instance.sh` recognises the product-named executables in early SC5000 and Prime 4 firmware and selects the legacy path in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, QEngine selects the device's landscape rotation, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
 
 | Firmware | Executable | Result as JP07, armhf |
 | --- | --- | --- |
@@ -83,6 +83,8 @@ Connect to the `Engine VNC` port printed by `run_instance.sh`, recorded as `ENGI
 Colored icons use `ShaderEffect`, which the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. This path keeps the vendor Mali libraries, skips the modern ALSA/MIDI/EGLFS preloads and does not pass `-skipFirmwareUpdate`, which 1.x lacks. MONTERO requires Qt 6. See [BUILD_ARMV7_ENGINE.md](../scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the build commands.
 
 SC5000 1.2.0, 1.2.2 and 1.3.1 include Utility, Preferences and Quick Preferences pages. `Ctrl+,` opens the tabbed settings menu in the tested 1.2.0 and 1.2.2 guests; the same shortcut is defined in 1.3.1, but was not verified there. Avoid `P`, which is also assigned to another action.
+
+Prime 4 uses `/usr/Engine/JC11` and product code `JC11`. Its Qt 5.9 runtime needs a 270-degree correction in 1.3.2 and 1.3.3; Qt 5.12 in 1.4.1 already renders in landscape. Touch dismissed the startup notice on all three, but the source browser remained open on 1.3.2 and 1.3.3. Version 1.4.1 accepted touch navigation between Utility and Preferences once, but `Ctrl+,` did not reopen settings after a cold boot. Playback remains unverified.
 
 ### Replacing the Mali GPU driver with Mesa
 Engine OS 4.3.4 and earlier on armv7, and HeadRush, get GL from a proprietary `libmali.so.14.0` that only drives a real Mali, and every Qt library names it directly. `build_armv7_engine_rootfs.sh` replaces it whenever `detect_mesa.sh` reports the `mali` layout, with no option to set.

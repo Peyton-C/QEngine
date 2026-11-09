@@ -98,7 +98,7 @@ version was never released for the device.
 |                         | Code  | SOC    | Signed FW | Arch  | 1.x         | 2.x   | 3.x   | 4.x           | 5.x         |
 |-------------------------|-------|--------|-----------|-------|-------------|-------|-------|---------------|-------------|
 | Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | ?           | ?     | ?     | ?             | ?           |
-| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | ?           | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | ?           |
+| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | 1.3.2-1.4.1 | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | ?           |
 | Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | -             | 5.1.0-5.3.0 |
 | Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | ?           | ?     | ?     | 4.3.0 !       | ?           |
@@ -113,6 +113,8 @@ version was never released for the device.
 | Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
+
+Prime 4 1.3.2 and 1.3.3 render, but the source browser stays open after the startup notice is dismissed. Version 1.4.1 accepted settings-menu touch navigation once; reopening settings after a cold boot remains unresolved. See [armv7 builds](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the legacy runtime's limits.
 
 ## Other inMusic devices
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the JP07-era runtime against the libraries extracted from this firmware.
+# Build the early Engine runtime against the libraries extracted from this firmware.
 # Bookworm provides the compiler, not the guest ABI: linking its glibc into a
 # preload makes SC5000 1.2.0's loader reject it before any interposition runs.
 set -euo pipefail
@@ -15,7 +15,7 @@ mkdir -p "$STAGE/legacy/lib" "$STAGE/legacy/qt"
 dump_library() {
     local dir="$1" pattern="$2" dest="$3" name
     name="$("$DEBUGFS" -R "ls -p $dir" "$IMG" 2>/dev/null |
-        awk -F/ '{print $6}' | grep -E "$pattern" | sed -n '1p' || true)"
+        awk -F/ '$3 ~ /^100/ {print $6}' | grep -E "$pattern" | sed -n '1p' || true)"
     [ -n "$name" ] || { echo "ERROR: no $pattern in $dir" >&2; exit 1; }
     "$DEBUGFS" -R "dump $dir/$name $dest" "$IMG" >/dev/null 2>&1
     [ -s "$dest" ] || { echo "ERROR: could not extract $dir/$name" >&2; exit 1; }
@@ -29,7 +29,7 @@ for lib in Core Gui; do
 done
 "$DEBUGFS" -R "rdump /usr/qt/include $STAGE/legacy" "$IMG" >/dev/null 2>&1
 [ -s "$STAGE/legacy/include/QtCore/qglobal.h" ] || {
-    echo "ERROR: this JP07 firmware has no Qt development headers." >&2; exit 1; }
+    echo "ERROR: this legacy firmware has no Qt development headers." >&2; exit 1; }
 
 docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \

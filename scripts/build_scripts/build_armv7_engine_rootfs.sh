@@ -120,19 +120,20 @@ esac
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
-# The early SC5000 application is named JP07, before /usr/Engine/Engine.
+# Early SC5000 and Prime 4 applications use their product codes as filenames.
 # Keep it in this builder, but select its guest-ABI/VNC stack before building
 # any of the modern preloads or trying the Qt 5.15 Mali replacement.
 DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 LEGACY_ENGINE=0
 if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
-        "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+        "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+        "$DEBUGFS" -R 'stat /usr/Engine/JC11' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
     LEGACY_ENGINE=1
 fi
 if [ "$LEGACY_ENGINE" = 1 ]; then
     MESA_LAYOUT=none
     MESA_VERSION=""
-    echo "--- legacy JP07 runtime: software VNC, vendor GL retained ---"
+    echo "--- legacy Engine runtime: software VNC, vendor GL retained ---"
 else
     detect_mesa "$OUT_PATH"
 fi
@@ -367,6 +368,7 @@ fi
 # rootfs, as build_mpc_rootfs.sh tells MPC from the drum module.
 if [ -d /mnt/rootfs/usr/Engine ]; then
     APP_UNIT=engine.service; DEFAULT_CODE=JP07
+    if [ -x /mnt/rootfs/usr/Engine/JC11 ]; then DEFAULT_CODE=JC11; fi
 elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
 elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then

@@ -156,7 +156,7 @@ esac
 # from instance.env.
 DEVICE_FAMILIES="\
 engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
-engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+engine|armhf|/usr/Engine,/usr/JP07/JP07|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
 mpc-sample|arm64|/usr/bin/launch-ac50|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
@@ -192,7 +192,16 @@ detect_family() {
         [ -n "$fam" ] || continue
         matched=1
         for marker in $markers; do
-            "$DEBUGFS" -R "stat $marker" "$1" 2>/dev/null | grep -q 'Inode:' || { matched=0; break; }
+            # A comma separates alternative paths for the same marker. Engine
+            # 1.2.0 installs under /usr/JP07; later firmware uses /usr/Engine.
+            marker_matched=0
+            for alternative in ${marker//,/ }; do
+                if "$DEBUGFS" -R "stat $alternative" "$1" 2>/dev/null | grep -q 'Inode:'; then
+                    marker_matched=1
+                    break
+                fi
+            done
+            [ "$marker_matched" -eq 1 ] || { matched=0; break; }
         done
         if [ "$matched" -eq 1 ]; then printf '%s\n' "$fam"; break; fi
     done
@@ -479,6 +488,15 @@ ROOT_UUID="$("$DUMPE2FS" -h "$ROOTFS_IMG" 2>/dev/null | awk -F': *' '/Filesystem
 # port is already taken on the host.
 OFFSET=$(( $(printf '%s' "$NAME" | cksum | cut -d' ' -f1) % 90 + 1 ))
 
+# A legacy rootfs serves Engine through its own Qt VNC server and touchscreen
+# bridge; QEMU's display is only the guest console. Record its host port beside
+# the other per-instance settings, so it never needs a second launcher.
+ENGINE_VNC_PORT=""
+if "$DEBUGFS" -R 'stat /etc/qengine/legacy-engine' "$ROOTFS_IMG" 2>/dev/null | grep -q 'Inode:'; then
+    ENGINE_VNC_PORT=$((6000 + OFFSET))
+    DISPLAY_MODE=vnc
+fi
+
 # run_instance.sh sources this file, so a value that can hold spaces is written
 # quoted. Only the firmware path can: every HeadRush updater's name has them
 # ("HeadRush Prime 5.2.0 Firmware Updater - Mac.zip"), and the rest are paths
@@ -502,6 +520,9 @@ INITRD_IMG=$INITRD_IMG
 SSH_PORT=$(( 2200 + OFFSET ))
 VNC_DISPLAY=$OFFSET
 EOF
+if [ -n "$ENGINE_VNC_PORT" ]; then
+    printf 'ENGINE_VNC_PORT=%s\nSMP=4\n' "$ENGINE_VNC_PORT" >> "$INSTANCE_DIR/instance.env"
+fi
 
 echo ""
 echo "Created instance $NAME"

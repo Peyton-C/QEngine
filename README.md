@@ -38,6 +38,10 @@ scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
 scripts/build_scripts/new_instance.sh --name jp07-5.0.4 --device engine \
     --firmware /path/to/JP07-JP08-JP11-5.0.4.img
 
+# Early SC5000 firmware uses Qt VNC with touch and landscape rotation.
+scripts/build_scripts/new_instance.sh --name sc5000-1.2.0 \
+    --firmware /path/to/SC5000Prime1.2.0Updater-Mac.zip
+
 # 2. Boot. Each instance owns its disks and its host ports, so these run at the
 #    same time without interfering.
 scripts/qemu/run_instance.sh --name rmz2-4.6.0
@@ -51,6 +55,8 @@ scripts/qemu/run_instance.sh --name rmz2-4.6.0 --no-gl
 
 The serial console appears in the terminal you launched from and root has no
 password.
+
+For SC5000 1.x, connect to the `Engine VNC` address printed by the launcher. QEMU VNC shows the console. These builds use loopback audio and software rendering with missing colored icons; see [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
 
 **Build one architecture at a time.** Both pipelines use the same `debian:bookworm`
 and `debian:trixie` tags at different architectures, and Docker caches a tag at only

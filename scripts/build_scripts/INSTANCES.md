@@ -37,7 +37,7 @@ combination:
 ```
 <family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>|<extra disk>
 engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
-engine|armhf|/usr/Engine|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
+engine|armhf|/usr/Engine,/usr/JP07/JP07|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
 mpc-sample|arm64|/usr/bin/launch-ac50|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
@@ -48,10 +48,7 @@ headrush|armhf|/usr/Evil|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
 
 The extra disk is a third drive beside `/data`, as `<make_disk.sh family>:<image name>`, or `-` for none. Only the drum module has one, its internal SD card. It is kept across `--force` like `/data` and recorded in `instance.env` as `SD_IMG`.
 
-The markers are paths that must **all** exist in the built rootfs for the row to
-match, so a family needing more than one piece of evidence lists more. Rows are
-tried in order, letting a family whose markers are a superset of another's be listed
-first. Adding a device family, or a new architecture for one, is adding a row.
+The markers are whitespace-separated requirements that must all match. A requirement can contain comma-separated alternatives, as `/usr/Engine,/usr/JP07/JP07` does for early SC5000 firmware. Rows are tried in order, so put a family with more specific markers before one it would also match. Add a family or architecture by adding a row.
 
 Architecture is part of the key because two things differ along it rather than along
 the family. Engine OS on armv7 needs its own rootfs builder — a different shim stack,
@@ -228,6 +225,8 @@ Generated once, then yours to edit — nothing regenerates it unless you delete 
 | `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
 | `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |
 | `KERNEL_IMG`, `INITRD_IMG` | the kernel that matches `ARCH`, shared by every instance of it |
+| `ENGINE_VNC_PORT` | Legacy Engine only: host port forwarded to its VNC touch bridge; QEMU VNC remains the console |
+| `SMP` | Legacy Engine records `4` for its CPU-affinity setup; other instances use the launcher default unless set |
 | `SSH_PORT`, `VNC_DISPLAY` | derived from the instance name so two instances cannot collide. Edit if a port is already taken on the host |
 
 `run_instance.sh` exports these and execs `run_qemu.sh`, which resolves the machine

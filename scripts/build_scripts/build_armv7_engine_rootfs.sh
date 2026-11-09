@@ -119,7 +119,23 @@ esac
 . "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
-detect_mesa "$OUT_PATH"
+
+# The early SC5000 application is named JP07, before /usr/Engine/Engine.
+# Keep it in this builder, but select its guest-ABI/VNC stack before building
+# any of the modern preloads or trying the Qt 5.15 Mali replacement.
+DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
+LEGACY_ENGINE=0
+if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+        "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+    LEGACY_ENGINE=1
+fi
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    MESA_LAYOUT=none
+    MESA_VERSION=""
+    echo "--- legacy JP07 runtime: software VNC, vendor GL retained ---"
+else
+    detect_mesa "$OUT_PATH"
+fi
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -141,6 +157,13 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 STAGE_DIR="$(mktemp -d /tmp/build-armv7-engine-rootfs-stage.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    [ "${MONTERO:-0}" != 1 ] || {
+        echo "ERROR: MONTERO requires Qt 6; this JP07 firmware uses Qt 5." >&2; exit 1; }
+    echo "--- building legacy shims against the guest runtime ---"
+    "$SCRIPT_DIR_SELF/build_legacy_engine_shims.sh" "$OUT_PATH" "$STAGE_DIR"
+    MONTERO=0
+else
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
@@ -284,6 +307,8 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 
+fi # modern shim and graphics stack
+
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
 
@@ -342,6 +367,8 @@ fi
 # rootfs, as build_mpc_rootfs.sh tells MPC from the drum module.
 if [ -d /mnt/rootfs/usr/Engine ]; then
     APP_UNIT=engine.service; DEFAULT_CODE=JP07
+elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
+    APP_UNIT=jp07.service; DEFAULT_CODE=JP07
 elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
     APP_UNIT=evil.service; DEFAULT_CODE=HG06
 else
@@ -353,6 +380,12 @@ echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    # -skipFirmwareUpdate does not exist in 1.x. Do not inject it into the old
+    # launchers or install contemporary ALSA/MIDI/EGLFS preloads into this libc.
+    write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
+    install_legacy_engine /mnt/rootfs /stage
+else
 # Engine's control-surface firmware check; Evil has no such flag to pass.
 if [ "$APP_UNIT" = engine.service ]; then skip_firmware_update /mnt/rootfs; fi
 
@@ -532,6 +565,8 @@ if [ "$MONTERO" = 1 ]; then
     install_montero /mnt/rootfs "$SHIM_ARCH" /stage
 fi
 
+fi # modern rootfs installation
+
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
@@ -545,6 +580,7 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
+    -e LEGACY_ENGINE="$LEGACY_ENGINE" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-}" \
     -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
@@ -553,6 +589,7 @@ docker run --rm --privileged \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$STAGE_DIR:/stage:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
+    -v "$REPO_ROOT/scripts/vm:/vm:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh
 

@@ -139,6 +139,18 @@ if [ -n "${SD_IMG:-}" ]; then
     SD_ARGS="-drive if=none,file=$SD_IMG,format=raw,id=sd -device virtio-blk-device,drive=sd"
 fi
 
+# Qt VNC in the legacy firmware is separate from QEMU's console framebuffer.
+# Use the same NIC and per-instance port allocation as SSH, bound to localhost.
+NETDEV="user,id=net0,hostfwd=tcp::${SSH_PORT}-:22"
+if [ -n "${ENGINE_VNC_PORT:-}" ]; then
+    case "$ENGINE_VNC_PORT" in
+        *[!0-9]*|'') echo "ERROR: ENGINE_VNC_PORT must be a TCP port." >&2; exit 1 ;;
+    esac
+    [ "$ENGINE_VNC_PORT" -ge 1 ] && [ "$ENGINE_VNC_PORT" -le 65535 ] || {
+        echo "ERROR: ENGINE_VNC_PORT must be between 1 and 65535." >&2; exit 1; }
+    NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:${ENGINE_VNC_PORT}-:5900"
+fi
+
 # Only the engine family gets a card; MPC and the drum module never had one.
 AUDIO_ARGS=""
 if [ "$DEVICE" = engine ]; then
@@ -160,7 +172,7 @@ exec "$QEMU_BIN" \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
   $SD_ARGS \
-  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
+  -netdev "$NETDEV" -device "$NET_DEV",netdev=net0 \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \
   $QEMU_EXTRA_ARGS \

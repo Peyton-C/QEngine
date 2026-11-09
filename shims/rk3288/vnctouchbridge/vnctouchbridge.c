@@ -376,12 +376,22 @@ int main(int argc, char **argv) {
         ra->from_fd = upstream_fd;
         ra->to_fd = client_fd;
         pthread_t tid;
-        pthread_create(&tid, NULL, relay_thread, ra);
-        pthread_detach(tid);
+        if (pthread_create(&tid, NULL, relay_thread, ra) != 0) {
+            free(ra);
+            close(client_fd);
+            close(upstream_fd);
+            continue;
+        }
 
         run_message_loop(client_fd, upstream_fd);
 
         fprintf(stderr, "client disconnected\n");
+        /* Wake and join the relay before accept() can reuse these descriptors.
+         * Detached relays intermittently consumed the next client's handshake
+         * during the SC5000 1.2.0 VNC tests. */
+        shutdown(upstream_fd, SHUT_RDWR);
+        shutdown(client_fd, SHUT_RDWR);
+        pthread_join(tid, NULL);
         close(client_fd);
         close(upstream_fd);
     }

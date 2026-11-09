@@ -712,6 +712,9 @@ int open(const char *path, int flags, ...) {
         return blob;
     }
     const char *mapped = remap(path);
+    /* A character device has no file-size limit. Its sparse stand-in does:
+     * SC5000 1.2.0 uses open(), which rejects a >2GiB regular file without this. */
+    if (path && strcmp(path, "/dev/mem") == 0) flags |= O_LARGEFILE;
     int fd = get_real_open()(mapped, flags, mode);
     if (is_dt_path(path)) log_dt_access("open", path, mapped, fd >= 0, errno);
     return fd;

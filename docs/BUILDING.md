@@ -69,6 +69,21 @@ cleanly against Engine OS's userland, while still containing a working Mesa
 (20.3.5) with a virtio-gpu DRI driver — the reason it's the default source for
 anything compiled or extracted for the guest.
 
+### Early Engine builds
+SC5000 firmware 1.2.0, 1.2.2 and 1.3.1 reach the UI under armhf QEMU as JP07 after manual preparation. The standard builder does not support their glibc 2.25 and Qt 5.9 stack. Use four virtual CPUs, Engine fails its CPU-affinity setup with two. Load the compatible devicetree and memory-mapping shim from an executable filesystem; `/run` is mounted `noexec`, so a preload stored there is ignored and Engine can fault while probing physical hardware.
+
+The bundled Qt VNC plugin uses RFB 3.3 and renders with `QT_QUICK_BACKEND=software`. Your VNC client must negotiate RichCursor encoding (`-239`), otherwise Qt can segfault when the last client disconnects. Preload `qmlrotate.so` and set `QMLROTATE=90`, as on HeadRush, to restore the full 1280x800 landscape UI. Build it against the guest's Qt 5.9 headers and runtime libraries. Audio uses loopback, underruns remain, and playback and control-surface input are unverified.
+
+Run `vnctouchbridge` before Engine and set `QT_QPA_GENERIC_PLUGINS=evdevtouch:/dev/input/eventN` to its virtual touchscreen. Point your VNC viewer at the bridge, which consumes pointer messages and emits touchscreen events. Single-touch taps work on all three builds; gestures and multitouch are untested.
+
+| Firmware | Executable | Result |
+| --- | --- | --- |
+| 1.2.0 | `/usr/JP07/JP07` | UI and touch taps work; pass `-card hw:Loopback,0` |
+| 1.2.2 | `/usr/Engine/JP07` | UI and touch taps work |
+| 1.3.1 | `/usr/Engine/JP07` | UI and touch taps work |
+
+SC5000 1.2.0, 1.2.2 and 1.3.1 include Utility, Preferences and Quick Preferences pages. `Ctrl+,` opens the tabbed settings menu in the tested 1.2.0 and 1.2.2 guests; the same shortcut is defined in 1.3.1, but was not verified there. Avoid `P`, which is also assigned to another action. Colored icons use `ShaderEffect`, which the software renderer cannot draw, even when the underlying image loads.
+
 ### Replacing the Mali GPU driver with Mesa
 Engine OS 4.3.4 and earlier on armv7, and HeadRush, get GL from a proprietary `libmali.so.14.0` that only drives a real Mali, and every Qt library names it directly. `build_armv7_engine_rootfs.sh` replaces it whenever `detect_mesa.sh` reports the `mali` layout, with no option to set.
 

@@ -23,7 +23,7 @@ Loads QML mods into Engine's UI, replacing its own files or adding new ones besi
 Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush Prime uses 8 out and 2 in; VX5 uses 2 out and 2 in.
 
 ## qmlrotate
-Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush uses it to turn Evil's UI, rotated for a sideways portrait panel, back to landscape.
+Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush and early SC5000 builds use it to turn their UI, rotated for a sideways portrait panel, back to landscape.
 
 ## quitshim
 Makes SIGTERM quit Engine cleanly, where Qt would exit on the spot. Used wherever Engine is stopped by a service manager: the VM builds, arm64 and armv7, and the Pi.

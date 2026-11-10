@@ -1,9 +1,10 @@
 # Sourced by the armv7 builder's privileged container, never run on its own.
 # shellcheck shell=bash
-# Product-named executables and glibc 2.25 predate the modern shim and EGLFS stack.
+# Product-named executables and glibc before 2.34 predate the modern shim and EGLFS stack.
 # Re-running this step replaces only QEngine's files and preserves the stock unit.
 install_legacy_engine() {
     local rootfs="${1:-/mnt/rootfs}" stage="${2:-/stage}" unit artifact rotation=90 extra_preload=""
+    local preload=/root/dtshim.so rotate_env=""
     if [ -x "$rootfs/usr/JP07/JP07" ]; then unit=jp07; else unit=engine; fi
     # SC5000 1.4.1 and 1.5.2/1.6.0 already render in landscape on Qt 5.12.
     if [ -f "$rootfs/usr/qt/lib/libQt5Core.so.5.12" ]; then rotation=0; fi
@@ -15,9 +16,17 @@ install_legacy_engine() {
     fi
     mkdir -p "$rootfs/root" "$rootfs/etc/qengine" \
         "$rootfs/etc/systemd/system/multi-user.target.wants"
-    for artifact in dtshim.so qmlrotate.so vnctouchbridge; do
+    for artifact in dtshim.so vnctouchbridge; do
         install -m 755 "$stage/legacy/$artifact" "$rootfs/root/$artifact"
     done
+    # Not built for Qt 5.15.2, which renders landscape; see build_legacy_engine_shims.sh.
+    if [ -f "$stage/legacy/qmlrotate.so" ]; then
+        install -m 755 "$stage/legacy/qmlrotate.so" "$rootfs/root/qmlrotate.so"
+        preload=$preload:/root/qmlrotate.so
+        rotate_env="Environment=QMLROTATE=$rotation"
+    else
+        rm -f "$rootfs/root/qmlrotate.so"
+    fi
     if [ -f "$stage/legacy/alsashim.so" ]; then
         install -m 755 "$stage/legacy/alsashim.so" "$rootfs/root/alsashim.so"
         extra_preload=:/root/alsashim.so
@@ -48,8 +57,8 @@ After=local-fs.target network.target dbus.service systemd-user-sessions.service
 [Service]
 Type=simple
 Environment=LD_LIBRARY_PATH=/usr/qt/lib:/usr/Engine:/usr/Engine/ffmpeg:/usr/JP07:/usr/JP07/ffmpeg
-Environment=LD_PRELOAD=/root/dtshim.so:/root/qmlrotate.so$extra_preload
-Environment=QMLROTATE=$rotation
+Environment=LD_PRELOAD=$preload$extra_preload
+$rotate_env
 ExecStart=/root/start_legacy_engine.sh
 StandardOutput=journal+console
 StandardError=journal+console

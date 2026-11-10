@@ -127,14 +127,20 @@ DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 LEGACY_ENGINE=0
 # 1.x names the application, or from 1.6.0 a symlink to /usr/Engine/Engine,
 # after the product: JP07 on SC5000, JC11 on Prime 4, NH08 on Mixstream Pro
-# 2.0.1. The name alone does not decide it; the Qt runtime does. Up to Qt 5.12
-# Engine needs this path; Qt 5.15.2 firmware (2.3.0 onward) takes the
-# EGLFS/Mesa path below, which also needs glibc 2.34 (2.4.0 onward).
+# 2.0.1. The name alone does not decide it, as Prime GO 2.4.0 to 4.0.0 still
+# ship a JP11 entry; glibc does. The EGLFS/Mesa path below builds its shims
+# and Mesa on bookworm, which binds dlsym and pthread_* to their GLIBC_2.34
+# versions, so it needs a guest with 2.34 or later (Prime GO 2.4.0 onward).
+# Anything older is built against its own libc here instead. That takes in
+# Mixstream Pro 2.3.x and SC LIVE 2 2.3.3, which pair Qt 5.15.2 with glibc
+# 2.32. glibc 2.34 also stopped shipping libc-2.NN.so, so the versioned file
+# alone marks an older libc. /usr/lib lists long enough that grep -q, quitting
+# at the first match, gets tr killed by SIGPIPE and pipefail fails the test.
 if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' || {
         "$DEBUGFS" -R 'ls /usr/Engine' "$OUT_PATH" 2>/dev/null |
             tr -s ' ' '\n' | grep -Eq '^[A-Z]{2}[0-9]{2}$' &&
-        "$DEBUGFS" -R 'ls /usr/qt/lib' "$OUT_PATH" 2>/dev/null |
-            tr -s ' ' '\n' | grep -Eq '^libQt5Core\.so\.5\.([0-9]|1[0-2])\.[0-9]+$'; }; then
+        "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
+            tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; }; then
     LEGACY_ENGINE=1
 fi
 if [ "$LEGACY_ENGINE" = 1 ]; then

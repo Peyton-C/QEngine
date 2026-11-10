@@ -70,7 +70,7 @@ cleanly against Engine OS's userland, while still containing a working Mesa
 anything compiled or extracted for the guest.
 
 ### Early Engine builds
-`new_instance.sh` recognises the product-named executables in early SC media player and Prime firmware, and in Mixstream Pro 2.0.1, which still runs Qt 5.12, and selects the legacy path in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, QEngine selects the device's landscape rotation, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
+`new_instance.sh` recognises the product-named executables in early SC media player and Prime firmware, and in Mixstream Pro 2.0.1 to 2.3.x, and selects the legacy path for any of them older than glibc 2.34 in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, QEngine selects the device's landscape rotation, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
 
 SC5000 1.0.x uses Qt 5.5.1, which has no VNC platform. `build_qt55_renderer.sh` builds a software scenegraph plugin against the firmware's headers and libraries and supplies the `customcontext` backend selected by Engine. `qt55vnc` exports the offscreen backing store, aligns the touchscreen geometry and supplies transparent raster placeholders for OpenGL texture IDs. Engine, `airQuick` and the Qt libraries stay unmodified; shader-drawn waveforms and effects are unavailable.
 

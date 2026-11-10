@@ -73,7 +73,7 @@ that readable. Run it by hand as `LD_PRELOAD=/root/dtshim.so az0x-info` to see w
 the application itself resolves.
 
 ## Engine OS Support Matrix
-|                         | Modern arm64 (4.4.0+) | Modern armv7 (5.0.0+) | Classic (2.3.0-4.3.4) | Legacy (1.0.0-2.2.2) |
+|                         | Modern arm64 (4.4.0+) | Modern armv7 (5.0.0+) | Classic (2.4.0-4.3.4) | Legacy (1.0.0-2.3.x) |
 |-------------------------|-----------------------|-----------------------|-----------------------|----------------------|
 | Engine                  | Y                     | Y                     | Y                     | Y                    |
 | SoundSwitch             | Y                     | ?                     | ?                     | ?                    |
@@ -84,8 +84,6 @@ the application itself resolves.
 | Audio Playback          | Y                     | N                     | ?                     | ?                    |
 | MIDI                    | Y                     | Y                     | ?                     | ?                    |
 | External Media (USB/SD) | Y                     | Y                     | ?                     | ?                    |
-
-Engine 2.3.0, despite being a Classic build doesn't boot. (glibc 2.34 is the current floor for Classic, while it has 2.32)
 
 ## Emulated Controllers
 
@@ -110,14 +108,14 @@ version was never released for the device.
 | Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
-| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –           | 2.0.1-2.2.2 | ?     | ?             | ?           |
+| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | ?           |
 | Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
 
 Prime 4 1.3.2 and 1.3.3 render, but the source browser stays open after the startup notice is dismissed. Version 1.4.1 accepted settings-menu touch navigation once; reopening settings after a cold boot remains unresolved. See [armv7 builds](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the legacy runtime's limits.
 
-Mixstream Pro 2.0.1 to 2.2.2 boot on the same legacy path as 1.x, since they still run Qt 5.12, and need no audio shim. From 2.3.0 Mixstream Pro runs Qt 5.15.2 on glibc 2.32, older than the 2.34 the Qt 5.15.2 path is built for, so 2.3.0 to 2.3.2 do not boot yet. The SC media players and Prime GO boot 1.5.2 and later with four-channel playback-only audio configured by QEngine; Prime 2 and Prime 4 start without it. Playback remains unverified. `!` marks Prime GO firmware booted as `JC11`, since as `JP11` its battery gate quits Engine shortly after startup. Prime GO 1.5.2 has the gate built into its own binary and quits even as `JC11`.
+Mixstream Pro 2.0.1 to 2.3.2 boot on the same legacy path as 1.x and need no audio shim. QEngine picks that path for any firmware older than glibc 2.34, so 2.3.x takes it despite running Qt 5.15.2, and renders in software rather than through virgl. The SC media players and Prime GO boot 1.5.2 and later with four-channel playback-only audio configured by QEngine; Prime 2 and Prime 4 start without it. Playback remains unverified. `!` marks Prime GO firmware booted as `JC11`, since as `JP11` its battery gate quits Engine shortly after startup. Prime GO 1.5.2 has the gate built into its own binary and quits even as `JC11`.
 
 ## Other inMusic devices
 

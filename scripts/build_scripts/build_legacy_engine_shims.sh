@@ -42,10 +42,18 @@ if "$DEBUGFS" -R 'ls /usr/Engine' "$IMG" 2>/dev/null |
     LEGACY_ALSA=1
     dump_library /usr/lib '^librt-[0-9.]+\.so$' "$STAGE/legacy/lib/librt.so"
 fi
+# Qt 5.15.2 images (Mixstream Pro 2.3.x, SC LIVE 2 2.3.3) render landscape, so
+# qmlrotate would rotate by nothing. They ship no Qt headers either, so skip it
+# rather than need a set of 5.15.2 headers for a no-op.
+QMLROTATE_BUILD=1
+if "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.15.2' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
+    QMLROTATE_BUILD=0
+fi
 "$DEBUGFS" -R "rdump /usr/qt/include $STAGE/legacy" "$IMG" >/dev/null 2>&1
 # Engine 1.5.2 and 1.6.0 omit their Qt 5.12.6 headers. SC5000 1.4.1's
 # Qt 5.12.4 headers work with these guest libraries; no host Qt is linked.
-if [ ! -s "$STAGE/legacy/include/QtCore/qglobal.h" ] && [ -n "${LEGACY_QT_HEADERS:-}" ]; then
+if [ "$QMLROTATE_BUILD" = 1 ] && [ ! -s "$STAGE/legacy/include/QtCore/qglobal.h" ] &&
+        [ -n "${LEGACY_QT_HEADERS:-}" ]; then
     header_version=$(sed -n 's/^#define QT_VERSION_STR "\([^"]*\)"/\1/p' "$LEGACY_QT_HEADERS/QtCore/qconfig.h")
     [ -n "$header_version" ] || { echo "ERROR: supplied Qt headers have no version." >&2; exit 1; }
     qt_minor=${header_version%.*}
@@ -54,12 +62,12 @@ if [ ! -s "$STAGE/legacy/include/QtCore/qglobal.h" ] && [ -n "${LEGACY_QT_HEADER
     mkdir -p "$STAGE/legacy/include"
     cp -R "$LEGACY_QT_HEADERS/." "$STAGE/legacy/include/"
 fi
-[ -s "$STAGE/legacy/include/QtCore/qglobal.h" ] || {
+[ "$QMLROTATE_BUILD" = 0 ] || [ -s "$STAGE/legacy/include/QtCore/qglobal.h" ] || {
     echo "ERROR: this legacy firmware has no Qt development headers." >&2; exit 1; }
 
 docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
-    -e LEGACY_ALSA="$LEGACY_ALSA" \
+    -e LEGACY_ALSA="$LEGACY_ALSA" -e QMLROTATE_BUILD="$QMLROTATE_BUILD" \
     -v "$REPO_ROOT/shims:/shims:ro" -v "$STAGE:/stage" debian:bookworm bash -c '
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
@@ -70,12 +78,14 @@ docker run --rm --platform linux/arm/v7 \
     gcc -shared -nostdlib -Wl,-z,defs -o /stage/legacy/dtshim.so \
         /stage/legacy/dtshim.o /stage/legacy/compat.o -lgcc \
         /stage/legacy/lib/libc.so /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so
+    if [ "$QMLROTATE_BUILD" = 1 ]; then
     g++ -fPIC -O2 -Wall -std=c++17 \
         -I/stage/legacy/include -I/stage/legacy/include/QtCore -I/stage/legacy/include/QtGui \
         -c /shims/qmlrotate/qmlrotate.cpp -o /stage/legacy/qmlrotate.o
     g++ -shared -nostdlib -Wl,-z,defs -o /stage/legacy/qmlrotate.so \
         /stage/legacy/qmlrotate.o /stage/legacy/qt/libQt5Gui.so /stage/legacy/qt/libQt5Core.so \
         /stage/legacy/lib/libstdc++.so /stage/legacy/lib/libc.so -lgcc
+    fi
     # This helper does not link Qt or ALSA. Static linkage keeps the host
     # toolchain runtime out of a guest with glibc 2.25.
     gcc -static -O2 -Wall -pthread -o /stage/legacy/vnctouchbridge \

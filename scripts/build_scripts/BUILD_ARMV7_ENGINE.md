@@ -18,7 +18,7 @@ For current firmware, use the same commands with its image and instance name. Ea
 | `--size BYTES` | Changes the rootfs size from its 4 GiB default |
 
 ## Legacy firmware
-QEngine recognises `/usr/JP07/JP07`, or a product-named application under `/usr/Engine`, such as `JP07`, `JC16` or `NH08`, on Qt 5.12 or earlier, and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. It installs a static VNC-to-touch bridge, selects software rendering, selects the device's landscape rotation and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
+QEngine recognises `/usr/JP07/JP07`, or a product-named application under `/usr/Engine`, such as `JP07`, `JC16` or `NH08`, on glibc older than 2.34, and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. Qt 5.15.2 firmware renders landscape and gets no `qmlrotate`, so it needs no headers. It installs a static VNC-to-touch bridge, selects software rendering, selects the device's landscape rotation and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
 
 SC5000 1.0.x keeps its native Qt 5.5.1 runtime. QEngine builds a matching raster scenegraph plugin and adds `qt55vnc` to serve its offscreen display. OpenGL textures receive transparent raster placeholders, so shader-drawn waveforms and effects are unavailable. The first build downloads the pinned Qt sources; later builds reuse the matching artifacts.
 
@@ -36,7 +36,7 @@ Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`
 | SC6000 1.5.2, 1.5.3, 1.6.2 | JP13 | `/usr/Engine/JP13` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.6.2 boot stalled before the UI appeared |
 | SC6000M 1.5.2, 1.6.0 | JP14 | `/usr/Engine/JP14` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.5.2 boot stalled before the UI appeared |
 | Prime 2 1.5.2, 1.6.2 | JC16 | `/usr/Engine/JC16` | Landscape UI; startup notice dismissed and Source closed with single taps |
-| Mixstream Pro 2.0.1, 2.1.0-2.1.2, 2.2.0-2.2.2 | NH08 | `/usr/Engine/NH08` | Landscape UI with demo library; update notice dismissed with single taps after cold boot |
+| Mixstream Pro 2.0.1, 2.1.0-2.1.2, 2.2.0-2.2.2, 2.3.0-2.3.2 | NH08 | `/usr/Engine/NH08` | Landscape UI with demo library; update notice dismissed with single taps after cold boot |
 | Prime GO 1.5.2 | JC11 | `/usr/Engine/JP11` | Renders the startup notice, then quits on its battery check about 10 seconds later |
 | Prime GO 1.6.2 | JC11 | `/usr/Engine/JP11` | Landscape UI as Prime 4; startup notice dismissed and Source closed with single taps |
 | Prime 4 1.3.2, 1.3.3 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup-notice touch verified, source browser stays open |
@@ -68,7 +68,7 @@ QEngine builds `alsashim` against the guest libraries for the Qt 5.12.6 runtime 
 Colored icons use shaders that the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. Dismiss missing-controller notices with Ignore; tap the hardware warning to continue on 1.0.1. This path does not provide a virtual control surface. Other products and firmware versions on this path are untried. `Ctrl+,` opens the settings menu in the tested 1.2.0 and 1.2.2 guests; its binding exists but was not verified on 1.3.1.
 
 ## Later firmware
-Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEngine replaces the Mali stack on Qt 5.15.2 firmware and adds the matching virgl driver on firmware that already ships Mesa. The shims and Mesa it installs need glibc 2.34 or later. Mixstream Pro 2.3.0 to 2.3.2 pair Qt 5.15.2 with glibc 2.32, so `touchbridge` cannot load and Engine never starts. Use `--no-gl` to rasterize on the guest CPU. HeadRush uses this builder too; see [BUILD_HEADRUSH.md](BUILD_HEADRUSH.md).
+Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEngine replaces the Mali stack on Qt 5.15.2 firmware and adds the matching virgl driver on firmware that already ships Mesa. The shims and Mesa it installs are built on bookworm and need glibc 2.34 or later, so Mixstream Pro 2.3.x and SC LIVE 2 2.3.3, which pair Qt 5.15.2 with glibc 2.32, take the legacy path instead. Use `--no-gl` to rasterize on the guest CPU. HeadRush uses this builder too; see [BUILD_HEADRUSH.md](BUILD_HEADRUSH.md).
 
 QEngine installs `touchbridge`, `midisurface`, the devicetree shim and the application override. The data disk uses the single `az01-internal` partition, the same layout as Gen 1 MPC. Direct use of `build_armv7_engine_rootfs.sh` defaults to the shared `build/rootfs_out.img`; use instances to keep devices apart.
 

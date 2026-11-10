@@ -27,15 +27,17 @@ dump_library /usr/lib '^libstdc\+\+\.so\.6\.[0-9.]+$' "$STAGE/legacy/lib/libstdc
 for lib in Core Gui; do
     dump_library /usr/qt/lib "^libQt5$lib\\.so\\.5\\.[0-9.]+$" "$STAGE/legacy/qt/libQt5$lib.so"
 done
-# The SC media players, SC5000, SC5000M, SC6000 and SC6000M, switched to the
-# ALSA device manager in 1.5.2/1.6.x. Their loopback capture stream and exact
+# The JP products, SC5000, SC5000M, SC6000, SC6000M and Prime GO, switched to
+# the ALSA device manager in 1.5.2. Their loopback capture stream and exact
 # hardware-rate requests need the normal ALSA shim, linked to this guest's
 # older libc rather than the modern builder's ABI; without it 1.6.x aborts on
-# snd_pcm_state. Prime 2 and Prime 4 1.6.x run the same Engine binary but open
-# their audio differently and start without it.
+# snd_pcm_state and Prime GO 1.5.2 on a double free. Prime 2 and Prime 4 (JC)
+# start without it on 1.5.2 and on the 1.6.x binary every product shares.
+# Prime GO 1.6.x is built as JC11 but still ships a JP11 symlink, and starts
+# with the shim as well.
 LEGACY_ALSA=0
 if "$DEBUGFS" -R 'ls /usr/Engine' "$IMG" 2>/dev/null |
-        tr -s ' ' '\n' | grep -Eq '^JP(07|08|13|14)$' &&
+        tr -s ' ' '\n' | grep -Eq '^JP(07|08|11|13|14)$' &&
         "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.12.6' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
     LEGACY_ALSA=1
     dump_library /usr/lib '^librt-[0-9.]+\.so$' "$STAGE/legacy/lib/librt.so"

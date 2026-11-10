@@ -73,18 +73,19 @@ that readable. Run it by hand as `LD_PRELOAD=/root/dtshim.so az0x-info` to see w
 the application itself resolves.
 
 ## Engine OS Support Matrix
-|                         | 4.4.0+ (arm64) | 5.0.0+ (armv7) | 4.3.0 |
-|-------------------------|----------------|----------------|-------|
-| Rootfs Extraction       | Y              | Y              | Y     |
-| Engine                  | Y              | Y              | Y     |
-| SoundSwitch             | Y              | ?              | N     |
-| Display                 | Y              | Y              | Y     |
-| Virgl                   | Y              | Y              | Y     |
-| Fake Touch              | Y              | Y              | Y     |
-| Keyboard Navigation     | Y              | ?              | Y     |
-| Audio Playback          | Y              | N              | N     |
-| MIDI                    | Y              | Y              | N     |
-| External Media (USB/SD) | Y              | Y              | N     |
+|                         | Modern arm64 (4.4.0+) | Modern armv7 (5.0.0+) | Classic (2.3.0-4.3.4) | Legacy (1.0.0-2.2.2) |
+|-------------------------|-----------------------|-----------------------|-----------------------|----------------------|
+| Engine                  | Y                     | Y                     | Y                     | Y                    |
+| SoundSwitch             | Y                     | ?                     | ?                     | ?                    |
+| Display                 | Y                     | Y                     | Y                     | Y                    |
+| Virgl                   | Y                     | Y                     | Y                     | N                    |
+| Fake Touch              | Y                     | Y                     | Y                     | Y                    |
+| Keyboard Navigation     | Y                     | ?                     | ?                     | ?                    |
+| Audio Playback          | Y                     | N                     | ?                     | ?                    |
+| MIDI                    | Y                     | Y                     | ?                     | ?                    |
+| External Media (USB/SD) | Y                     | Y                     | ?                     | ?                    |
+
+Engine 2.3.0, despite being a Classic build doesn't boot. (glibc 2.34 is the current floor for Classic, while it has 2.32)
 
 ## Emulated Controllers
 
@@ -97,26 +98,26 @@ version was never released for the device.
 
 |                         | Code  | SOC    | Signed FW | Arch  | 1.x         | 2.x   | 3.x   | 4.x           | 5.x         |
 |-------------------------|-------|--------|-----------|-------|-------------|-------|-------|---------------|-------------|
-| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.6.2       | ?     | ?     | ?             | ?           |
+| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.5.2, 1.6.2 | ?     | ?     | ?             | ?           |
 | Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | 1.3.2-1.4.1, 1.5.2-1.6.2 | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | ?           |
 | Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | -             | 5.1.0-5.3.0 |
 | Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | 1.6.2 !     | ?     | ?     | 4.3.0 !       | ?           |
 | Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | ?             | ?           |
 | Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.0.1-1.3.1, 1.4.1-1.6.2 | ?     | ?     | ?             | 5.0.4-5.3.0 |
-| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | 1.6.0       | ?     | ?     | ?             | ?           |
-| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | 1.6.2       | ?     | ?     | ?             | ?           |
-| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.6.0       | ?     | ?     | ?             | ?           |
+| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | 1.3.1-1.6.0 | ?     | ?     | ?             | ?           |
+| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | 1.5.2, 1.5.3, 1.6.2 | ?     | ?     | ?             | ?           |
+| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
-| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
+| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –           | 2.0.1-2.2.2 | ?     | ?             | ?           |
 | Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
 
 Prime 4 1.3.2 and 1.3.3 render, but the source browser stays open after the startup notice is dismissed. Version 1.4.1 accepted settings-menu touch navigation once; reopening settings after a cold boot remains unresolved. See [armv7 builds](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the legacy runtime's limits.
 
-The SC media players boot 1.5.2 and later with four-channel playback-only audio configured by QEngine; Prime 2 and Prime 4 start without it. Playback remains unverified. `!` marks Prime GO firmware booted as `JC11`, since as `JP11` its battery gate quits Engine shortly after startup.
+Mixstream Pro 2.0.1 to 2.2.2 boot on the same legacy path as 1.x, since they still run Qt 5.12, and need no audio shim. From 2.3.0 Mixstream Pro runs Qt 5.15.2 on glibc 2.32, older than the 2.34 the Qt 5.15.2 path is built for, so 2.3.0 to 2.3.2 do not boot yet. The SC media players and Prime GO boot 1.5.2 and later with four-channel playback-only audio configured by QEngine; Prime 2 and Prime 4 start without it. Playback remains unverified. `!` marks Prime GO firmware booted as `JC11`, since as `JP11` its battery gate quits Engine shortly after startup. Prime GO 1.5.2 has the gate built into its own binary and quits even as `JC11`.
 
 ## Other inMusic devices
 

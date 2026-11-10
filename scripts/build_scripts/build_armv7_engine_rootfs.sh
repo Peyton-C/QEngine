@@ -126,11 +126,15 @@ extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 LEGACY_ENGINE=0
 # 1.x names the application, or from 1.6.0 a symlink to /usr/Engine/Engine,
-# after the product: JP07 on SC5000, JP08 on SC5000M, JC11 on Prime 4. Later
-# firmware ships only /usr/Engine/Engine.
-if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+# after the product: JP07 on SC5000, JC11 on Prime 4, NH08 on Mixstream Pro
+# 2.0.1. The name alone does not decide it; the Qt runtime does. Up to Qt 5.12
+# Engine needs this path; Qt 5.15.2 firmware (2.3.0 onward) takes the
+# EGLFS/Mesa path below, which also needs glibc 2.34 (2.4.0 onward).
+if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' || {
         "$DEBUGFS" -R 'ls /usr/Engine' "$OUT_PATH" 2>/dev/null |
-        tr -s ' ' '\n' | grep -Eq '^J[CP][0-9]+$'; then
+            tr -s ' ' '\n' | grep -Eq '^[A-Z]{2}[0-9]{2}$' &&
+        "$DEBUGFS" -R 'ls /usr/qt/lib' "$OUT_PATH" 2>/dev/null |
+            tr -s ' ' '\n' | grep -Eq '^libQt5Core\.so\.5\.([0-9]|1[0-2])\.[0-9]+$'; }; then
     LEGACY_ENGINE=1
 fi
 if [ "$LEGACY_ENGINE" = 1 ]; then
@@ -374,7 +378,7 @@ fi
 if [ -d /mnt/rootfs/usr/Engine ]; then
     APP_UNIT=engine.service; DEFAULT_CODE=JP07
     if [ "$LEGACY_ENGINE" = 1 ]; then
-        DEFAULT_CODE="$(find /mnt/rootfs/usr/Engine -maxdepth 1 -name 'J[CP][0-9]*' \
+        DEFAULT_CODE="$(find /mnt/rootfs/usr/Engine -maxdepth 1 -name '[A-Z][A-Z][0-9][0-9]' \
             -printf '%f\n' | sort | sed -n 1p)"
         DEFAULT_CODE="${DEFAULT_CODE:-JP07}"
     fi

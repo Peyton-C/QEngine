@@ -2,7 +2,7 @@
 Shims used to allow running unmodified Engine in QEMU
 
 ## alsashim
-Allows Engine to use emulated sound cards. The SC media players on 1.5.2 and later use a guest-linked build for PCM conversion and four-channel playback-only audio.
+Allows Engine to use emulated sound cards. The SC media players and Prime GO on 1.5.2 and later use a guest-linked build for PCM conversion and four-channel playback-only audio.
 
 ## cursorshim
 Allows for a regular cursor to be displayed in Engine.

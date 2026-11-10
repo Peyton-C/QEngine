@@ -54,3 +54,14 @@ docker run --rm --platform linux/arm/v7 \
     gcc -static -O2 -Wall -pthread -o /stage/legacy/vnctouchbridge \
         /shims/rk3288/vnctouchbridge/vnctouchbridge.c
     '
+
+# SC5000 1.0.x predates Qt's VNC platform and integrated software renderer.
+# Keep its private Qt/airQuick ABI intact and add a matching raster plugin.
+if "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.5.1' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
+    for lib in Quick Qml; do
+        dump_library /usr/qt/lib "^libQt5$lib\\.so\\.5\\.5\\.1$" "$STAGE/legacy/qt/libQt5$lib.so"
+    done
+    dump_library /usr/lib '^libm-[0-9.]+\.so$' "$STAGE/legacy/lib/libm.so"
+    dump_library /usr/lib '^libgcc_s\.so\.1$' "$STAGE/legacy/lib/libgcc_s.so"
+    "$SCRIPT_DIR/build_qt55_renderer.sh" "$STAGE"
+fi

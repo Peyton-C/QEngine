@@ -313,7 +313,9 @@ fi # modern shim and graphics stack
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
 
-INNER_SCRIPT="$(mktemp /tmp/build-armv7-engine-rootfs-inner.XXXXXX.sh)"
+# BSD mktemp needs the Xs at the end; a suffix makes concurrent macOS builds
+# compete for a literal filename instead of getting independent scripts.
+INNER_SCRIPT="$(mktemp /tmp/build-armv7-engine-rootfs-inner.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'

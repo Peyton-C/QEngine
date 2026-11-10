@@ -103,7 +103,7 @@ version was never released for the device.
 | Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | -             | 5.1.0-5.3.0 |
 | Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | ?           | ?     | ?     | 4.3.0 !       | ?           |
 | Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | ?             | ?           |
-| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.2.0-1.3.1 | ?     | ?     | ?             | 5.0.4-5.3.0 |
+| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.0.1 -1.3.1 | ?     | ?     | ?             | 5.0.4-5.3.0 |
 | Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | ?           | ?     | ?     | ?             | ?           |
 | Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | ?           | ?     | ?     | ?             | ?           |
 | Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | ?           | ?     | ?     | ?             | ?           |
@@ -201,7 +201,7 @@ HeadRush Prime and the older models run the `Evil` application. VX5 runs a separ
 the shared HeadRush application rather than its own codebase, which is why one
 firmware lineage covers both the pedal-style units and the Looperboard.
 
-| Denon DJ Prime 4 | RANE SYSTEM ONE |
-|------------------|-----------------|
-| ![Emulated Prime 4, Engine OS 4.3.0 About Screen](images/DENON_DJ_PRIME_4_ABOUT_430.jpg) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 About Screen](images/RANE_SYSTEM_ONE_ABOUT_460.png) |
-| ![Emulated Prime 4, Engine OS 4.3.0 Playlist Screen](images/DENON_DJ_PRIME_4_PLAYLISTS_430.png) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 Playlist Screen](images/RANE_SYSTEM_ONE_PLAYLISTS_460.png) |
+| Denon DJ Prime 4 | RANE SYSTEM ONE | Denon DJ SC5000 Prime |
+|------------------|-----------------|-----------------------|
+| ![Emulated Prime 4, Engine OS 4.3.0 About Screen](images/DENON_DJ_PRIME_4_ABOUT_430.jpg) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 About Screen](images/RANE_SYSTEM_ONE_ABOUT_460.png) | ![Emulated SC5000, Engine Prime 1.0.1 About Screen](images/DENON_DJ_SC5000_ABOUT_101.png) |
+| ![Emulated Prime 4, Engine OS 4.3.0 Library Screen](images/DENON_DJ_PRIME_4_PLAYLISTS_430.png) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 Library Screen](images/RANE_SYSTEM_ONE_PLAYLISTS_460.png) | ![Emulated SC5000, Engine Prime 1.0.1 Library Screen](images/DENON_DJ_SC5000_PLAY_101.png)|

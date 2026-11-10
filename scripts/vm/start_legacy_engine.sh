@@ -24,9 +24,15 @@ while [ "$count" -lt 50 ]; do
 done
 [ -n "$touch_dev" ] || { echo "QEngine: no VNC touchscreen appeared" >&2; exit 1; }
 echo "QEngine touch input: $touch_dev"
-export QT_QPA_PLATFORM=vnc:size=1280x800:port=5901
+if [ -f /etc/qengine/qt55-offscreen ]; then
+    export QT_QPA_PLATFORM=offscreen
+    export QMLSCENE_DEVICE=customcontext
+    export QSG_RENDER_LOOP=basic
+else
+    export QT_QPA_PLATFORM=vnc:size=1280x800:port=5901
+    export QT_QUICK_BACKEND=software
+fi
 export QT_QPA_GENERIC_PLUGINS="evdevtouch:$touch_dev"
-export QT_QUICK_BACKEND=software
 if [ -x /usr/JP07/JP07 ]; then
     /usr/JP07/JP07 -d0 -card hw:Loopback,0 &
 elif [ -x /usr/Engine/JC11 ]; then

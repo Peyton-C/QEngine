@@ -25,6 +25,9 @@ Gives the kernel's loopback sound card the channel counts of the card it stands 
 ## qmlrotate
 Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush and early SC5000 builds use it to turn their UI, rotated for a sideways portrait panel, back to landscape.
 
+## qt55vnc
+Serves the native Qt 5.5 offscreen display over VNC and supplies raster placeholders for OpenGL textures on SC5000 1.0.x. See [qt55vnc](rk3288/qt55vnc/README.md).
+
 ## quitshim
 Makes SIGTERM quit Engine cleanly, where Qt would exit on the spot. Used wherever Engine is stopped by a service manager: the VM builds, arm64 and armv7, and the Pi.
 

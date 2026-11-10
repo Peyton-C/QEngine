@@ -72,8 +72,11 @@ anything compiled or extracted for the guest.
 ### Early Engine builds
 `new_instance.sh` recognises the product-named executables in early SC5000 and Prime 4 firmware and selects the legacy path in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, QEngine selects the device's landscape rotation, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
 
+SC5000 1.0.x uses Qt 5.5.1, which has no VNC platform. `build_qt55_renderer.sh` builds a software scenegraph plugin against the firmware's headers and libraries and supplies the `customcontext` backend selected by Engine. `qt55vnc` exports the offscreen backing store, aligns the touchscreen geometry and supplies transparent raster placeholders for OpenGL texture IDs. Engine, `airQuick` and the Qt libraries stay unmodified; shader-drawn waveforms and effects are unavailable.
+
 | Firmware | Executable | Result as JP07, armhf |
 | --- | --- | --- |
+| 1.0.1, 1.0.2, 1.0.3 | `/usr/JP07/JP07` | Landscape UI and startup-notice taps after cold boot; raster placeholders for GL textures |
 | 1.2.0 | `/usr/JP07/JP07` | Landscape UI and touch taps; uses `-card hw:Loopback,0` |
 | 1.2.2 | `/usr/Engine/JP07` | Landscape UI and touch taps |
 | 1.3.1 | `/usr/Engine/JP07` | Landscape UI and touch taps |

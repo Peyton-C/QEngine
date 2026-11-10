@@ -3,7 +3,7 @@
 # Product-named executables and glibc 2.25 predate the modern shim and EGLFS stack.
 # Re-running this step replaces only QEngine's files and preserves the stock unit.
 install_legacy_engine() {
-    local rootfs="${1:-/mnt/rootfs}" stage="${2:-/stage}" unit artifact rotation=90
+    local rootfs="${1:-/mnt/rootfs}" stage="${2:-/stage}" unit artifact rotation=90 extra_preload=""
     if [ -x "$rootfs/usr/JP07/JP07" ]; then unit=jp07; else unit=engine; fi
     if [ -x "$rootfs/usr/Engine/JC11" ]; then
         # Prime 4 1.3.2/1.3.3 rotate the Qt 5.9 UI opposite to SC5000.
@@ -16,6 +16,19 @@ install_legacy_engine() {
     for artifact in dtshim.so qmlrotate.so vnctouchbridge; do
         install -m 755 "$stage/legacy/$artifact" "$rootfs/root/$artifact"
     done
+    if [ -f "$rootfs/usr/qt/lib/libQt5Core.so.5.5.1" ]; then
+        # Engine 1.0.x selects customcontext itself. Preserve the vendor plugin
+        # outside Qt's search directory and serve that name with the raster one.
+        local scenegraph="$rootfs/usr/qt/plugins/scenegraph"
+        mkdir -p "$scenegraph/vendor"
+        if [ ! -e "$scenegraph/vendor/libcustomcontext.so" ]; then
+            mv "$scenegraph/libcustomcontext.so" "$scenegraph/vendor/"
+        fi
+        install -m 755 "$stage/legacy/libsoftwarecontext.so" "$scenegraph/libcustomcontext.so"
+        install -m 755 "$stage/legacy/qt55vnc.so" "$rootfs/root/qt55vnc.so"
+        touch "$rootfs/etc/qengine/qt55-offscreen"
+        extra_preload=:/root/qt55vnc.so
+    fi
     install -m 755 /vm/start_legacy_engine.sh "$rootfs/root/start_legacy_engine.sh"
     if [ -f "$rootfs/etc/systemd/system/$unit.service" ] &&
             [ ! -e "$rootfs/etc/systemd/system/$unit.service.stock" ]; then
@@ -29,7 +42,7 @@ After=local-fs.target network.target dbus.service systemd-user-sessions.service
 [Service]
 Type=simple
 Environment=LD_LIBRARY_PATH=/usr/qt/lib:/usr/Engine:/usr/Engine/ffmpeg:/usr/JP07:/usr/JP07/ffmpeg
-Environment=LD_PRELOAD=/root/dtshim.so:/root/qmlrotate.so
+Environment=LD_PRELOAD=/root/dtshim.so:/root/qmlrotate.so$extra_preload
 Environment=QMLROTATE=$rotation
 ExecStart=/root/start_legacy_engine.sh
 StandardOutput=journal+console

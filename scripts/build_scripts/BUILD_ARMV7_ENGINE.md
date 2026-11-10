@@ -3,9 +3,9 @@ QEngine builds RK3288 Engine OS firmware for QEMU. Install Docker, QEMU, Python 
 
 ## Build
 ```sh
-scripts/build_scripts/new_instance.sh --name sc5000-1.2.0 \
-    --product-code JP07 --firmware SC5000Prime1.2.0Updater-Mac.zip
-scripts/qemu/run_instance.sh --name sc5000-1.2.0
+scripts/build_scripts/new_instance.sh --name sc5000-1.0.1 \
+    --product-code JP07 --firmware SC5000-Prime-FW-Updater-1.0.1-Mac.zip
+scripts/qemu/run_instance.sh --name sc5000-1.0.1
 ```
 
 For current firmware, use the same commands with its image and instance name. Each instance owns its rootfs, data disk and host ports. QEngine shares the armhf kernel between instances and builds it on demand.
@@ -20,10 +20,13 @@ For current firmware, use the same commands with its image and instance name. Ea
 ## Legacy firmware
 QEngine recognises `/usr/JP07/JP07`, `/usr/Engine/JP07` and `/usr/Engine/JC11` and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. It installs a static VNC-to-touch bridge, selects software rendering, selects the device's landscape rotation and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
 
-Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`. The separate QEMU VNC address shows the guest console. Use a viewer that negotiates RichCursor; Qt 5.9 can crash when a client without cursor support disconnects.
+SC5000 1.0.x keeps its native Qt 5.5.1 runtime. QEngine builds a matching raster scenegraph plugin and adds `qt55vnc` to serve its offscreen display. OpenGL textures receive transparent raster placeholders, so shader-drawn waveforms and effects are unavailable. The first build downloads the pinned Qt sources; later builds reuse the matching artifacts.
+
+Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`. The separate QEMU VNC address shows the guest console. A Qt 5.5 startup dialog can appear blank until a tap redraws it. Use a viewer that negotiates RichCursor; Qt 5.9 can crash when a client without cursor support disconnects.
 
 | Firmware | Product code | Application | Display and input |
 | --- | --- | --- | --- |
+| SC5000 1.0.1, 1.0.2, 1.0.3 | JP07 | `/usr/JP07/JP07` | Landscape UI and startup-notice taps after cold boot |
 | SC5000 1.2.0 | JP07 | `/usr/JP07/JP07` | Landscape UI and touch taps |
 | SC5000 1.2.2 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
 | SC5000 1.3.1 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
@@ -38,7 +41,7 @@ Use `--product-code JC11` for Prime 4. Its Qt 5.9 runtime needs a 270-degree cor
 | `SMP` | `4`, required by Engine's CPU-affinity setup |
 | `DISPLAY_MODE` | `vnc`, for the guest console |
 
-Colored icons use shaders that the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. Dismiss missing-controller notices with Ignore; this path does not provide a virtual control surface. Other products and firmware versions on this path are untried. `Ctrl+,` opens the settings menu in the tested 1.2.0 and 1.2.2 guests; its binding exists but was not verified on 1.3.1.
+Colored icons use shaders that the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. Dismiss missing-controller notices with Ignore; tap the hardware warning to continue on 1.0.1. This path does not provide a virtual control surface. Other products and firmware versions on this path are untried. `Ctrl+,` opens the settings menu in the tested 1.2.0 and 1.2.2 guests; its binding exists but was not verified on 1.3.1.
 
 ## Later firmware
 Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEngine replaces the Mali stack on Qt 5.15.2 firmware and adds the matching virgl driver on firmware that already ships Mesa. Use `--no-gl` to rasterize on the guest CPU. HeadRush uses this builder too; see [BUILD_HEADRUSH.md](BUILD_HEADRUSH.md).

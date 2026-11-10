@@ -27,12 +27,33 @@ dump_library /usr/lib '^libstdc\+\+\.so\.6\.[0-9.]+$' "$STAGE/legacy/lib/libstdc
 for lib in Core Gui; do
     dump_library /usr/qt/lib "^libQt5$lib\\.so\\.5\\.[0-9.]+$" "$STAGE/legacy/qt/libQt5$lib.so"
 done
+# SC5000 1.5.2/1.6.0 switched to the ALSA device manager. Its loopback
+# capture stream and exact hardware-rate requests need the normal ALSA shim,
+# linked to this guest's older libc rather than the modern builder's ABI.
+LEGACY_ALSA=0
+if "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$IMG" 2>/dev/null | grep -q 'Inode:' &&
+        "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.12.6' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
+    LEGACY_ALSA=1
+    dump_library /usr/lib '^librt-[0-9.]+\.so$' "$STAGE/legacy/lib/librt.so"
+fi
 "$DEBUGFS" -R "rdump /usr/qt/include $STAGE/legacy" "$IMG" >/dev/null 2>&1
+# Engine 1.5.2 and 1.6.0 omit their Qt 5.12.6 headers. SC5000 1.4.1's
+# Qt 5.12.4 headers work with these guest libraries; no host Qt is linked.
+if [ ! -s "$STAGE/legacy/include/QtCore/qglobal.h" ] && [ -n "${LEGACY_QT_HEADERS:-}" ]; then
+    header_version=$(sed -n 's/^#define QT_VERSION_STR "\([^"]*\)"/\1/p' "$LEGACY_QT_HEADERS/QtCore/qconfig.h")
+    [ -n "$header_version" ] || { echo "ERROR: supplied Qt headers have no version." >&2; exit 1; }
+    qt_minor=${header_version%.*}
+    "$DEBUGFS" -R "stat /usr/qt/lib/libQt5Core.so.$qt_minor" "$IMG" 2>/dev/null | grep -q 'Inode:' || {
+        echo "ERROR: supplied Qt $header_version headers do not match the guest Qt minor version." >&2; exit 1; }
+    mkdir -p "$STAGE/legacy/include"
+    cp -R "$LEGACY_QT_HEADERS/." "$STAGE/legacy/include/"
+fi
 [ -s "$STAGE/legacy/include/QtCore/qglobal.h" ] || {
     echo "ERROR: this legacy firmware has no Qt development headers." >&2; exit 1; }
 
 docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
 docker run --rm --platform linux/arm/v7 \
+    -e LEGACY_ALSA="$LEGACY_ALSA" \
     -v "$REPO_ROOT/shims:/shims:ro" -v "$STAGE:/stage" debian:bookworm bash -c '
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
@@ -53,6 +74,13 @@ docker run --rm --platform linux/arm/v7 \
     # toolchain runtime out of a guest with glibc 2.25.
     gcc -static -O2 -Wall -pthread -o /stage/legacy/vnctouchbridge \
         /shims/rk3288/vnctouchbridge/vnctouchbridge.c
+    if [ "$LEGACY_ALSA" = 1 ]; then
+        gcc -fPIC -O2 -Wall -c /shims/alsashim/alsashim.c -o /stage/legacy/alsashim.o
+        gcc -shared -nostdlib -Wl,-z,defs -o /stage/legacy/alsashim.so \
+            /stage/legacy/alsashim.o /stage/legacy/lib/libc.so \
+            /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so \
+            /stage/legacy/lib/librt.so -lgcc
+    fi
     '
 
 # SC5000 1.0.x predates Qt's VNC platform and integrated software renderer.

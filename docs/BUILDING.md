@@ -80,14 +80,20 @@ SC5000 1.0.x uses Qt 5.5.1, which has no VNC platform. `build_qt55_renderer.sh` 
 | 1.2.0 | `/usr/JP07/JP07` | Landscape UI and touch taps; uses `-card hw:Loopback,0` |
 | 1.2.2 | `/usr/Engine/JP07` | Landscape UI and touch taps |
 | 1.3.1 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| 1.4.1 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| 1.5.2, 1.6.0 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
 
 Connect to the `Engine VNC` port printed by `run_instance.sh`, recorded as `ENGINE_VNC_PORT` in `instance.env`. QEMU's VNC port shows the console. The bridge emits touchscreen events for Qt's `evdevtouch` plugin. Your viewer must negotiate RichCursor, otherwise Qt 5.9 can fault when its last client disconnects. Preloads live under `/root`; `/run` is mounted `noexec`.
 
-Colored icons use `ShaderEffect`, which the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. This path keeps the vendor Mali libraries, skips the modern ALSA/MIDI/EGLFS preloads and does not pass `-skipFirmwareUpdate`, which 1.x lacks. MONTERO requires Qt 6. See [BUILD_ARMV7_ENGINE.md](../scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the build commands.
+Colored icons use `ShaderEffect`, which the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. This path keeps the vendor Mali libraries and does not pass `-skipFirmwareUpdate`, which 1.x lacks. SC5000's Qt 5.12.6 runtime gets a guest-linked `alsashim`; earlier runtimes skip the modern ALSA/MIDI/EGLFS preloads. MONTERO requires Qt 6. See [BUILD_ARMV7_ENGINE.md](../scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the build commands.
 
 SC5000 1.2.0, 1.2.2 and 1.3.1 include Utility, Preferences and Quick Preferences pages. `Ctrl+,` opens the tabbed settings menu in the tested 1.2.0 and 1.2.2 guests; the same shortcut is defined in 1.3.1, but was not verified there. Avoid `P`, which is also assigned to another action.
 
 Prime 4 uses `/usr/Engine/JC11` and product code `JC11`. Its Qt 5.9 runtime needs a 270-degree correction in 1.3.2 and 1.3.3; Qt 5.12 in 1.4.1 already renders in landscape. Touch dismissed the startup notice on all three, but the source browser remained open on 1.3.2 and 1.3.3. Version 1.4.1 accepted touch navigation between Utility and Preferences once, but `Ctrl+,` did not reopen settings after a cold boot. Playback remains unverified.
+
+Qt 5.12 also renders SC5000 1.4.1 and Prime 4 1.5.2 in landscape without rotation. Both accept single taps to dismiss the startup notice and close Source. Firmware 1.5.2 and 1.6.0 omit development headers; set `LEGACY_QT_HEADERS` to an extracted Qt 5.12 header directory when building them. QEngine still links against each target firmware's libraries.
+
+SC5000 1.5.2 and 1.6.0 use ALSA's device manager. QEngine supplies `alsashim` built against each firmware's libraries, enables PCM format and rate conversion, limits playback to four channels and hides loopback capture. `ALSASHIM_BUFFER_SCALE=1` preserves Engine's buffer sizes. The builder installs these settings automatically.
 
 ### Replacing the Mali GPU driver with Mesa
 Engine OS 4.3.4 and earlier on armv7, and HeadRush, get GL from a proprietary `libmali.so.14.0` that only drives a real Mali, and every Qt library names it directly. `build_armv7_engine_rootfs.sh` replaces it whenever `detect_mesa.sh` reports the `mali` layout, with no option to set.

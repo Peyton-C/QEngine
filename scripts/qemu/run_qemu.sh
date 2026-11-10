@@ -13,6 +13,7 @@
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
 # ACCEL, CPU, MEM, SMP, RENDERNODE.
+# QEMU_AUDIO=off omits the emulated sound card; guest loopback audio remains.
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
 # values above and in whether the display backend needed GL, and the copies had
@@ -153,7 +154,8 @@ fi
 
 # Only the engine family gets a card; MPC and the drum module never had one.
 AUDIO_ARGS=""
-if [ "$DEVICE" = engine ]; then
+# Keep card omission available for diagnosing guest audio startup.
+if [ "$DEVICE" = engine ] && [ "${QEMU_AUDIO:-on}" != off ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
 fi
 

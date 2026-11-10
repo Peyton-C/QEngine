@@ -30,10 +30,27 @@ Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`
 | SC5000 1.2.0 | JP07 | `/usr/JP07/JP07` | Landscape UI and touch taps |
 | SC5000 1.2.2 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
 | SC5000 1.3.1 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| SC5000 1.4.1 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| SC5000 1.5.2, 1.6.0 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
 | Prime 4 1.3.2, 1.3.3 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup-notice touch verified, source browser stays open |
 | Prime 4 1.4.1 | JC11 | `/usr/Engine/JC11` | Landscape UI; settings touch navigation worked once, but the shortcut did not reopen settings after a cold boot |
+| Prime 4 1.5.2 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup notice dismissed and Source closed with single taps |
 
-Use `--product-code JC11` for Prime 4. Its Qt 5.9 runtime needs a 270-degree correction; its Qt 5.12 runtime already renders in landscape. SC5000 keeps the 90-degree correction.
+Use `--product-code JC11` for Prime 4. Its Qt 5.9 runtime needs a 270-degree correction; Qt 5.12 already renders in landscape on both products. Earlier SC5000 firmware needs the 90-degree correction.
+
+Firmware 1.5.2 and 1.6.0 omit Qt development headers. Extract the headers from an SC5000 1.4.1 instance, then set `LEGACY_QT_HEADERS` when building either version. QEngine checks the Qt minor version and links against the target firmware's libraries.
+
+```sh
+mkdir -p build/qt512-headers
+debugfs -R 'rdump /usr/qt/include build/qt512-headers' build/instances/sc5000-1.4.1/rootfs.img
+LEGACY_QT_HEADERS="$PWD/build/qt512-headers/include" \
+    scripts/build_scripts/new_instance.sh --name sc5000-1.5.2 \
+    --product-code JP07 --firmware SC5000-1.5.2-Update.img.zip
+```
+
+On macOS, use `/opt/homebrew/opt/e2fsprogs/sbin/debugfs` if `debugfs` is outside your `PATH`.
+
+QEngine builds `alsashim` against the guest libraries for SC5000's Qt 5.12.6 runtime. It converts PCM formats and rates, exposes four playback channels, hides loopback capture and keeps Engine's original buffer sizes. This configuration is automatic; `QEMU_AUDIO=off` is not required.
 
 | Legacy `instance.env` setting | Default |
 | --- | --- |

@@ -125,9 +125,12 @@ extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 # any of the modern preloads or trying the Qt 5.15 Mali replacement.
 DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
 LEGACY_ENGINE=0
+# 1.x names the application, or from 1.6.0 a symlink to /usr/Engine/Engine,
+# after the product: JP07 on SC5000, JP08 on SC5000M, JC11 on Prime 4. Later
+# firmware ships only /usr/Engine/Engine.
 if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
-        "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
-        "$DEBUGFS" -R 'stat /usr/Engine/JC11' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+        "$DEBUGFS" -R 'ls /usr/Engine' "$OUT_PATH" 2>/dev/null |
+        tr -s ' ' '\n' | grep -Eq '^J[CP][0-9]+$'; then
     LEGACY_ENGINE=1
 fi
 if [ "$LEGACY_ENGINE" = 1 ]; then
@@ -370,7 +373,11 @@ fi
 # rootfs, as build_mpc_rootfs.sh tells MPC from the drum module.
 if [ -d /mnt/rootfs/usr/Engine ]; then
     APP_UNIT=engine.service; DEFAULT_CODE=JP07
-    if [ -x /mnt/rootfs/usr/Engine/JC11 ]; then DEFAULT_CODE=JC11; fi
+    if [ "$LEGACY_ENGINE" = 1 ]; then
+        DEFAULT_CODE="$(find /mnt/rootfs/usr/Engine -maxdepth 1 -name 'J[CP][0-9]*' \
+            -printf '%f\n' | sort | sed -n 1p)"
+        DEFAULT_CODE="${DEFAULT_CODE:-JP07}"
+    fi
 elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
 elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then

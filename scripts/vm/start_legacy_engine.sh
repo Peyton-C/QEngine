@@ -35,10 +35,10 @@ fi
 export QT_QPA_GENERIC_PLUGINS="evdevtouch:$touch_dev"
 if [ -x /usr/JP07/JP07 ]; then
     /usr/JP07/JP07 -d0 -card hw:Loopback,0 &
-elif [ -x /usr/Engine/JC11 ]; then
-    /usr/Engine/JC11 -d0 &
 else
-    /usr/Engine/JP07 -d0 &
+    # One product binary per image, JP07, JP08 or JC11, named as the device.
+    for app in /usr/Engine/J[CP][0-9]*; do [ -x "$app" ] && break; done
+    "$app" -d0 &
 fi
 engine_pid=$!
 wait "$engine_pid"

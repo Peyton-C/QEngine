@@ -27,11 +27,14 @@ dump_library /usr/lib '^libstdc\+\+\.so\.6\.[0-9.]+$' "$STAGE/legacy/lib/libstdc
 for lib in Core Gui; do
     dump_library /usr/qt/lib "^libQt5$lib\\.so\\.5\\.[0-9.]+$" "$STAGE/legacy/qt/libQt5$lib.so"
 done
-# SC5000 1.5.2/1.6.0 switched to the ALSA device manager. Its loopback
-# capture stream and exact hardware-rate requests need the normal ALSA shim,
-# linked to this guest's older libc rather than the modern builder's ABI.
+# SC5000 and SC5000M 1.5.2/1.6.x switched to the ALSA device manager. Their
+# loopback capture stream and exact hardware-rate requests need the normal
+# ALSA shim, linked to this guest's older libc rather than the modern
+# builder's ABI. Prime 4 1.6.x runs the same Engine binary but opens its audio
+# differently and starts without it.
 LEGACY_ALSA=0
-if "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$IMG" 2>/dev/null | grep -q 'Inode:' &&
+if { "$DEBUGFS" -R 'stat /usr/Engine/JP07' "$IMG" 2>/dev/null | grep -q 'Inode:' ||
+        "$DEBUGFS" -R 'stat /usr/Engine/JP08' "$IMG" 2>/dev/null | grep -q 'Inode:'; } &&
         "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.12.6' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
     LEGACY_ALSA=1
     dump_library /usr/lib '^librt-[0-9.]+\.so$' "$STAGE/legacy/lib/librt.so"

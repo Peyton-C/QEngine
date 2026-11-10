@@ -2,7 +2,7 @@
 Shims used to allow running unmodified Engine in QEMU
 
 ## alsashim
-Allows Engine to use emulated sound cards. SC5000 1.5.2 and 1.6.0 use a guest-linked build for PCM conversion and four-channel playback-only audio.
+Allows Engine to use emulated sound cards. SC5000 1.5.2 to 1.6.2 and SC5000M 1.6.0 use a guest-linked build for PCM conversion and four-channel playback-only audio.
 
 ## cursorshim
 Allows for a regular cursor to be displayed in Engine.

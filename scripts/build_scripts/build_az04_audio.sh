@@ -46,7 +46,7 @@ mkdir -p "$OUT_DIR"
 
 echo "Building az04-audio kernel modules..."
 
-INNER_SCRIPT="$(mktemp /tmp/build-az04-audio-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/build-az04-audio-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'

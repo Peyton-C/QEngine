@@ -204,7 +204,7 @@ done
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + root password, via a
 ### privileged container with real loop-device support #######################
 
-INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'

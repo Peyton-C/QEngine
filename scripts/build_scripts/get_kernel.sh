@@ -104,7 +104,7 @@ MODULES=(
 )
 MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
 
-INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 # Written to a real file and mounted in, not piped via stdin

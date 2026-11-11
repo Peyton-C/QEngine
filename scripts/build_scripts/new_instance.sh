@@ -251,7 +251,7 @@ PROBE_IMG=""
 ensure_probe() {
     [ -n "$PROBE_IMG" ] && return 0
     echo "--- extracting $FIRMWARE to identify it ---"
-    PROBE_IMG="$(mktemp /tmp/qengine-probe.XXXXXX.img)"
+    PROBE_IMG="$(mktemp /tmp/qengine-probe.XXXXXX)"
     trap 'rm -f "$PROBE_IMG"' EXIT
     extract_rootfs "$FIRMWARE" "$PROBE_IMG" >/dev/null
 }

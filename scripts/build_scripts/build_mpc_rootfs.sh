@@ -16,10 +16,11 @@
 #   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge and dtshim for $ARCH (the shared sources under shims/
-#      are architecture-independent — see the build step below).
+#   4. Build touchbridge, dtshim and mpcsurface for $ARCH (the shared sources
+#      under shims/ are architecture-independent — see the build step below).
 #   5. Copy them into /root, wire touchbridge_mpc.service ahead of the app's
 #      unit, and preload dtshim into that unit so the app can read a product code.
+#      MPC itself also gets mpcsurface, its virtual control surface.
 #   6. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind the fullscreen display.
@@ -187,6 +188,12 @@ docker run --rm --platform "$SHIM_PLATFORM" \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+        # Built for every app this script handles and installed only for MPC.
+        # It needs the kernel sound headers, which libc6-dev brings, and no
+        # alsa-lib: it answers below it. (No apostrophes in here, this is all
+        # one single-quoted string.)
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /shims/mpcsurface/mpcsurface.c -ldl -lpthread
         if [ "$BUILD_PCMHOLD" = 1 ]; then
             apt-get install -y -qq libasound2-dev >/dev/null 2>&1
             gcc -O2 -Wall -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
@@ -196,7 +203,8 @@ docker run --rm --platform "$SHIM_PLATFORM" \
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in touchbridge/touchbridge_$SHIM_ARCH \
-                dtshim/dtshim_$SHIM_ARCH.so; do
+                dtshim/dtshim_$SHIM_ARCH.so \
+                mpcsurface/mpcsurface_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -352,11 +360,56 @@ for _unit in /mnt/rootfs/etc/systemd/system/$APP_UNIT \
         exit 1
     fi
 done
+# MPC and Force also get their control surface. It is a preload because MPC looks
+# for its panel among the sound cards, as a USB card with Akai's ids, and opens it
+# as rawmidi, where Engine's midisurface only has to be a sequencer client. It picks
+# the panel from the product code written above and does nothing for a code it does
+# not know. MPC Sample, VX5 and the drum module reach their panels some other way,
+# none of them looked at yet.
+PRELOAD=/root/dtshim.so
+if [ "$APP_UNIT" = acvs.service ]; then
+    cp -a /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /mnt/rootfs/root/mpcsurface.so
+    chmod 755 /mnt/rootfs/root/mpcsurface.so
+    PRELOAD="$PRELOAD:/root/mpcsurface.so"
+fi
 mkdir -p "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d"
-cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
+cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 [Service]
-Environment=LD_PRELOAD=/root/dtshim.so
+Environment=LD_PRELOAD=$PRELOAD
 EOF
+
+if [ "$APP_UNIT" = acvs.service ]; then
+    echo "--- giving MPC the loopback card as its internal audio ---"
+    # MPC opens its internal card by udev path, /dev/snd/by-path/platform-sound, as
+    # VX5 does. With nothing there 3.10.0 puts "No internal audio device could be
+    # found!" over the UI, and only a touch closes it. On snd-aloop it reports
+    # 44.1 kHz, 56 in and 56 out, and runs; playback is discarded. No pcmhold, MPC
+    # takes the loopback's channel counts as they are.
+    mkdir -p /mnt/rootfs/etc/udev/rules.d
+    cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-mpc-audio.rules <<'EOF'
+SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Loopback", SYMLINK+="snd/by-path/platform-sound"
+EOF
+    cat > /mnt/rootfs/etc/systemd/system/qengine-mpc-audio.service <<'EOF'
+[Unit]
+Description=Supply MPC with loopback audio as its internal card
+After=systemd-udevd.service
+Before=acvs.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe snd-aloop
+# The initrd loads snd-aloop before the rootfs rules are available.
+ExecStart=/usr/bin/udevadm trigger --subsystem-match=sound --action=add
+ExecStart=/usr/bin/udevadm settle --timeout=10
+EOF
+    cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
+
+[Unit]
+Wants=qengine-mpc-audio.service
+After=qengine-mpc-audio.service
+EOF
+fi
 
 if [ "$APP_UNIT" = HV03.service ]; then
     # VX5 1.2.2 crashes without onboard audio. The same loopback/pcmhold pairing

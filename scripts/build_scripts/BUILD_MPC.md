@@ -17,6 +17,49 @@ scripts/qemu/run_instance.sh --name mpc-3.9.1
 
 Touch works out of the box: the rootfs build installs `touchbridge_mpc` and holds `acvs.service` back until its touchscreen exists, since MPC looks for touchscreens only when it starts. MPC only responds to a real touchscreen, and QEMU's tablet presents as an absolute mouse, so the bridge re-emits it as a uinput multitouch device. Taps need to be held briefly, as an instant press and release from a scripted VNC client does not register.
 
+## Control surface
+The rootfs build preloads `mpcsurface` into MPC, which takes it for its own panel: the pads, buttons, dial and Q-Links. `mpcsurface` picks which panel to be from the product code, and MPC names itself after the panel it finds, so an `ACVA3` guest comes up as an MPC One.
+
+Write commands to `/run/mpcsurface.fifo` on the guest, one per line:
+
+```sh
+echo 'button play' > /run/mpcsurface.fifo
+```
+
+| Command | What |
+| --- | --- |
+| `button <name> [ms]` | Press and release a button |
+| `hold <name>`, `release <name>` | Keep a button down, as for `shift`, and let it go |
+| `pad <1-16> [velocity] [ms]` | Strike a pad, pad 1 at the bottom left |
+| `turn dial <steps>`, `turn q1 <steps>` | Turn the data dial or Q-Link 1 to 4, negative for anticlockwise |
+| `touch q1 [ms]` | Touch a Q-Link without turning it |
+| `list` | Log the button names this product has |
+| `press <ch> <note> [ms]` | Raw note on and off, channels from 0 |
+| `on <ch> <note> [vel]`, `off <ch> <note>` | Raw note on, raw note off |
+| `cc <ch> <cc> <value>` | Raw control change |
+| `sysex <hex bytes>` | Raw SysEx |
+
+Buttons have names only on `ACVA3`. On any other product use `press`, the numbers differ between panels. `pad` covers the sixteen-pad products and not Force.
+
+| `ACVA3` buttons | |
+| --- | --- |
+| Transport | `play` `stop` `rec` `overdub` `play-start` `locate` |
+| Editing | `menu` `main` `shift` `undo` `copy` `erase` `note-repeat` `full-level` `16-level` `tc` `automation` `plus` `minus` `dial` |
+| Pad banks | `bank-a` `bank-b` `bank-c` `bank-d` |
+| Modes | `sample-edit` `pad-mixer` `track-mixer` `program-edit` `song` `arrange` `grid` `next-seq` `track-mute` `pad-color` `pad-perform` `xyfx` |
+| Q-Link modes | `qlink-project` `qlink-track` `qlink-pad-scene` `qlink-pad-param` `qlink-screen` |
+
+The names are what each button did on screen or to its lamps, with no real panel to check them against. A button that changed neither has no name.
+
+A raw command can send what no panel would. On `ACVA3` a note on for `0x58` on channel 0 stops MPC listening to the surface until `acvs.service` is restarted.
+
+To see what MPC sends the panel, such as the lamp for a button with no name yet, set `MPCSURFACE_VERBOSE=1` and `MPCSURFACE_LOG=/data/surface.log` in a drop-in for `acvs.service`.
+
+Tried on arm64, `ACVA3`, 3.10.0 only. The other Gen 2 codes and all of Gen 1 are built with it and untested. The first time MPC met the surface the guest rebooted itself once, and not again.
+
+## Audio
+MPC opens its internal sound card by udev path, `/dev/snd/by-path/platform-sound`. The build points that path at the kernel's loopback card with a udev rule, and `qengine-mpc-audio.service` loads `snd-aloop` before `acvs.service`. MPC then reports 44.1 kHz with 56 inputs and outputs, where without it MPC shows "No internal audio device could be found!" over its UI. Playback is discarded and capture is silent, so nothing is heard. Tried on arm64, `ACVA3`, 3.10.0 only.
+
 ## Gen 2
 Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so none of arm64 Engine's shims apply. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
 

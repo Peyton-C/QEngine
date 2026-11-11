@@ -16,6 +16,9 @@ Fakes various parts of the device tree expected by Engine and other InMusic OSes
 ## midisurface
 An emulated midi surface to control Engine.
 
+## mpcsurface
+An emulated control surface for MPC and Force: pads, buttons, the dial and Q-Links. Preloaded into MPC, which finds it as its panel's USB MIDI card, and driven through `/run/mpcsurface.fifo`.
+
 ## montero
 Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.
 

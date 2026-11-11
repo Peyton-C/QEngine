@@ -150,9 +150,10 @@ The MPC build spoofs a product code the same way the Engine builds do: `PRODUCT_
 itself accordingly — `ACV5` boots to a rendered UI that identifies as MPC X and shows
 its firmware version, which is why that cell carries no `*`.
 
-Two rows of MPC's own info screen stay unresolved on every model: the serial number
-and the control surface. Neither comes from the devicetree — both come from the
-control-surface MCU over USB at fixed bus positions, which nothing here emulates yet.
+Two rows of MPC's own info screen were unresolved on every model: the serial number
+and the control surface. Neither comes from the devicetree, both come from the
+control-surface MCU over USB. `mpcsurface` now stands in for that MCU, see
+[BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md), and what the info screen shows with it has not been looked at.
 
 **Signed FW is a version boundary here, not a per-model one.** Every 2.x image begins `d00dfeed`, a plain U-Boot FIT, which QEngine unpacks with its own reader. Every 3.x image begins `415a3031` (ASCII `AZ01`), which has a reader of its own. The 2.x column is untested: 2.7.0 extracts and is identified as MPC, but no 2.x instance has been booted. The latest 2.x is `2.15.1.1`.
 

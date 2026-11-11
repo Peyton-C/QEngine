@@ -33,7 +33,8 @@
 #   --force     Overwrite --out if it already exists.
 #
 # Environment:
-#   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07.
+#   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07,
+#                 or HG06 for a HeadRush image.
 #   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
 #                 shims/montero/mods, install them in /root, and preload MONTERO
 #                 into Engine. Off by default: it is the one shim that needs Qt to
@@ -118,7 +119,39 @@ esac
 . "$SCRIPT_DIR_SELF/detect_mesa.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
-detect_mesa "$OUT_PATH"
+
+# Early SC5000 and Prime 4 applications use their product codes as filenames.
+# Keep it in this builder, but select its guest-ABI/VNC stack before building
+# any of the modern preloads or trying the Qt 5.15 Mali replacement.
+DEBUGFS="$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)"
+LEGACY_ENGINE=0
+# 1.x names the application, or from 1.6.0 a symlink to /usr/Engine/Engine,
+# after the product: JP07 on SC5000, JC11 on Prime 4, NH08 on Mixstream Pro
+# 2.0.1. The name alone does not decide it, as Prime GO 2.4.0 to 4.0.0 still
+# ship a JP11 entry; glibc does. The EGLFS/Mesa path below builds its shims
+# and Mesa on bookworm, which binds dlsym and pthread_* to their GLIBC_2.34
+# versions, so it needs a guest with 2.34 or later (Prime GO 2.4.0 onward).
+# Anything older is built against its own libc here instead. That takes in
+# Mixstream Pro 2.3.x and SC LIVE 2 2.3.3, which pair Qt 5.15.2 with glibc
+# 2.32. glibc 2.34 also stopped shipping libc-2.NN.so, so the versioned file
+# alone marks an older libc. /usr/lib lists long enough that grep -q, quitting
+# at the first match, gets tr killed by SIGPIPE and pipefail fails the test.
+# Only /usr/Engine is required beside it, not a product-named entry: SC LIVE 2
+# 2.3.3 ships just /usr/Engine/Engine, and on the EGLFS path the loader refuses
+# every shim and Engine never starts.
+if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' || {
+        "$DEBUGFS" -R 'stat /usr/Engine' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' &&
+        "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
+            tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; }; then
+    LEGACY_ENGINE=1
+fi
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    MESA_LAYOUT=none
+    MESA_VERSION=""
+    echo "--- legacy Engine runtime: software VNC, vendor GL retained ---"
+else
+    detect_mesa "$OUT_PATH"
+fi
 
 ### 2. Grow the image and filesystem #########################################
 
@@ -140,6 +173,13 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 STAGE_DIR="$(mktemp -d /tmp/build-armv7-engine-rootfs-stage.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    [ "${MONTERO:-0}" != 1 ] || {
+        echo "ERROR: MONTERO requires Qt 6; this JP07 firmware uses Qt 5." >&2; exit 1; }
+    echo "--- building legacy shims against the guest runtime ---"
+    "$SCRIPT_DIR_SELF/build_legacy_engine_shims.sh" "$OUT_PATH" "$STAGE_DIR"
+    MONTERO=0
+else
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
@@ -175,6 +215,8 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/quitshim/quitshim_$SHIM_ARCH.so /shims/quitshim/quitshim.c -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+        gcc -O2 -Wall \
+            -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
         # -lpthread for its upstream relay thread. Only this builder compiles it:
         # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
         # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
@@ -200,6 +242,57 @@ fi
 # what each layout does to the rootfs.
 if [ "$MESA_LAYOUT" = none ]; then
     echo "--- no Mesa in this firmware, so there is no virgl driver to build ---"
+elif [ "$MESA_LAYOUT" = mali ]; then
+    # 4.3.4 and earlier: a whole Mesa in place of the Mali blob, and the Qt eglfs
+    # integration that can drive it, since this Qt was built with only the blob's.
+    # See build_mali_mesa.sh and build_qt5_eglfs_kms.sh.
+    "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
+    cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
+    # The plugin is checked against this rootfs's own Qt, read out of the image
+    # the way detect_mesa.sh reads it.
+    DEBUGFS=""
+    for c in debugfs /sbin/debugfs /usr/sbin/debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs; do
+        if command -v "$c" >/dev/null 2>&1; then DEBUGFS="$c"; break; fi
+    done
+    mkdir "$STAGE_DIR/vendor-qt"
+    for so in libQt5Core libQt5Gui libQt5EglFSDeviceIntegration; do
+        "$DEBUGFS" -R "dump /usr/qt/lib/$so.so.5.15.2 $STAGE_DIR/vendor-qt/$so.so.5.15.2" \
+            "$OUT_PATH" >/dev/null 2>&1
+        [ -s "$STAGE_DIR/vendor-qt/$so.so.5.15.2" ] || {
+            echo "ERROR: no /usr/qt/lib/$so.so.5.15.2 in this rootfs; only Qt 5.15.2" >&2
+            echo "       has an eglfs_kms build here." >&2; exit 1; }
+    done
+    # Engine's Qt has qreal as double, HeadRush's as float; QWindow::setOpacity's
+    # mangled name says which.
+    READELF="$(command -v readelf || echo /opt/homebrew/opt/binutils/bin/readelf)"
+    QREAL=double
+    if "$READELF" --dyn-syms -W "$STAGE_DIR/vendor-qt/libQt5Gui.so.5.15.2" |
+            grep '_ZN7QWindow10setOpacityEf' >/dev/null; then
+        QREAL=float
+    fi
+    "$SCRIPT_DIR_SELF/build_qt5_eglfs_kms.sh" --qreal "$QREAL" --check-against "$STAGE_DIR/vendor-qt"
+    rm -rf "$STAGE_DIR/vendor-qt"
+    QT_KMS="$REPO_ROOT/build/qt5-eglfs-kms-5.15.2-armhf"
+    [ "$QREAL" = double ] || QT_KMS="$QT_KMS-qreal-$QREAL"
+    cp -a "$QT_KMS" "$STAGE_DIR/qt5-eglfs-kms"
+
+    # HeadRush only: qmlrotate, which links Qt and so needs Debian's Qt5 headers,
+    # an install every Engine build would otherwise pay for. It uses no API that
+    # passes a qreal, so Debian's qreal-double headers suit HeadRush's float Qt.
+    if "$DEBUGFS" -R 'stat /usr/Evil/Evil' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+        echo "--- building qmlrotate ---"
+        docker run --rm --platform linux/arm/v7 \
+            -v "$SHIMS_DIR:/shims:ro" -v "$STAGE_DIR:/stage" \
+            debian:bookworm bash -c '
+                set -e
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends g++ pkg-config qtbase5-dev >/dev/null 2>&1
+                g++ -shared -fPIC -O2 -Wall -std=c++17 -o /stage/qmlrotate.so \
+                    /shims/qmlrotate/qmlrotate.cpp $(pkg-config --cflags --libs Qt5Gui)'
+        [ -s "$STAGE_DIR/qmlrotate.so" ] || {
+            echo "ERROR: qmlrotate did not build." >&2; exit 1; }
+    fi
 else
     "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
         --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
@@ -224,15 +317,20 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
                 rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
+                pcmhold/pcmhold_$SHIM_ARCH \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
 
+fi # modern shim and graphics stack
+
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
 
-INNER_SCRIPT="$(mktemp /tmp/build-armv7-engine-rootfs-inner.XXXXXX.sh)"
+# BSD mktemp needs the Xs at the end; a suffix makes concurrent macOS builds
+# compete for a literal filename instead of getting independent scripts.
+INNER_SCRIPT="$(mktemp /tmp/build-armv7-engine-rootfs-inner.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
@@ -282,14 +380,38 @@ if [ ! -e /mnt/rootfs/lib/ld-linux-armhf.so.3 ]; then
     echo "       This builds armv7/RK3288 Engine OS firmware only." >&2
     exit 1
 fi
-if [ ! -d /mnt/rootfs/usr/Engine ]; then
-    echo "ERROR: no /usr/Engine in this rootfs, so it is not an Engine OS image." >&2
+# Engine, or HeadRush's Evil, which shares Engine 4.3.4's platform: the same
+# Buildroot base, Mali blob, Qt 5.15.2, data disk and overlays. Told apart by the
+# rootfs, as build_mpc_rootfs.sh tells MPC from the drum module.
+if [ -d /mnt/rootfs/usr/Engine ]; then
+    APP_UNIT=engine.service; DEFAULT_CODE=JP07
+    if [ "$LEGACY_ENGINE" = 1 ]; then
+        DEFAULT_CODE="$(find /mnt/rootfs/usr/Engine -maxdepth 1 -name '[A-Z][A-Z][0-9][0-9]' \
+            -printf '%f\n' | sort | sed -n 1p)"
+        DEFAULT_CODE="${DEFAULT_CODE:-JP07}"
+    fi
+elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
+    APP_UNIT=jp07.service; DEFAULT_CODE=JP07
+elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
+    APP_UNIT=evil.service; DEFAULT_CODE=HG06
+else
+    echo "ERROR: neither /usr/Engine nor /usr/Evil in this rootfs." >&2
     exit 1
 fi
+PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
+echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
-skip_firmware_update /mnt/rootfs
+if [ "$LEGACY_ENGINE" = 1 ]; then
+    # -skipFirmwareUpdate does not exist in 1.x. Do not inject it into the old
+    # launchers or install contemporary ALSA/MIDI/EGLFS preloads into this libc.
+    # Signed legacy firmware, SC LIVE 2 2.3.3, runs the eFuse check too.
+    write_fake_dt /mnt/rootfs "$PRODUCT_CODE" "" rk3288
+    install_legacy_engine /mnt/rootfs /stage
+else
+# Engine's control-surface firmware check; Evil has no such flag to pass.
+if [ "$APP_UNIT" = engine.service ]; then skip_firmware_update /mnt/rootfs; fi
 
 install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage
 
@@ -331,9 +453,9 @@ chmod 755 /mnt/rootfs/root/dtshim.so \
 # unconditionally and a missing target turns a working read into ENOENT.
 #
 # PRODUCT_CODE selects which device this pretends to be.
-write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-JP07}"
+write_fake_dt /mnt/rootfs "$PRODUCT_CODE" "" rk3288
 
-echo "--- wiring touchbridge.service + engine.service override ---"
+echo "--- wiring touchbridge.service + $APP_UNIT override ---"
 # The same unit either builder installs, each from its own SoC directory: the
 # binary is shared but the invocation is not -- RK3588 passes --head N and has a
 # templated unit per display, RK3288 is single-head and passes a resolution.
@@ -342,9 +464,12 @@ ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.w
 
 # The virtual control surface. The same unit both builders install: it names
 # no device and passes no client name, because the binary works out which
-# product to be from the guest's own product code.
-cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
-ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
+# product to be from the guest's own product code. Engine only: it answers
+# Engine's KnownDevices inquiry, which Evil does not send.
+if [ "$APP_UNIT" = engine.service ]; then
+    cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
+    ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
+fi
 
 echo "--- disabling the tty1 getty (Application's display) ---"
 # Engine renders fullscreen via eglfs/KMS on the same VT the console getty
@@ -362,8 +487,63 @@ rm -f /mnt/rootfs/etc/systemd/system/getty.target.wants/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/getty@tty1.service
 ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
-mkdir -p /mnt/rootfs/etc/systemd/system/engine.service.d
-cat > /mnt/rootfs/etc/systemd/system/engine.service.d/override.conf <<'EOF'
+OVERRIDE="/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf"
+mkdir -p "$(dirname "$OVERRIDE")"
+if [ "$APP_UNIT" = evil.service ]; then
+    # Evil opens its own card by name, hw:HV01, and Prime 5.2.0 segfaults a few
+    # seconds after startup when there is none. The kernel's loopback card stands
+    # in: it needs no host audio, and get_kernel.sh loads it from the initrd, which
+    # is too early for a modprobe.d id= option on the rootfs to reach it, so its
+    # id is renamed through sysfs instead before Evil starts. $$ is systemd's
+    # escape for a literal $.
+    #
+    # The name alone is not enough. A loopback offers 32 channels each way, Evil
+    # takes them all and then segfaults in its audio thread overrunning buffers
+    # sized for the real card, which HG06's devicetree gives 8 playback and 2
+    # capture channels. pcmhold pins the loopback to that shape; see pcmhold.c.
+    cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
+    chmod 755 /mnt/rootfs/root/pcmhold
+    cat > /mnt/rootfs/etc/systemd/system/qengine-hv01.service <<'EOF'
+[Unit]
+Description=Stand the loopback sound card in for HV01, the card Evil opens
+Before=evil.service
+
+[Service]
+Type=simple
+ExecStart=/root/pcmhold HV01 8 2
+# Evil must not open the card before pcmhold has pinned it.
+ExecStartPost=/bin/sleep 1
+Restart=on-failure
+ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "$$(cat $$c/id)" = Loopback ] && printf HV01 > $$c/id; done; grep -q "\\[HV01" /proc/asound/cards'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ln -sf ../qengine-hv01.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-hv01.service
+
+    # Evil turns its UI -90 degrees for HG06's portrait panel; qmlrotate turns it
+    # back for QEngine's landscape screen. See qmlrotate.cpp.
+    cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
+    chmod 755 /mnt/rootfs/root/qmlrotate.so
+
+    # dtshim for the product code, serial and pcb-rev Evil reads, and drmatomic for
+    # virtio-gpu as below, and qmlrotate. Not alsashim or quitshim: both are
+    # written around Engine's audio and Engine's quit. The preload reaches every
+    # process runevil starts, from /bin/sh on, and qmlrotate links Qt, so
+    # /usr/qt/lib has to be on the path from the unit, not only from Evil's own
+    # script, which sets it later.
+    cat > "$OVERRIDE" <<'EOF'
+[Unit]
+After=touchbridge.service qengine-hv01.service
+Requires=touchbridge.service qengine-hv01.service
+
+[Service]
+Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/qmlrotate.so
+Environment=LD_LIBRARY_PATH=/usr/qt/lib
+Environment=QMLROTATE=90
+EOF
+else
+    cat > "$OVERRIDE" <<'EOF'
 [Unit]
 After=touchbridge.service midisurface.service
 Requires=touchbridge.service
@@ -376,6 +556,10 @@ Wants=midisurface.service
 # stands in for the firmware's splash service, which Engine aborts without on
 # its way out. TimeoutStopSec=30 in the stock unit is the SIGKILL fallback.
 Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/alsashim.so:/root/quitshim.so
+EOF
+fi
+# The display, the same for either app.
+cat >> "$OVERRIDE" <<'EOF'
 Environment=QT_QPA_PLATFORM=eglfs
 Environment=QT_QPA_EGLFS_KMS_ATOMIC=0
 # Pin the EGL device integration. Left to itself Qt logs "Using base device
@@ -405,6 +589,8 @@ if [ "$MONTERO" = 1 ]; then
     install_montero /mnt/rootfs "$SHIM_ARCH" /stage
 fi
 
+fi # modern rootfs installation
+
 umount /mnt/rootfs
 losetup -d "$LOOPDEV"
 trap - EXIT
@@ -418,7 +604,8 @@ docker run --rm --privileged \
     ${HOST_PLATFORM:+--platform "$HOST_PLATFORM"} \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
-    -e PRODUCT_CODE="${PRODUCT_CODE:-JP07}" \
+    -e LEGACY_ENGINE="$LEGACY_ENGINE" \
+    -e PRODUCT_CODE="${PRODUCT_CODE:-}" \
     -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
@@ -426,6 +613,7 @@ docker run --rm --privileged \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$STAGE_DIR:/stage:ro" \
     -v "$SCRIPT_DIR_SELF/rootfs_steps:/steps:ro" \
+    -v "$REPO_ROOT/scripts/vm:/vm:ro" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
     debian:bookworm-slim bash /inner.sh
 

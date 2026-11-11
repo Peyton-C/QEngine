@@ -25,11 +25,14 @@
 #            adding virgl means replacing the library. The vendor file is kept
 #            alongside as .vendor, because the replacement drops the hardware
 #            drivers and so is right for emulation and wrong for a real unit.
-#   none     Nothing to do, and nothing that could be done: armv7 firmware before
-#            5.0.0 has no Mesa at all and gets GL from a proprietary Mali blob
-#            providing libEGL itself. A driver installed here would never be
-#            opened, so this says so instead of leaving a file that looks like a
-#            fix.
+#   mali     Replaces the blob. armv7 firmware through 4.3.4 has no Mesa and gets
+#            GL from libmali.so.14.0, which every Qt library names directly, so
+#            build_mali_mesa.sh's whole Mesa goes into /usr/lib, its stand-in takes
+#            the blob's name, and the blob is kept as .vendor. The libEGL.so,
+#            libGLESv2.so and libGLESv1_CM.so symlinks pointed at the blob too, and
+#            are repointed at Mesa. Qt's eglfs_kms integration goes in with it,
+#            since this Qt was built with only the blob's.
+#   none     Nothing to do: no Mesa and no Mali blob either.
 #
 # Without virgl in whichever library the guest actually loads, GL is rasterized on
 # an emulated CPU, and the difference in frame time is two orders of magnitude.
@@ -43,6 +46,45 @@ install_virgl_mesa() {
     none)
         echo "--- no Mesa in this rootfs, so no virgl to install ---"
         return 0
+        ;;
+    mali)
+        echo "--- replacing libmali with Mesa $_version ---"
+        _m="$_stage/mesa-mali"
+        [ -s "$_m/libmali.so.14.0" ] || {
+            echo "ERROR: no Mesa for a libmali rootfs staged at $_m." >&2; return 1; }
+        _lib="$_rootfs/usr/lib"
+        [ -e "$_lib/libmali.so.14.0" ] || {
+            echo "ERROR: this rootfs has no /usr/lib/libmali.so.14.0 to replace." >&2
+            return 1; }
+        # Idempotent, as for gallium: the backup stays the vendor blob.
+        [ -e "$_lib/libmali.so.14.0.vendor" ] ||
+            mv "$_lib/libmali.so.14.0" "$_lib/libmali.so.14.0.vendor"
+        # The versioned files and their soname links, as Mesa installed them, plus
+        # the stand-in. The -f is for a second run.
+        cp -af "$_m"/lib*.so.* "$_lib/"
+        mkdir -p "$_lib/dri"
+        cp -af "$_m"/dri/*_dri.so "$_lib/dri/"
+        # The development names, which the blob's package pointed at itself. Nothing
+        # at runtime opens them, but a dlopen("libEGL.so") would otherwise still
+        # reach the blob.
+        ln -sf libEGL.so.1 "$_lib/libEGL.so"
+        ln -sf libGLESv2.so.2 "$_lib/libGLESv2.so"
+        ln -sf libGLESv1_CM.so.1 "$_lib/libGLESv1_CM.so"
+        chown -h 0:0 "$_lib"/libmali.so.14.0 "$_lib"/libEGL.so* "$_lib"/libGLES* \
+            "$_lib"/libgbm.so* "$_lib"/libglapi.so* "$_lib"/dri/*_dri.so
+
+        # And the Qt integration that drives it, from build_qt5_eglfs_kms.sh. This
+        # Qt has only the blob's, so Mesa alone would never be drawn to. Under
+        # /usr/qt, which is Qt's prefix; Engine's runengine puts /usr/qt/lib on
+        # LD_LIBRARY_PATH.
+        _k="$_stage/qt5-eglfs-kms"
+        [ -s "$_k/plugins/egldeviceintegrations/libqeglfs-kms-integration.so" ] || {
+            echo "ERROR: no eglfs_kms plugin staged at $_k." >&2; return 1; }
+        cp -af "$_k"/lib/libQt5EglFsKmsSupport.so.5* "$_rootfs/usr/qt/lib/"
+        cp -af "$_k"/plugins/egldeviceintegrations/libqeglfs-kms-integration.so \
+            "$_rootfs/usr/qt/plugins/egldeviceintegrations/"
+        chown -h 0:0 "$_rootfs"/usr/qt/lib/libQt5EglFsKmsSupport.so.5* \
+            "$_rootfs"/usr/qt/plugins/egldeviceintegrations/libqeglfs-kms-integration.so
         ;;
     dri)
         echo "--- installing a virgl-capable DRI driver alongside the vendor Mesa ---"

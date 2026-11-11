@@ -220,7 +220,7 @@ done
 ### 3-5. e2fsck/resize2fs + telemetry block + shims + engine.service, via a
 ### privileged container with real loop-device support #######################
 
-INNER_SCRIPT="$(mktemp /tmp/build-arm64-rootfs-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/build-arm64-rootfs-inner.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"; rm -f "$INNER_SCRIPT"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'

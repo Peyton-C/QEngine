@@ -5,14 +5,15 @@
 # Normally reached through scripts/qemu/run_instance.sh, which reads these values out
 # of an instance's instance.env. Run it directly by setting them yourself.
 #
-#   DEVICE        engine | mpc | drummodule  which shim stack the guest has, and so whether it
+#   DEVICE        engine | mpc | mpc-sample | drummodule | headrush  which shim stack the guest has, and so whether it
 #                                   gets an audio card
 #   DISPLAY_MODE  see display_modes.sh
 #   ARCH          arm64 | armhf     machine type and device models, see arch_devices.sh
 #
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
-# ACCEL, CPU, MEM, SMP, RENDERNODE.
+# ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
+# QEMU_AUDIO=off omits the emulated sound card; guest loopback audio remains.
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
 # values above and in whether the display backend needed GL, and the copies had
@@ -32,6 +33,18 @@ QEMU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 
 DEVICE="${DEVICE:-engine}"
+
+# The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush Prime included:
+# its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
+# SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
+# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs.
+# Match that mode so the framebuffer does not surround it with unused space.
+case "$DEVICE:${ARCH:-arm64}" in
+    mpc-sample:*) SCREEN="${SCREEN:-320x240}" ;;
+    headrush:arm64) SCREEN="${SCREEN:-160x128}" ;;
+    *) SCREEN="${SCREEN:-1280x800}" ;;
+esac
+SCREEN_W="${SCREEN%x*}" SCREEN_H="${SCREEN#*x}"
 
 # Resolves QEMU_BIN plus the architecture-dependent machine, GPU, input and net
 # devices from ARCH — and, for armhf, a lower default MEM than the one below, which
@@ -56,12 +69,14 @@ esac
 case "$DEVICE:$ARCH" in
     engine:*)  _data="data_disk.img" ;;
     # Gen 2 MPC uses RK3588's data+factory layout, the same disk Engine does.
-    mpc:arm64) _data="data_disk.img" ;;
+    mpc:arm64|mpc-sample:arm64|headrush:arm64) _data="data_disk.img" ;;
     mpc:*)     _data="emmc.img" ;;
     # The drum module is Gen 1 MPC's platform, and its data.mount asks for the same
     # PARTUUID.
     drummodule:*) _data="emmc.img" ;;
-    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc or drummodule)." >&2; exit 1 ;;
+    # HeadRush is Engine 4.3.4's platform, with the same single az01-internal disk.
+    headrush:*) _data="emmc.img" ;;
+    *) echo "ERROR: unknown DEVICE '$DEVICE' (expected engine, mpc, mpc-sample, drummodule or headrush)." >&2; exit 1 ;;
 esac
 
 ROOTFS_IMG="${ROOTFS_IMG:-$BUILD_DIR/rootfs_out.img}"
@@ -81,6 +96,7 @@ SERIAL="${SERIAL:-mon:stdio}"
 # Anything else to hand QEMU, word-split. For one-off debugging (a second -serial, a
 # -monitor socket, -snapshot) without editing this file.
 QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+KERNEL_EXTRA_ARGS="${KERNEL_EXTRA_ARGS:-}"
 
 if [ "$NEEDS_GL" -eq 1 ]; then
     [ -n "$GPU_GL_DEV" ] || {
@@ -125,9 +141,22 @@ if [ -n "${SD_IMG:-}" ]; then
     SD_ARGS="-drive if=none,file=$SD_IMG,format=raw,id=sd -device virtio-blk-device,drive=sd"
 fi
 
+# Qt VNC in the legacy firmware is separate from QEMU's console framebuffer.
+# Use the same NIC and per-instance port allocation as SSH, bound to localhost.
+NETDEV="user,id=net0,hostfwd=tcp::${SSH_PORT}-:22"
+if [ -n "${ENGINE_VNC_PORT:-}" ]; then
+    case "$ENGINE_VNC_PORT" in
+        *[!0-9]*|'') echo "ERROR: ENGINE_VNC_PORT must be a TCP port." >&2; exit 1 ;;
+    esac
+    [ "$ENGINE_VNC_PORT" -ge 1 ] && [ "$ENGINE_VNC_PORT" -le 65535 ] || {
+        echo "ERROR: ENGINE_VNC_PORT must be between 1 and 65535." >&2; exit 1; }
+    NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:${ENGINE_VNC_PORT}-:5900"
+fi
+
 # Only the engine family gets a card; MPC and the drum module never had one.
 AUDIO_ARGS=""
-if [ "$DEVICE" = engine ]; then
+# Keep card omission available for diagnosing guest audio startup.
+if [ "$DEVICE" = engine ] && [ "${QEMU_AUDIO:-on}" != off ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
 fi
 
@@ -146,8 +175,8 @@ exec "$QEMU_BIN" \
   -drive if=none,file="$DATA_IMG",format=raw,id=data \
   -device virtio-blk-device,drive=data \
   $SD_ARGS \
-  -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device "$NET_DEV",netdev=net0 \
+  -netdev "$NETDEV" -device "$NET_DEV",netdev=net0 \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \
   $QEMU_EXTRA_ARGS \
-  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"
+  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0 $KERNEL_EXTRA_ARGS"

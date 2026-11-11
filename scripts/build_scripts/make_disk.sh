@@ -120,7 +120,7 @@ EOF
     PART_DESC="${PART_DESC:+$PART_DESC, }$_name ($_start-$_end)"
 done
 
-INNER_SCRIPT="$(mktemp /tmp/make-disk-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/make-disk-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 # Written to a real file and mounted in, not piped via stdin — the other

@@ -1,0 +1,108 @@
+# Qt Quick 2D Renderer 5.7.1, adapted to Qt 5.5 and Engine's backend name.
+# The modified upstream files are GPL-3.0-or-later, not covered by QEngine's MIT license.
+diff --git a/src/plugins/scenegraph/softwarecontext/context.cpp b/src/plugins/scenegraph/softwarecontext/context.cpp
+index 728d5fd..25221f8 100644
+--- a/src/plugins/scenegraph/softwarecontext/context.cpp
++++ b/src/plugins/scenegraph/softwarecontext/context.cpp
+@@ -232,9 +232,13 @@ void RenderContext::invalidate()
+     QSGRenderContext::invalidate();
+ }
+ 
+-QSGTexture *RenderContext::createTexture(const QImage &image, uint flags) const
++QSGTexture *RenderContext::createTexture(const QImage &image) const
++{
++    return new PixmapTexture(image);
++}
++
++QSGTexture *RenderContext::createTextureNoAtlas(const QImage &image) const
+ {
+-    Q_UNUSED(flags)
+     return new PixmapTexture(image);
+ }
+ 
+diff --git a/src/plugins/scenegraph/softwarecontext/context.h b/src/plugins/scenegraph/softwarecontext/context.h
+index 11b0af9..a58cc4e 100644
+--- a/src/plugins/scenegraph/softwarecontext/context.h
++++ b/src/plugins/scenegraph/softwarecontext/context.h
+@@ -88,7 +88,8 @@ public:
+     void initializeIfNeeded();
+     void invalidate() override;
+     void renderNextFrame(QSGRenderer *renderer, GLuint fbo) override;
+-    QSGTexture *createTexture(const QImage &image, uint flags = CreateTexture_Alpha) const override;
++    QSGTexture *createTexture(const QImage &image) const override;
++    QSGTexture *createTextureNoAtlas(const QImage &image) const override;
+     QSGRenderer *createRenderer() override;
+ 
+     QWindow *currentWindow;
+diff --git a/src/plugins/scenegraph/softwarecontext/painternode.h b/src/plugins/scenegraph/softwarecontext/painternode.h
+index 60391fe..e3c7c76 100644
+--- a/src/plugins/scenegraph/softwarecontext/painternode.h
++++ b/src/plugins/scenegraph/softwarecontext/painternode.h
+@@ -77,7 +77,7 @@ public:
+ 
+     void paint();
+ 
+-    void setTextureSize(const QSize &size) override;
++    void setTextureSize(const QSize &size);
+     QSize textureSize() const { return m_textureSize; }
+ 
+ private:
+diff --git a/src/plugins/scenegraph/softwarecontext/pluginmain.cpp b/src/plugins/scenegraph/softwarecontext/pluginmain.cpp
+index 133bf5d..58a7f6b 100644
+--- a/src/plugins/scenegraph/softwarecontext/pluginmain.cpp
++++ b/src/plugins/scenegraph/softwarecontext/pluginmain.cpp
+@@ -30,7 +30,7 @@
+ #include "pluginmain.h"
+ #include "context.h"
+ #include "renderloop.h"
+-#include "threadedrenderloop.h"
++
+ 
+ #include <private/qguiapplication_p.h>
+ #include <qpa/qplatformintegration.h>
+@@ -42,7 +42,7 @@ ContextPlugin::ContextPlugin(QObject *parent)
+ 
+ QStringList ContextPlugin::keys() const
+ {
+-    return QStringList() << QLatin1String("softwarecontext");
++    return QStringList() << QLatin1String("customcontext");
+ }
+ 
+ QSGContext *ContextPlugin::create(const QString &) const
+@@ -54,11 +54,7 @@ QSGContext *ContextPlugin::create(const QString &) const
+ 
+ QSGRenderLoop *ContextPlugin::createWindowManager()
+ {
+-    if (!QGuiApplicationPrivate::platformIntegration()->hasCapability(QPlatformIntegration::ThreadedPixmaps) ||
+-        qgetenv("QSG_RENDER_LOOP") == QByteArrayLiteral("basic"))
+-        return new RenderLoop();
+-
+-    return new ThreadedRenderLoop();
++    return new RenderLoop();
+ }
+ 
+ SoftwareContext::Context *ContextPlugin::instance = 0;
+diff --git a/src/plugins/scenegraph/softwarecontext/softwarecontext.json b/src/plugins/scenegraph/softwarecontext/softwarecontext.json
+index ca87c6c..abf6e06 100644
+--- a/src/plugins/scenegraph/softwarecontext/softwarecontext.json
++++ b/src/plugins/scenegraph/softwarecontext/softwarecontext.json
+@@ -1,3 +1,3 @@
+ {
+-    "Keys": ["softwarecontext"]
++    "Keys": ["customcontext"]
+ }
+diff --git a/src/plugins/scenegraph/softwarecontext/softwarelayer.h b/src/plugins/scenegraph/softwarecontext/softwarelayer.h
+index dae42e0..87759bb 100644
+--- a/src/plugins/scenegraph/softwarecontext/softwarelayer.h
++++ b/src/plugins/scenegraph/softwarecontext/softwarelayer.h
+@@ -70,8 +70,8 @@ public:
+     void setFormat(GLenum) override;
+     void setHasMipmaps(bool) override;
+     void setDevicePixelRatio(qreal ratio) override;
+-    void setMirrorHorizontal(bool mirror) override;
+-    void setMirrorVertical(bool mirror) override;
++    void setMirrorHorizontal(bool mirror);
++    void setMirrorVertical(bool mirror);
+ 
+ public slots:
+     void markDirtyTexture() override;

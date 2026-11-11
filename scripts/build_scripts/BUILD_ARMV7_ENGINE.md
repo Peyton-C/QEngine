@@ -1,100 +1,75 @@
-# Setup everything required to emulate armv7 Engine OS
-Requires docker, qemu, python3, e2fsprogs.
+# armv7 Engine OS
+QEngine builds RK3288 Engine OS firmware for QEMU. Install Docker, QEMU, Python 3 and e2fsprogs, then point `--firmware` at an update image, a zipped image, or a desktop updater. QEngine detects the application layout and builds the matching runtime.
 
-This is Engine OS on the RK3288 controllers (Prime, SC, Mixstream), as opposed to
-[BUILD_ARM64.md](BUILD_ARM64.md), which is the same application on RK3588. The two
-need different rootfs builders and different disk layouts; `new_instance.sh` picks
-between them from the firmware itself.
-
-`MONTERO=1` (`--montero` on `new_instance.sh`) also builds the MONTERO mod loader and
-every mod in `shims/montero/mods`, and preloads it into Engine. Needs a Qt 6 Engine
-(5.x); tested on Prime GO 5.3.0.
-
-The short way is one command, which does all of the below and keeps each device in its
-own directory — see [INSTANCES.md](INSTANCES.md):
-
+## Build
 ```sh
-scripts/build_scripts/new_instance.sh --name jp07-5.0.4 --firmware PATH_TO_PRIME_UPDATE.img
-scripts/qemu/run_instance.sh --name jp07-5.0.4
+scripts/build_scripts/new_instance.sh --name sc5000-1.0.1 \
+    --product-code JP07 --firmware SC5000-Prime-FW-Updater-1.0.1-Mac.zip
+scripts/qemu/run_instance.sh --name sc5000-1.0.1
 ```
 
-The steps individually, if you want them:
+For current firmware, use the same commands with its image and instance name. Each instance owns its rootfs, data disk and host ports. QEngine shares the armhf kernel between instances and builds it on demand.
 
-1. [Download Engine from InMusic](https://enginedj.com/downloads) for an RK3288 controller.
-2. Build the rootfs with `build_armv7_engine_rootfs.sh --firmware PATH_TO_PRIME_UPDATE.img`.
-3. Get the kernel and initrd with `get_kernel.sh --arch armhf`.
-4. Make a /data disk with `make_disk.sh --family mpc` — see the note below on why it
-   is not `--family engine`.
-5. Boot with `DEVICE=engine ARCH=armhf scripts/qemu/run_qemu.sh`.
-   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `none`, and the GL
-   modes `sdl-gl` and `egl-vnc` — which work here now, see below). `VIRGL=off` forces
-   the non-GL member of whichever pair is in play; `run_instance.sh` spells the same
-   thing `--no-gl`.
+| Option | Effect |
+| --- | --- |
+| `--product-code JP07` | Selects the device identity; QEngine records it across `--force` rebuilds |
+| `--force` | Rebuilds the rootfs and keeps the data disk |
+| `--montero` | Builds MONTERO for Qt 6 Engine; unavailable on the legacy Qt 5 path |
+| `--size BYTES` | Changes the rootfs size from its 4 GiB default |
 
-## Notes
+## Legacy firmware
+QEngine recognises `/usr/JP07/JP07`, or a product-named application under `/usr/Engine`, such as `JP07`, `JC16` or `NH08`, on glibc older than 2.34, and builds `dtshim` and `qmlrotate` against that firmware's libraries and Qt headers. Qt 5.15.2 firmware renders landscape and gets no `qmlrotate`, so it needs no headers. It installs a static VNC-to-touch bridge, selects software rendering, selects the device's landscape rotation and supplies four virtual CPUs. It keeps the vendor Mali stack and does not inject the newer `-skipFirmwareUpdate` option.
 
-- **The /data disk uses the `mpc` layout, not the `engine` one.** This rootfs's
-  `data.mount` asks for PARTUUID `931ad49d-ad59-0849-833a-9bf00af5b60e`, the single
-  `az01-internal` partition, which is what the MPC images use — not the RK3588
-  `data`+`factory` pair. Disk layout tracks the platform generation, not the
-  application. `new_instance.sh` gets this right on its own.
+SC5000 1.0.x keeps its native Qt 5.5.1 runtime. QEngine builds a matching raster scenegraph plugin and adds `qt55vnc` to serve its offscreen display. OpenGL textures receive transparent raster placeholders, so shader-drawn waveforms and effects are unavailable. The first build downloads the pinned Qt sources; later builds reuse the matching artifacts.
 
-- **One image, several products.** A single update image serves multiple device
-  identities (`JP07-JP08-JP11-5.0.4.img` covers all three), and `/usr/Engine` is
-  shared across them, so the devicetree product code is the only thing that
-  distinguishes them. `PRODUCT_CODE=JP11 build_armv7_engine_rootfs.sh ...` picks
-  one; the default is `JP07`. Only `JP07` has actually been booted.
+Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`. The separate QEMU VNC address shows the guest console. A Qt 5.5 startup dialog can appear blank until a tap redraws it. Use a viewer that negotiates RichCursor; Qt 5.9 can crash when a client without cursor support disconnects.
 
-- **Rendering goes through virgl to the host's GPU**, in a GL display mode
-  (`egl-vnc` or `sdl-gl`). It was software for a long time, and the difference is
-  not marginal — it is the difference between a slideshow and a usable UI. Two
-  things had to land — the machine gained a working PCI bus with `highmem=off`, so
-  `virtio-gpu-gl-pci` can be attached, and `build_virgl_mesa.sh` builds the DRI
-  driver the guest needs at the guest's own Mesa version, because the vendor Mesa has
-  no virgl in it and Debian's packaged driver cannot load here (see that script for
-  why). That version and the driver layout come from `detect_mesa.sh`, which reads
-  them off the rootfs rather than assuming: armv7 has shipped no Mesa at all
-  (pre-5.0.0 — GL came from a proprietary Mali blob) and Mesa 24.0.7 in the DRI
-  layout (5.0.x), while arm64 has shipped both layouts, so neither follows from the
-  architecture. A non-GL mode such as
-  `vnc` still rasterizes on the guest CPU.
+| Firmware | Product code | Application | Display and input |
+| --- | --- | --- | --- |
+| SC5000 1.0.1, 1.0.2, 1.0.3 | JP07 | `/usr/JP07/JP07` | Landscape UI and startup-notice taps after cold boot |
+| SC5000 1.2.0 | JP07 | `/usr/JP07/JP07` | Landscape UI and touch taps |
+| SC5000 1.2.2 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| SC5000 1.3.1 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| SC5000 1.4.1 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| SC5000 1.5.2, 1.6.0, 1.6.2 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
+| SC5000M 1.3.1, 1.4.1, 1.5.2, 1.6.0 | JP08 | `/usr/Engine/JP08` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
+| SC6000 1.5.2, 1.5.3, 1.6.2 | JP13 | `/usr/Engine/JP13` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.6.2 boot stalled before the UI appeared |
+| SC6000M 1.5.2, 1.6.0 | JP14 | `/usr/Engine/JP14` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.5.2 boot stalled before the UI appeared |
+| Prime 2 1.5.2, 1.6.2 | JC16 | `/usr/Engine/JC16` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| Mixstream Pro 2.0.1, 2.1.0-2.1.2, 2.2.0-2.2.2, 2.3.0-2.3.2 | NH08 | `/usr/Engine/NH08` | Landscape UI with demo library; update notice dismissed with single taps after cold boot |
+| Prime GO 1.5.2 | JC11 | `/usr/Engine/JP11` | Renders the startup notice, then quits on its battery check about 10 seconds later |
+| Prime GO 1.6.2 | JC11 | `/usr/Engine/JP11` | Landscape UI as Prime 4; startup notice dismissed and Source closed with single taps |
+| Prime 4 1.3.2, 1.3.3 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup-notice touch verified, source browser stays open |
+| Prime 4 1.4.1 | JC11 | `/usr/Engine/JC11` | Landscape UI; settings touch navigation worked once, but the shortcut did not reopen settings after a cold boot |
+| Prime 4 1.5.2, 1.6.0, 1.6.2 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup notice dismissed and Source closed with single taps |
 
-- **The host needs a QEMU with virglrenderer.** Debian's arm64 build has neither
-  `virtio-gpu-gl-pci` nor `egl-headless`, so the GL modes fail at startup there
-  even though the change above is in place. Building QEMU from source with
-  `--enable-virglrenderer --enable-opengl --enable-slirp` fixes it; `--enable-slirp`
-  is not optional, since without it `-netdev user` disappears and no instance can
-  boot.
+Pass the product code the application is named after, such as `JP08` for SC5000M or `JC16` for Prime 2. Build Prime GO as `JC11`: as `JP11`, Engine shows a blank screen and quits on its battery check about 20 seconds after starting. Prime GO 1.5.2 runs its own binary, which keeps the check even as `JC11`, so it does not stay up. Its Qt 5.9 runtime needs a 270-degree correction; Qt 5.12 already renders in landscape on both products. Earlier SC5000 firmware needs the 90-degree correction.
 
-- **Engine needs its EGL device integration named explicitly** —
-  `QT_QPA_EGLFS_INTEGRATION=eglfs_kms`, plus `EGL_PLATFORM=gbm` and
-  `MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`. The rootfs build writes all three into
-  `engine.service.d/override.conf`. Left to itself Qt picks no integration at all
-  and Engine dies in an EGL restart loop; see
-  [../../docs/BUILDING.md](../../docs/BUILDING.md#engine-504-on-armv7-rk3288).
+Firmware 1.5.2 and later omit Qt development headers. Extract the headers from an SC5000 1.4.1 instance, then set `LEGACY_QT_HEADERS` when building either version. QEngine checks the Qt minor version and links against the target firmware's libraries.
 
-- **The shims are shared with the arm64 build**, except `dtshim.c`, which
-  carries RK3288's devicetree paths. `drmatomic` and `touchbridge` build from the
-  RK3588 sources. One 32-bit-specific catch is worth knowing before writing another
-  shim here: this guest's glibc is a 64-bit-`time_t` build, so it imports
-  `__ioctl_time64` rather than `ioctl`, and an `LD_PRELOAD` interposer has to export
-  both names or it loads and silently never runs.
+```sh
+mkdir -p build/qt512-headers
+debugfs -R 'rdump /usr/qt/include build/qt512-headers' build/instances/sc5000-1.4.1/rootfs.img
+LEGACY_QT_HEADERS="$PWD/build/qt512-headers/include" \
+    scripts/build_scripts/new_instance.sh --name sc5000-1.5.2 \
+    --product-code JP07 --firmware SC5000-1.5.2-Update.img.zip
+```
 
-- Used directly as above, the rootfs is written to `build/rootfs_out.img` — the same
-  path the arm64 and MPC builds use, so building one target overwrites the other.
-  Use an instance (see [INSTANCES.md](INSTANCES.md)) to keep several side by side.
+On macOS, use `/opt/homebrew/opt/e2fsprogs/sbin/debugfs` if `debugfs` is outside your `PATH`.
 
-- **Touch works out of the box**, same mechanism as the MPC build: the rootfs build
-  installs `touchbridge` and starts it before `engine.service`. Engine only
-  responds to a real touchscreen, and QEMU's virtio tablet presents as an absolute
-  pointer, so the bridge re-emits it as a uinput multitouch device. Confirmed against
-  the `sdl` display.
+QEngine builds `alsashim` against the guest libraries for the Qt 5.12.6 runtime of the SC media players and Prime GO, `JP07`, `JP08`, `JP11`, `JP13` and `JP14`. Prime 2 and Prime 4 start without it. It converts PCM formats and rates, exposes four playback channels, hides loopback capture and keeps Engine's original buffer sizes. This configuration is automatic; `QEMU_AUDIO=off` is not required.
 
-- **What is not done yet:** audio. `alsashim` and `midisurface` are carried over
-  from the arm64 build and are no longer RMZ2-specific -- they live in
-  `shims/alsashim/` and `shims/midisurface/`, build for either architecture, and
-  between them give Engine a control surface it will bind. Only `controllermap`
-  is left out, which exists to swap a real USB controller's assignment files in
-  and hardcodes RMZ2's directory. `alsashim` is preloaded for one job here, the
-  MIDI card-number gate; the sound card Engine will accept is still missing, and
-  the 32-bit virt machine has no PCI for the HDA device anyway.
+| Legacy `instance.env` setting | Default |
+| --- | --- |
+| `ENGINE_VNC_PORT` | A host port derived from the instance name, forwarded to the touch bridge on guest port 5900 |
+| `SMP` | `4`, required by Engine's CPU-affinity setup |
+| `DISPLAY_MODE` | `vnc`, for the guest console |
+
+Colored icons use shaders that the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. Dismiss missing-controller notices with Ignore; tap the hardware warning to continue on 1.0.1. This path does not provide a virtual control surface. Other products and firmware versions on this path are untried. `Ctrl+,` opens the settings menu in the tested 1.2.0 and 1.2.2 guests; its binding exists but was not verified on 1.3.1.
+
+## Later firmware
+Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEngine replaces the Mali stack on Qt 5.15.2 firmware and adds the matching virgl driver on firmware that already ships Mesa. The shims and Mesa it installs are built on bookworm and need glibc 2.34 or later, so Mixstream Pro 2.3.x and SC LIVE 2 2.3.3, which pair Qt 5.15.2 with glibc 2.32, take the legacy path instead. Use `--no-gl` to rasterize on the guest CPU. HeadRush uses this builder too; see [BUILD_HEADRUSH.md](BUILD_HEADRUSH.md).
+
+QEngine installs `touchbridge`, `midisurface`, the devicetree shim and the application override. The data disk uses the single `az01-internal` partition, the same layout as Gen 1 MPC. Direct use of `build_armv7_engine_rootfs.sh` defaults to the shared `build/rootfs_out.img`; use instances to keep devices apart.
+
+See [INSTANCES.md](INSTANCES.md) for instance settings and [BUILDING.md](../../docs/BUILDING.md) for the runtime mechanisms.

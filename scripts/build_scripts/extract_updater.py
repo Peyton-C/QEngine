@@ -8,11 +8,12 @@ Prints the image size in bytes on stdout; everything else goes to stderr.
 inMusic's firmware updater apps carry the same update image the website offers
 as a bare .img, byte for byte, so an updater is as good a source as the image
 itself and for some builds the only one archived. HeadRush ships nothing else.
-Two packagings are read, identified by their first bytes:
+The following packagings are read, identified by their first bytes:
 
   Mac zip       "PK\\3\\4", a zipped Firmware Updater.app with the image at
                 Contents/Resources/Update.img, deflated. Seen from Mixstream Pro
                 2.0.1 (2021) to Prime 4 G2 5.3.0 and every HeadRush updater.
+  Image zip     "PK\\3\\4", a single named .img, as on SC5000 1.3.1.
   Windows .exe  "MZ", a stock 7-Zip SFX: the 7zS.sfx stub, a ;!@Install@! block
                 that runs FirmwareUpdater.exe, then a 7z archive holding
                 update.img, Config.json, the updater and libusb. Seen from
@@ -368,8 +369,15 @@ def read_zip(path, dest):
         matches = [i for i in z.infolist()
                    if not i.filename.startswith("__MACOSX/")
                    and i.filename.lower().endswith("/contents/resources/" + IMAGE_NAME)]
+        if not matches:
+            # Early direct downloads, such as SC5000 1.3.1 and Prime 4 1.3.2,
+            # wrap a named update image in a zip instead of shipping an app.
+            matches = [i for i in z.infolist()
+                       if not i.filename.startswith("__MACOSX/")
+                       and not os.path.basename(i.filename).startswith("._")
+                       and i.filename.lower().endswith(".img")]
         if len(matches) != 1:
-            raise ValueError(f"zip holds {len(matches)} .app/Contents/Resources/Update.img, expected one")
+            raise ValueError(f"zip holds {len(matches)} candidate firmware images, expected one")
         info = matches[0]
         print(f"--- zip {info.filename}: {info.file_size // (1024 * 1024)} MiB ---", file=sys.stderr)
         # zipfile checks the member's CRC-32 when it reaches the end.

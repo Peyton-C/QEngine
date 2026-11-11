@@ -8,6 +8,7 @@ Emulate Engine OS and other InMusic OSes inside QEMU
 - [ENGINEOS.md](docs/ENGINEOS.md) — Engine OS internals, product spoofing, known limitations
 - [BLOCKING_TELEMETRY.md](docs/BLOCKING_TELEMETRY.md) — stopping Engine's crash/analytics reporting from reaching InMusic's real Sentry project
 - [BUILD_ARM64.md](scripts/build_scripts/BUILD_ARM64.md) / [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) / [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md) — what each target needs
+- [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md), building Prime and VX5
 - [INSTANCES.md](scripts/build_scripts/INSTANCES.md) — running several emulated devices side by side
 - [MACOS_VIRGL.md.md](docs/MACOS_VIRGL.md.md) — Build QEMU w/ Virgl on macOS
 
@@ -37,6 +38,10 @@ scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
 scripts/build_scripts/new_instance.sh --name jp07-5.0.4 --device engine \
     --firmware /path/to/JP07-JP08-JP11-5.0.4.img
 
+# Early SC5000 firmware uses Qt VNC with touch and landscape rotation.
+scripts/build_scripts/new_instance.sh --name sc5000-1.2.0 \
+    --firmware /path/to/SC5000Prime1.2.0Updater-Mac.zip
+
 # 2. Boot. Each instance owns its disks and its host ports, so these run at the
 #    same time without interfering.
 scripts/qemu/run_instance.sh --name rmz2-4.6.0
@@ -50,6 +55,8 @@ scripts/qemu/run_instance.sh --name rmz2-4.6.0 --no-gl
 
 The serial console appears in the terminal you launched from and root has no
 password.
+
+For SC5000 1.x, connect to the `Engine VNC` address printed by the launcher. QEMU VNC shows the console. These builds use loopback audio and software rendering with missing colored icons; see [BUILD_ARMV7_ENGINE.md](scripts/build_scripts/BUILD_ARMV7_ENGINE.md).
 
 **Build one architecture at a time.** Both pipelines use the same `debian:bookworm`
 and `debian:trixie` tags at different architectures, and Docker caches a tag at only
@@ -66,18 +73,17 @@ that readable. Run it by hand as `LD_PRELOAD=/root/dtshim.so az0x-info` to see w
 the application itself resolves.
 
 ## Engine OS Support Matrix
-|                         | 4.4.0+ (arm64) | 5.0.0+ (armv7) | 4.3.0 |
-|-------------------------|----------------|----------------|-------|
-| Rootfs Extraction       | Y              | Y              | Y     |
-| Engine                  | Y              | Y              | Y     |
-| SoundSwitch             | Y              | ?              | N     |
-| Display                 | Y              | Y              | Y     |
-| Virgl                   | Y              | Y              | N     |
-| Fake Touch              | Y              | Y              | Y     |
-| Keyboard Navigation     | Y              | ?              | Y     |
-| Audio Playback          | Y              | N              | N     |
-| MIDI                    | Y              | Y              | N     |
-| External Media (USB/SD) | Y              | Y              | N     |
+|                         | Modern arm64 (4.4.0+) | Modern armv7 (5.0.0+) | Classic (2.4.0-4.3.4) | Legacy (1.0.0-2.3.x) |
+|-------------------------|-----------------------|-----------------------|-----------------------|----------------------|
+| Engine                  | Y                     | Y                     | Y                     | Y                    |
+| SoundSwitch             | Y                     | ?                     | ?                     | ?                    |
+| Display                 | Y                     | Y                     | Y                     | Y                    |
+| Virgl                   | Y                     | Y                     | Y                     | N                    |
+| Fake Touch              | Y                     | Y                     | Y                     | Y                    |
+| Keyboard Navigation     | Y                     | ?                     | ?                     | ?                    |
+| Audio Playback          | Y                     | N                     | ?                     | ?                    |
+| MIDI                    | Y                     | Y                     | ?                     | ?                    |
+| External Media (USB/SD) | Y                     | Y                     | ?                     | ?                    |
 
 ## Emulated Controllers
 
@@ -88,24 +94,28 @@ them (see [ENGINEOS.md](docs/ENGINEOS.md#product-identity-spoofing)). Version ce
 hold the exact firmware version booted, `?` for untested, `–` where that major
 version was never released for the device.
 
-|                         | Code  | SOC    | Signed FW | Arch  | 1.x | 2.x | 3.x | 4.x           | 5.x         |
-|-------------------------|-------|--------|-----------|-------|-----|-----|-----|---------------|-------------|
-| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?           |
-| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0         | ?           |
-| Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –   | –   | ?   | ?             | ?           |
-| Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –   | –   | –   | -             | 5.1.0-5.3.0 |
-| Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | ?   | ?   | ?   | 4.3.0 !       | ?           |
-| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –   | –   | –   | ?             | ?           |
-| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | 5.0.4-5.3.0 |
-| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?           |
-| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?           |
-| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | ?   | ?   | ?   | ?             | ?           |
-| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?           |
-| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?           |
-| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?           |
-| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –   | ?   | ?   | ?             | ?           |
-| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –   | –   | ?   | ?             | ?           |
-| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –   | –   | –   | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
+|                         | Code  | SOC    | Signed FW | Arch  | 1.x         | 2.x   | 3.x   | 4.x           | 5.x         |
+|-------------------------|-------|--------|-----------|-------|-------------|-------|-------|---------------|-------------|
+| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.5.2, 1.6.2 | ?     | ?     | ?             | 5.3.0       |
+| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | 1.3.2-1.4.1, 1.5.2-1.6.2 | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | 5.3.0       |
+| Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | 5.3.0       |
+| Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | -             | 5.1.0-5.3.0 |
+| Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | 1.6.2 !     | ?     | ?     | 4.3.0 !       | 5.3.0 !     |
+| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | ?             | ?           |
+| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.0.1-1.3.1, 1.4.1-1.6.2 | ?     | ?     | ?             | 5.0.4-5.3.0 |
+| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | 1.3.1-1.6.0 | ?     | ?     | ?             | 5.3.0       |
+| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | 1.5.2, 1.5.3, 1.6.2 | ?     | ?     | ?             | 5.3.0       |
+| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | 5.3.0       |
+| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | 2.3.3 | ?     | ?             | 5.3.0       |
+| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | 4.3.4         | 5.3.0       |
+| Numark Mixstream Pro    | NH08  | RK3288 | N         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | 5.3.0       |
+| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | 5.3.0       |
+| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
+| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
+
+Prime 4 1.3.2 and 1.3.3 render, but the source browser stays open after the startup notice is dismissed. Version 1.4.1 accepted settings-menu touch navigation once; reopening settings after a cold boot remains unresolved. See [armv7 builds](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the legacy runtime's limits.
+
+Mixstream Pro 2.0.1 to 2.3.2 boot on the same legacy path as 1.x and need no audio shim. QEngine picks that path for any firmware older than glibc 2.34, so 2.3.x takes it despite running Qt 5.15.2, and renders in software rather than through virgl. The SC media players and Prime GO boot 1.5.2 and later with four-channel playback-only audio configured by QEngine; Prime 2 and Prime 4 start without it. Playback remains unverified. `!` marks Prime GO firmware booted as `JC11`, since as `JP11` its battery gate quits Engine shortly after startup. Prime GO 1.5.2 has the gate built into its own binary and quits even as `JC11`. Prime GO+ as `JP11S` and Mixstream Pro GO as `NH10` on 5.3.0 start Engine, show a blank screen and power the guest off after about two minutes, so those cells stay `?`. Their image boots as `JC11S` and `NH08S`.
 
 ## Other inMusic devices
 
@@ -170,33 +180,29 @@ The drum module runs MPC's codebase on Gen 1's RK3288 platform, and `--device dr
 
 LDMF does not build yet: it keeps its content on an eMMC partition QEngine does not provide. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md).
 
-### Emulated Akai and HeadRush Oroducts
+### Emulated Akai and HeadRush Products
 
-The same `az0x` base distribution carries several product lines this project has
-**no rootfs builder for yet** — `new_instance.sh` rejects them, since it matches on
-`/usr/Engine` and `/usr/bin/MPC` and these have neither. Recorded here because the
-firmware is in the same archive and the extraction recipe is the same:
+The same `az0x` base distribution carries several more product lines. HeadRush builds with `--device headrush`: Prime boots 5.2.0 as `HG06` on armv7, and VX5 boots 1.2.2 and 1.3.1 as `HV03` on arm64. Both use silent loopback audio; VX5 has no control surface. See [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md).
+
+```sh
+scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headrush \
+    --firmware "HeadRush Prime 5.2.0 Firmware Updater - Mac.zip"
+```
 
 | Line | Codes | Notes |
 |------|-------|-------|
 | Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line. Force (Gen 2) ships in the MPC Gen 2 image and builds as an MPC |
-| Akai MPC Sample | `AC50` | |
+| Akai MPC Sample | `AC50` | Boots 1.3.0 on RK3566/arm64 with `--device mpc-sample`, display works, no audio or control surface. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md#mpc-sample) |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
 
-**"Evil" is HeadRush.** The HeadRush application binary is built around a namespace
-called `Evil` — `EvilApp`, `EvilGui`, `EvilClient`, `EvilDB`, `EvilAPI`,
-`EvilAppRunner`, `Evil::BoardModes` — with its database tables named for
-amp-modeller concepts (`RigDescriptorsList`, `SetlistDescriptorsList`). The binary
-also identifies itself as `headrushfx`. It is an internal codename, not a separate
-product line: anything labelled "Evil" in an extracted rootfs is the HeadRush
-application. Confirmed against `HV01` (HeadRush Core).
+HeadRush Prime and the older models run the `Evil` application. VX5 runs a separate JUCE application, `/usr/bin/HV03`.
 
 **"Looper" is the Looperboard.** `HG03` is the HeadRush Looperboard, and
 `LooperController` lives inside that same `Evil` binary — the looper is a mode of
 the shared HeadRush application rather than its own codebase, which is why one
 firmware lineage covers both the pedal-style units and the Looperboard.
 
-| Denon DJ Prime 4 | RANE SYSTEM ONE |
-|------------------|-----------------|
-| ![Emulated Prime 4, Engine OS 4.3.0 About Screen](images/DENON_DJ_PRIME_4_ABOUT_430.jpg) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 About Screen](images/RANE_SYSTEM_ONE_ABOUT_460.png) |
-| ![Emulated Prime 4, Engine OS 4.3.0 Playlist Screen](images/DENON_DJ_PRIME_4_PLAYLISTS_430.png) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 Playlist Screen](images/RANE_SYSTEM_ONE_PLAYLISTS_460.png) |
+| Denon DJ Prime 4 | RANE SYSTEM ONE | Denon DJ SC5000 Prime |
+|------------------|-----------------|-----------------------|
+| ![Emulated Prime 4, Engine OS 4.3.0 About Screen](images/DENON_DJ_PRIME_4_ABOUT_430.jpg) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 About Screen](images/RANE_SYSTEM_ONE_ABOUT_460.png) | ![Emulated SC5000, Engine Prime 1.0.1 About Screen](images/DENON_DJ_SC5000_ABOUT_101.png) |
+| ![Emulated Prime 4, Engine OS 4.3.0 Library Screen](images/DENON_DJ_PRIME_4_PLAYLISTS_430.png) | ![Emulated SYSTEM ONE, Engine OS 4.6.0 Library Screen](images/RANE_SYSTEM_ONE_PLAYLISTS_460.png) | ![Emulated SC5000, Engine Prime 1.0.1 Library Screen](images/DENON_DJ_SC5000_PLAY_101.png)|

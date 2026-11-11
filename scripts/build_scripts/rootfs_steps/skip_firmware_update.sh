@@ -34,7 +34,7 @@
 # top of its per-device "does this need an update?" function and returns "no"
 # before firmware.json is read, so the version path never reaches
 # quitAndStartFirmwareUpdate(). Confirmed by reading Engine 2.4.0, 3.4.0, 4.3.4
-# and 5.0.4; absent from 1.x, which these builders do not target.
+# and 5.0.4; absent from 1.x, whose legacy builder path omits this step.
 #
 # Not covered: the separate DFU-mode path, which fires only when dfu-util -l
 # lists a device. Nothing we present is a USB DFU device.

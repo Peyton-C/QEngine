@@ -43,9 +43,9 @@ Unconfirmed: QML/config properties resembling `Configuration/HasBattery` and `us
 - Qt 5.15.2 app. Two relevant QPA backends:
   - `vnc` — bundled `libqvnc.so`, `QT_QPA_PLATFORM=vnc:size=WxH`.
   - `evdevtouch` — generic QPA plugin, `QT_QPA_GENERIC_PLUGINS=evdevtouch:/dev/input/eventN`.
-- **Known defect in older (2.4.0-era) builds**: `evdevtouch` loads but is never instantiated — touch input silently does nothing, confirmed with both real touch hardware and synthetic uinput input. Fixed by 4.3.0, where `evdevtouch` works correctly with both synthetic and real touch input (via vnctouchbridge`, see [BUILDING.md](BUILDING.md)).
+- Touch works across the Qt 5.15.2 builds QEngine runs on `eglfs` with `touchbridge`: Prime GO 2.4.0, 3.4.0 and 4.0.0 as `JC11` all accepted taps on the startup dialogs and library. An early attempt with the `vnc` platform plugin on 2.4.0 saw `evdevtouch` load without ever being instantiated, so taps did nothing; that combination is not what QEngine uses.
 - Rotation is read from `/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation`, a raw big-endian `<u32>` cell compensating for a physically rotated panel (e.g. `0x10e` = 270° on real Prime Go hardware). Under emulation this should be forced to `0` — there's no physical panel to correct for, and the "correct" real-hardware value does not fix Prime Go's known rendering issue (below).
-- Most small UI icons/images fail to render; cover art and the boot/shutdown logo do not. Root cause: Qt's image-format plugins (`libqjpeg.so`,`libqsvg.so`, etc.) all depend on the real proprietary `libmali.so.14.0`, which this project replaces system-wide with Mesa (see [BUILDING.md](BUILDING.md)). Cover art and the logo seem to be unaffected.
+- Qt's image-format plugins (`libqjpeg.so`, `libqsvg.so` and the rest) link `libmali.so.14.0`, though they use no GL. Most icons failed to draw while the blob sat beside a system Mesa. With the blob replaced by a stand-in that loads Mesa, they draw (see [BUILDING.md](BUILDING.md#replacing-the-mali-gpu-driver-with-mesa)).
 - **Open issue — Prime Go Display**:  Any output with the Prime Go PID results in only the upper left quater of the display being visible, seems to be unique to the Prime Go.
 
 ## MIDI

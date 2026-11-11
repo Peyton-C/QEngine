@@ -4,7 +4,7 @@ Serves a fake devicetree, and a usable `/proc/interrupts`, to an emulated Engine
 QEMU's `virt` machine synthesizes its own devicetree with none of the `inmusic,*`
 properties Engine needs, so without this Engine reads an empty product code and aborts.
 
-One source, two SoCs: build with `-DSOC_RK3588` or `-DSOC_RK3288`, which selects the
+One source, three SoCs: build with `-DSOC_RK3588`, `-DSOC_RK3566` or `-DSOC_RK3288`, which selects the
 `DT_REMAPS` table of properties served and the `FALLBACK_INTERRUPTS` table below. It
 refuses to compile without one. Everything else — the
 `open`/`open64`/`fopen`/`fopen64`, `access`/`faccessat` and `write` interposition, the
@@ -192,3 +192,9 @@ and does a separate `fopen`/`fprintf`/`fclose`, and `serial-number` alone is re-
 dozens of times per session. Two full passes with it on found Engine reading only
 `inmusic,product-code`, `serial-number` and one stale RK3288-era rotation probe, which
 is what ruled the devicetree out of the audio investigation.
+
+## RK3566
+MPC Sample 1.3.0 uses `-DSOC_RK3566`. This table serves `inmusic,az07-pcb-rev` as `A` and rotation as zero at the SPI panel and root panel-rotation paths. Product code and serial come from the same per-instance files as the other SoCs. QEngine supplies a landscape virtual display in place of the rotated SPI panel.
+
+## Legacy Engine
+SC5000 1.2.0, 1.2.2 and 1.3.1 and Prime 4 1.3.2, 1.3.3 and 1.4.1 use the same source with `legacy_compat.c`, linked against the guest's glibc. It supplies `memfd_create` through the kernel, covers fortified open calls and serves physical-register mappings as anonymous zero-filled memory. The builder enables large-file access for `/dev/mem`'s sparse stand-in. Newer firmware builds omit this compatibility object.

@@ -124,11 +124,16 @@ esac
 if [ -n "$_vnc_port" ]; then
     echo "=== vnc      : localhost:$_vnc_port (display :$_vnc_display)"
 fi
+if [ -n "${ENGINE_VNC_PORT:-}" ]; then
+    echo "=== Engine VNC: localhost:$ENGINE_VNC_PORT (touch bridge; QEMU VNC is the console)"
+fi
 echo ""
 
 [ -n "$VIRGL_OVERRIDE" ] && export VIRGL="$VIRGL_OVERRIDE"
 export ROOTFS_IMG DATA_IMG SD_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 export DEVICE DISPLAY_MODE
+if [ -n "${ENGINE_VNC_PORT:-}" ]; then export ENGINE_VNC_PORT; fi
+if [ -n "${SMP:-}" ]; then export SMP; fi
 # Optional, and absent from most instance.envs. Exported only when the file set
 # it, so arch_devices.sh's own default applies otherwise. An `if` rather than a
 # `&&` list because this is the penultimate statement under `set -e`.

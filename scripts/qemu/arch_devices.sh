@@ -60,6 +60,10 @@ fi
     echo "       guests — or set QEMU_BIN to the binary to use." >&2
     exit 1; }
 
+# The screen size, which run_qemu.sh picks per family; landscape 1280x800 for any
+# other caller.
+SCREEN_W="${SCREEN_W:-1280}" SCREEN_H="${SCREEN_H:-800}"
+
 case "$ARCH" in
     arm64)
         MACHINE="virt,highmem=on"
@@ -67,8 +71,8 @@ case "$ARCH" in
         # itself: the launchers' own host check sets CPU=host for KVM/HVF, and a
         # value here would win over it via ${CPU:-...} and silently disable it.
         ARCH_CPU_DEFAULT="max"
-        GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
-        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
+        GPU_DEV="virtio-gpu-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
+        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
         ;;
@@ -97,7 +101,7 @@ case "$ARCH" in
         # it is a bigger change than this one and these devices have 2GB anyway.
         MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
-        GPU_DEV="virtio-gpu-pci,edid=off,xres=1280,yres=800"
+        GPU_DEV="virtio-gpu-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         # GL works here. Two things had to be true: the machine gained a working PCI
         # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the
         # rootfs carries a virgl-capable DRI driver built by build_virgl_mesa.sh --
@@ -108,7 +112,7 @@ case "$ARCH" in
         # in, and Debian's arm64 QEMU has neither virtio-gpu-gl-pci nor
         # egl-headless, so on such a host the GL modes fail at startup no matter
         # what this sets.
-        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=1280,yres=800"
+        GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
         # highmem=off caps the guest's physical address space at 32 bits, and RAM on

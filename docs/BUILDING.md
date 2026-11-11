@@ -69,15 +69,50 @@ cleanly against Engine OS's userland, while still containing a working Mesa
 (20.3.5) with a virtio-gpu DRI driver — the reason it's the default source for
 anything compiled or extracted for the guest.
 
-### Replacing the Mali GPU driver with Mesa
-Real hardware ships a proprietary `libmali.so.14.0`, which only works against
-actual Mali GPU hardware and does nothing under QEMU. Substitute a full
-Mesa/EGL/GLES/DRM/X11 stack (Debian 11 armhf packages) system-wide instead, so
-`virtio-gpu-pci` renders via Mesa's `virtio_gpu_dri.so`/`swrast_dri.so`.
+### Early Engine builds
+`new_instance.sh` recognises the product-named executables in early SC media player and Prime firmware, and in Mixstream Pro 2.0.1 to 2.3.x, and selects the legacy path for any of them older than glibc 2.34 in `build_armv7_engine_rootfs.sh`. QEngine links `dtshim` and `qmlrotate` against the extracted firmware's glibc and Qt headers and libraries, then installs a static VNC-to-touch bridge. Engine renders in software, QEngine selects the device's landscape rotation, and the instance gets four CPUs for Engine's affinity setup. The application binary stays unmodified.
 
-A companion `libmali_shim.so` stub (compiled from `mali_shim.c`) — empty aside
-from linking against real EGL/GLES symbols — satisfies anything that
-`dlopen`s "the Mali driver" by name, transparently redirecting it to Mesa.
+SC5000 1.0.x uses Qt 5.5.1, which has no VNC platform. `build_qt55_renderer.sh` builds a software scenegraph plugin against the firmware's headers and libraries and supplies the `customcontext` backend selected by Engine. `qt55vnc` exports the offscreen backing store, aligns the touchscreen geometry and supplies transparent raster placeholders for OpenGL texture IDs. Engine, `airQuick` and the Qt libraries stay unmodified; shader-drawn waveforms and effects are unavailable.
+
+| Firmware | Executable | Result as JP07, armhf |
+| --- | --- | --- |
+| 1.0.1, 1.0.2, 1.0.3 | `/usr/JP07/JP07` | Landscape UI and startup-notice taps after cold boot; raster placeholders for GL textures |
+| 1.2.0 | `/usr/JP07/JP07` | Landscape UI and touch taps; uses `-card hw:Loopback,0` |
+| 1.2.2 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| 1.3.1 | `/usr/Engine/JP07` | Landscape UI and touch taps |
+| 1.4.1 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| 1.5.2, 1.6.0, 1.6.2 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
+
+Connect to the `Engine VNC` port printed by `run_instance.sh`, recorded as `ENGINE_VNC_PORT` in `instance.env`. QEMU's VNC port shows the console. The bridge emits touchscreen events for Qt's `evdevtouch` plugin. Your viewer must negotiate RichCursor, otherwise Qt 5.9 can fault when its last client disconnects. Preloads live under `/root`; `/run` is mounted `noexec`.
+
+Colored icons use `ShaderEffect`, which the software renderer cannot draw. Loopback audio underruns, playback and MIDI binding remain unverified, and touch testing covers single taps. This path keeps the vendor Mali libraries and does not pass `-skipFirmwareUpdate`, which 1.x lacks. The Qt 5.12.6 runtime of the SC media players and Prime GO gets a guest-linked `alsashim`; earlier runtimes skip the modern ALSA/MIDI/EGLFS preloads. MONTERO requires Qt 6. See [BUILD_ARMV7_ENGINE.md](../scripts/build_scripts/BUILD_ARMV7_ENGINE.md) for the build commands.
+
+SC5000 1.2.0, 1.2.2 and 1.3.1 include Utility, Preferences and Quick Preferences pages. `Ctrl+,` opens the tabbed settings menu in the tested 1.2.0 and 1.2.2 guests; the same shortcut is defined in 1.3.1, but was not verified there. Avoid `P`, which is also assigned to another action.
+
+Prime 4 uses `/usr/Engine/JC11` and product code `JC11`. Its Qt 5.9 runtime needs a 270-degree correction in 1.3.2 and 1.3.3; Qt 5.12 in 1.4.1 already renders in landscape. Touch dismissed the startup notice on all three, but the source browser remained open on 1.3.2 and 1.3.3. Version 1.4.1 accepted touch navigation between Utility and Preferences once, but `Ctrl+,` did not reopen settings after a cold boot. Playback remains unverified.
+
+Qt 5.12 also renders SC5000 1.4.1, Prime 4 1.5.2 to 1.6.2, SC5000M 1.4.1 to 1.6.0, SC6000 1.5.2 to 1.6.2, SC6000M 1.5.2 and 1.6.0, Prime 2 1.5.2 and 1.6.2 and Prime GO 1.6.2 in landscape without rotation. SC5000M 1.3.1 uses Qt 5.9 and takes the same 90-degree correction as SC5000. All accept single taps to dismiss the startup notice and close Source. From 1.6.0, `/usr/Engine/Engine` is shared by every product and the product-named file is a symlink to it. Firmware 1.5.2 and later omit development headers; set `LEGACY_QT_HEADERS` to an extracted Qt 5.12 header directory when building them. QEngine still links against each target firmware's libraries.
+
+The SC media players, SC5000, SC5000M, SC6000 and SC6000M, and Prime GO use ALSA's device manager from 1.5.2. QEngine supplies `alsashim` built against each firmware's libraries, enables PCM format and rate conversion, limits playback to four channels and hides loopback capture. `ALSASHIM_BUFFER_SCALE=1` preserves Engine's buffer sizes. The builder installs these settings automatically. Prime 2 and Prime 4 run the same 1.6.x binary but start without them; the SC media players abort on `snd_pcm_state` without them. Prime GO boots as `JC11`, since its battery check quits Engine as `JP11`. Prime GO 1.5.2 keeps that check in its own binary and quits even as `JC11`.
+
+### Replacing the Mali GPU driver with Mesa
+Engine OS 4.3.4 and earlier on armv7, and HeadRush, get GL from a proprietary `libmali.so.14.0` that only drives a real Mali, and every Qt library names it directly. `build_armv7_engine_rootfs.sh` replaces it whenever `detect_mesa.sh` reports the `mali` layout, with no option to set.
+
+| Piece | Built by | What it is |
+| --- | --- | --- |
+| Mesa 24.0.9 | `build_mali_mesa.sh` | libEGL, libGLESv2, libgbm and the virtio_gpu, kms_swrast and swrast drivers, built on bookworm for the rootfs's glibc 2.36 |
+| `libmali.so.14.0` | `build_mali_mesa.sh` | a stand-in with no code that loads Mesa's EGL, GLES and gbm, so the blob is never mapped; the blob is kept as `.vendor` |
+| eglfs_kms | `build_qt5_eglfs_kms.sh` | Qt 5.15.2's KMS device integration, which this Qt was built without, checked against the rootfs's own Qt |
+
+Engine then runs on `eglfs_kms` through virgl, as 5.x does. Tried on Prime GO 4.3.0 as JC11, where it reaches the main screen with every icon drawn, and on HeadRush Prime 5.2.0 as HG06. Not yet tried on other 4.x versions.
+
+HeadRush's Qt has `qreal` as float where Engine's has double, so its eglfs_kms is a separate build, which the builder picks by reading the rootfs's QtGui. Evil also needs three things Engine does not:
+
+| Need | What QEngine does |
+| --- | --- |
+| Its own sound card, `hw:HV01`, 8 out and 2 in, or it segfaults | the kernel's `snd-aloop` card, renamed to HV01 and held to that shape by `pcmhold` |
+| `/dev/loop1`, for the USB storage image it keeps on `/data` | `get_kernel.sh` bundles `loop` |
+| A portrait panel, which it rotates its UI for | `qmlrotate` turns the UI back for the landscape screen; `SCREEN=800x1280` gives the panel as it is |
 
 ## 3. Preparing the eMMC overlay image
 `emmc.img` backs the `/media/az01-internal` mount that Engine's systemd units
@@ -1763,18 +1798,49 @@ separate things happen in that window:
    (driver binding, `modalias`, etc.) at runtime rather than checking a
    fixed name, which `strings` can't reveal.
 
-Both of those turned out to be red herrings. The `/sys/devices/platform`
-walk is something `Engine` does on every startup, including the ones that
-now render fine, and the Mali `access()` is a check whose result it
-ignores — the rootfs the UI renders from has an *empty*
+Only the Mali `access()` is a red herring: its result is ignored, and the
+rootfs the UI renders from has an *empty*
 `/usr/lib/qt6/plugins/egldeviceintegrations`, so neither the file nor a
-`getdents64()` shim is needed. What actually made `Engine` quit was Qt
-choosing no EGL device integration at all: it enumerates `eglfs_kms` and
-`eglfs_emu`, logs `Using base device integration`, and the base
-integration has no native window to hand EGL, so config selection fails
-`EGL_BAD_CONFIG` and `eglCreateWindowSurface` fails `EGL_BAD_NATIVE_WINDOW`
-(`Could not create the egl surface: error = 0x300b`, then `Crash with:
-ABRT` and a restart loop). Three environment variables in
+shim is needed for it. The `/sys/devices/platform` walk is the *actual*
+gate, and is not a red herring. It is Engine's board validation: it
+enumerates that directory looking for the RK3288 secure eFuse device
+(`ffb10000.efuse`), reads its nvmem, and `exit_group(0)`s cleanly when
+the device is absent or the nvmem is empty — the same clean-exit-on-empty
+board check the RK3288 emulator traced to `Engine+0x38ccb8` on 5.0.2. The
+generic `virt` machine models no such platform device, so the check always
+failed here.
+
+The fix is `dtshim` + `write_fake_dt`, no firmware change:
+
+1. `write_fake_dt` writes two nvmem fixtures under `/root/fake-dt/`:
+   `ffb10000.efuse/rockchip-efuse/nvmem` seeded with the product code
+   (`JC11S`) and `ffb40000.efuse/rockchip-efuse/nvmem` seeded with the
+   CPU id (`RK3288AZ01JC11S` at offset 7) — the two eFuse devices the
+   RK3288 DTB declares but QEMU does not model.
+2. `dtshim` (SOC_RK3288) makes those paths visible and readable. It
+   injects `ffb10000.efuse` and `ffb40000.efuse` into `readdir64()` while
+   `/sys/devices/platform` is listed, and remaps the
+   `/sys/devices/platform/ffb10000.efuse` and
+   `/sys/devices/platform/ffb40000.efuse` prefixes through `open`/`openat`/
+   `statx`/`__stat64_time64`/`__lstat64_time64`/`__fstatat64_time64`/
+   `__realpath_chk`/`readlink` to those files. The stat-family
+   interposition is required because Engine (via `std::filesystem`) stats
+   the path before opening it, and glibc ≥ 2.34 routes `stat()`/`lstat()`/
+   `fstatat()` through the `time64` symbols rather than `statx()` — the
+   same `__ioctl_time64`-class naming trap already documented below.
+
+Only the signed armv7 images carry this check. Each signed release from 4.3.4 to 5.3.0 needs the fixtures, and from 5.0.0 each is one image for JC11S, JP11S, JP20, JP21, NH09 and NH10; 4.3.4 predates JC11S, so build it as one of the others. Without the fixtures 4.3.4 and 5.0.x exit cleanly and `runengine` powers the guest off, while 5.1.0 and later quit to TestApp instead. The unsigned images, such as JC11 on 4.3.0 and 5.3.0 and JP13 on 5.3.0, boot without the fixtures, JC11 boots with them too, and RK3588 builds never write them.
+
+Engine before 5.0 was built with a 32-bit `time_t`, so on 4.3.4 it stats the eFuse path through `stat64`, `lstat64` and `fstatat64` and resolves it with plain `realpath`, not the `time64` names and `__realpath_chk` above. `dtshim` interposes those four as well, redirecting only the eFuse subtree, since RK3288 MPC builds preload the same shim.
+
+With the board validation satisfied, `Engine` reaches Qt, where a
+*separate* blocker appeared — unrelated to the eFuse — Qt choosing no EGL
+device integration at all: it enumerates `eglfs_kms` and `eglfs_emu`,
+logs `Using base device integration`, and the base integration has no
+native window to hand EGL, so config selection fails `EGL_BAD_CONFIG` and
+`eglCreateWindowSurface` fails `EGL_BAD_NATIVE_WINDOW` (`Could not create
+the egl surface: error = 0x300b`, then `Crash with: ABRT` and a restart
+loop). Three environment variables in
 `engine.service.d/override.conf` settle it, and the builder writes them:
 `QT_QPA_EGLFS_INTEGRATION=eglfs_kms` names the integration outright,
 `EGL_PLATFORM=gbm` matches it (the vendor Mesa is built with

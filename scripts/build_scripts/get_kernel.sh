@@ -83,12 +83,20 @@ MODULES=(
     # the codepage vfat asks for by default at mount time, and its absence
     # fails the mount even when the driver itself is loaded.
     fat vfat exfat nls_cp437 nls_iso8859-1 nls_ascii
+    # Loop devices. HeadRush keeps its USB-visible storage in an exFAT image on
+    # /data and losetups it to /dev/loop1 before Evil starts; without the module
+    # there is no /dev/loop1, and runevil retries losetup forever.
+    loop
     # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio
     # Onboard HDA
     snd snd_timer snd_pcm snd_hda_core snd_hda_codec snd_hda_codec_generic
     snd_intel_dspcfg snd_hda_intel
+    # A software card with a name of our choosing, for an app that insists on
+    # its own card: HeadRush Prime's Evil opens hw:HV01 at startup. The loopback
+    # card, since Debian's armmp kernel does not build snd-dummy.
+    snd_aloop
     # Bluetooth stack
     ecc ecdh_generic bluetooth btintel btrtl btmtk btbcm btusb
     # Display (virtio-gpu-pci under QEMU)
@@ -96,7 +104,7 @@ MODULES=(
 )
 MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
 
-INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX.sh)"
+INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 # Written to a real file and mounted in, not piped via stdin

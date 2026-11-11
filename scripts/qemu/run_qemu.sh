@@ -12,8 +12,12 @@
 #
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
-# ACCEL, CPU, MEM, SMP, RENDERNODE.
+<<<<<<< HEAD
+# ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
 # QEMU_AUDIO=off omits the emulated sound card; guest loopback audio remains.
+=======
+# ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
+>>>>>>> armv7-signed-libmali
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
 # values above and in whether the display backend needed GL, and the copies had
@@ -96,6 +100,7 @@ SERIAL="${SERIAL:-mon:stdio}"
 # Anything else to hand QEMU, word-split. For one-off debugging (a second -serial, a
 # -monitor socket, -snapshot) without editing this file.
 QEMU_EXTRA_ARGS="${QEMU_EXTRA_ARGS:-}"
+KERNEL_EXTRA_ARGS="${KERNEL_EXTRA_ARGS:-}"
 
 if [ "$NEEDS_GL" -eq 1 ]; then
     [ -n "$GPU_GL_DEV" ] || {
@@ -178,4 +183,4 @@ exec "$QEMU_BIN" \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \
   $QEMU_EXTRA_ARGS \
-  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0"
+  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0 $KERNEL_EXTRA_ARGS"

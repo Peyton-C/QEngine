@@ -79,6 +79,10 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <limits.h>
+#include <dirent.h>
+#include <stddef.h>
+#include <sys/stat.h>
 
 typedef int (*open_t)(const char *, int, ...);
 typedef int (*open64_t)(const char *, int, ...);
@@ -87,6 +91,12 @@ typedef FILE *(*fopen64_t)(const char *, const char *);
 typedef ssize_t (*write_t)(int, const void *, size_t);
 typedef int (*access_t)(const char *, int);
 typedef int (*faccessat_t)(int, const char *, int, int);
+typedef char *(*realpath_chk_t)(const char *, char *, size_t);
+typedef DIR *(*opendir_t)(const char *);
+typedef struct dirent64 *(*readdir64_t)(DIR *);
+typedef int (*openat_t)(int, const char *, int, ...);
+typedef int (*statx_t)(int, const char *, int, unsigned int, struct statx *);
+typedef ssize_t (*readlink_t)(const char *, char *, size_t);
 
 /* Shared real-libc handles, resolved once and reused both by the wrapper
  * functions below and by the internal /proc/interrupts generation/probing
@@ -623,13 +633,120 @@ static const struct dt_remap *dt_lookup(const char *path) {
     return NULL;
 }
 
+#ifdef SOC_RK3288
+static const char *remap_secure_efuse(const char *path, char *mapped,
+                                      size_t mapped_size);
+static __thread char g_secure_efuse_path[PATH_MAX];
+#endif
+
 /* The path to open for this request: a remap target, or the original. An entry
  * served from a blob has no path, and callers check for that first. */
 static const char *remap(const char *path) {
     if (!path) return NULL;
     const struct dt_remap *e = dt_lookup(path);
-    return (e && e->to) ? e->to : path;
+    if (e && e->to) return e->to;
+#ifdef SOC_RK3288
+    return remap_secure_efuse(path, g_secure_efuse_path,
+                              sizeof(g_secure_efuse_path));
+#else
+    return path;
+#endif
 }
+
+#ifdef SOC_RK3288
+/* Engine validates RK3288 products against the secure eFuse before Qt starts.
+ * The generic QEMU machine has no RK3288 eFuse platform device, so redirect
+ * that sysfs subtree to the fixed nvmem fixtures written by write_fake_dt().
+ * Interposing open() alone is too late: glibc resolves every parent component
+ * and rejects the missing platform directory first. */
+static const char *remap_secure_efuse(const char *path, char *mapped,
+                                      size_t mapped_size) {
+    static const struct {
+        const char *real_prefix;
+        const char *fake_prefix;
+    } EFUSE_REMAPS[] = {
+        {"/sys/devices/platform/ffb10000.efuse",
+         "/root/fake-dt/ffb10000.efuse"},
+        {"/sys/devices/platform/ffb40000.efuse",
+         "/root/fake-dt/ffb40000.efuse"},
+    };
+
+    if (!path) return path;
+    for (size_t i = 0; i < sizeof(EFUSE_REMAPS) / sizeof(EFUSE_REMAPS[0]); i++) {
+        size_t prefix_len = strlen(EFUSE_REMAPS[i].real_prefix);
+        if (strncmp(path, EFUSE_REMAPS[i].real_prefix, prefix_len) != 0 ||
+            (path[prefix_len] != '\0' && path[prefix_len] != '/')) {
+            continue;
+        }
+        if (snprintf(mapped, mapped_size, "%s%s", EFUSE_REMAPS[i].fake_prefix,
+                     path + prefix_len) >= (int)mapped_size) {
+            return path;
+        }
+        return mapped;
+    }
+    return path;
+}
+
+char *__realpath_chk(const char *path, char *resolved, size_t resolved_size) {
+    static realpath_chk_t real_realpath_chk = NULL;
+    char mapped[PATH_MAX];
+
+    if (!real_realpath_chk) {
+        real_realpath_chk =
+            (realpath_chk_t)dlsym(RTLD_NEXT, "__realpath_chk");
+    }
+    return real_realpath_chk(
+        remap_secure_efuse(path, mapped, sizeof(mapped)), resolved,
+        resolved_size);
+}
+
+/* std::filesystem::canonical() enumerates each parent directory before it ever
+ * asks libc to open the final path. Advertise the synthetic platform entry at
+ * that boundary; subsequent opens are redirected by remap(). */
+struct dirent64 *readdir64(DIR *dirp) {
+    static readdir64_t real_readdir64 = NULL;
+    static __thread int injected_fd = -1;
+    static __thread int injected_entries = 0;
+    static __thread struct dirent64 fake_entry;
+    static const char *fake_names[] = {"ffb10000.efuse", "ffb40000.efuse"};
+
+    if (!real_readdir64) {
+        real_readdir64 = (readdir64_t)dlsym(RTLD_NEXT, "readdir64");
+    }
+    int fd = dirfd(dirp);
+    if (injected_fd != fd) {
+        char fd_path[64];
+        char target[PATH_MAX];
+        snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+        ssize_t len = readlink(fd_path, target, sizeof(target) - 1);
+        if (len >= 0) target[len] = '\0';
+        if (len >= 0 && strcmp(target, "/sys/devices/platform") == 0) {
+            injected_fd = fd;
+            injected_entries = 0;
+        }
+    }
+    if (injected_fd == fd &&
+        injected_entries < (int)(sizeof(fake_names) / sizeof(fake_names[0]))) {
+        const char *name = fake_names[injected_entries];
+        memset(&fake_entry, 0, sizeof(fake_entry));
+        fake_entry.d_ino = 1;
+        fake_entry.d_reclen =
+            (unsigned short)(offsetof(struct dirent64, d_name) +
+                             strlen(name) + 1);
+        fake_entry.d_type = DT_DIR;
+        strcpy(fake_entry.d_name, name);
+        injected_entries++;
+        return &fake_entry;
+    }
+    return real_readdir64(dirp);
+}
+
+DIR *opendir(const char *path) {
+    static opendir_t real_opendir = NULL;
+    if (!real_opendir) real_opendir = (opendir_t)dlsym(RTLD_NEXT, "opendir");
+    return real_opendir(remap(path));
+}
+#endif
 
 /* An fd over a blob entry's content, or -1 if this path is not served that way. */
 static int dt_blob_fd(const char *path) {
@@ -647,11 +764,18 @@ static int dt_blob_fd(const char *path) {
  * emulated MPC identified as <Unknown> despite the shim serving the property
  * correctly to anything that asked for it by opening.
  *
- * Deliberately not interposing the stat family. Nothing needs it: MPC imports none
- * of it and Engine opens directly. It is also the riskiest family to interpose --
- * stat/stat64/__xstat/__xstat64/statx differ by glibc version and by
- * _FILE_OFFSET_BITS, so getting it wrong breaks every caller rather than only the
- * ones that wanted a devicetree. Add it when something demonstrably needs it.
+ * Deliberately not interposing the stat family *in the generic wrappers below*.
+ * It is the riskiest family to interpose -- stat/stat64/__xstat/__xstat64/statx
+ * differ by glibc version and by _FILE_OFFSET_BITS, so getting it wrong breaks
+ * every caller rather than only the ones that wanted a devicetree.
+ *
+ * The one exception is the RK3288 eFuse path (see the SOC_RK3288 block above):
+ * Engine's board validation stats that synthetic path before opening it, and
+ * glibc ≥ 2.34 implements stat()/lstat()/fstatat() via the time64 symbols rather
+ * than statx(), so the SOC_RK3288 interposition of statx plus the three time64
+ * symbols is what makes the redirect reachable. Engine before 5.0 has a 32-bit
+ * time_t and uses stat64/lstat64/fstatat64 instead, which redirect only the
+ * eFuse subtree. Everything else stays out of it.
  */
 int access(const char *path, int mode) {
     static access_t real_access = NULL;
@@ -681,13 +805,13 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
     if (!real_faccessat) real_faccessat = (faccessat_t)dlsym(RTLD_NEXT, "faccessat");
     if (path && path[0] == '/') {
         const struct dt_remap *e = dt_lookup(path);
-        if (e) {
-            if (e->blob) {
-                if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
-                if (is_dt_path(path)) log_dt_access("faccessat", path, "<in-memory>", 1, 0);
-                return 0;
-            }
-            const char *mapped = remap(path);
+        if (e && e->blob) {
+            if (mode & (W_OK | X_OK)) { errno = EACCES; return -1; }
+            if (is_dt_path(path)) log_dt_access("faccessat", path, "<in-memory>", 1, 0);
+            return 0;
+        }
+        const char *mapped = remap(path);
+        if (mapped != path) {
             int rc = real_faccessat(dirfd, mapped, mode, flags);
             if (is_dt_path(path)) log_dt_access("faccessat", path, mapped, rc == 0, errno);
             return rc;
@@ -695,6 +819,126 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
     }
     return real_faccessat(dirfd, path, mode, flags);
 }
+
+#ifdef SOC_RK3288
+int openat(int dirfd, const char *path, int flags, ...) {
+    static openat_t real_openat = NULL;
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    if (!real_openat) real_openat = (openat_t)dlsym(RTLD_NEXT, "openat");
+    const char *mapped = path && path[0] == '/' ? remap(path) : path;
+    return real_openat(dirfd, mapped, flags, mode);
+}
+
+int openat64(int dirfd, const char *path, int flags, ...) {
+    static openat_t real_openat64 = NULL;
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    if (!real_openat64) real_openat64 = (openat_t)dlsym(RTLD_NEXT, "openat64");
+    const char *mapped = path && path[0] == '/' ? remap(path) : path;
+    return real_openat64(dirfd, mapped, flags, mode);
+}
+
+int statx(int dirfd, const char *path, int flags, unsigned int mask,
+          struct statx *buf) {
+    static statx_t real_statx = NULL;
+    if (!real_statx) real_statx = (statx_t)dlsym(RTLD_NEXT, "statx");
+    const char *mapped = path && path[0] == '/' ? remap(path) : path;
+    return real_statx(dirfd, mapped, flags, mask, buf);
+}
+
+/* glibc's stat()/lstat()/fstatat() do not call the statx libc function -- each
+ * is implemented by its own time64 symbol (__stat64_time64, __lstat64_time64,
+ * __fstatat64_time64) which issues the statx syscall directly. Engine imports
+ * all three, so remap each or the efuse metadata check never sees the synthetic
+ * path. The buffer is an opaque stat struct; pass it through untouched. */
+typedef int (*stat64_time64_t)(const char *, void *);
+typedef int (*fstatat64_time64_t)(int, const char *, void *, int);
+
+int __stat64_time64(const char *path, void *buf) {
+    static stat64_time64_t real_stat64_time64 = NULL;
+    if (!real_stat64_time64)
+        real_stat64_time64 = (stat64_time64_t)dlsym(RTLD_NEXT, "__stat64_time64");
+    return real_stat64_time64(remap(path), buf);
+}
+
+int __lstat64_time64(const char *path, void *buf) {
+    static stat64_time64_t real_lstat64_time64 = NULL;
+    if (!real_lstat64_time64)
+        real_lstat64_time64 =
+            (stat64_time64_t)dlsym(RTLD_NEXT, "__lstat64_time64");
+    return real_lstat64_time64(remap(path), buf);
+}
+
+int __fstatat64_time64(int dirfd, const char *path, void *buf, int flags) {
+    static fstatat64_time64_t real_fstatat64_time64 = NULL;
+    if (!real_fstatat64_time64)
+        real_fstatat64_time64 =
+            (fstatat64_time64_t)dlsym(RTLD_NEXT, "__fstatat64_time64");
+    const char *mapped = path && path[0] == '/' ? remap(path) : path;
+    return real_fstatat64_time64(dirfd, mapped, buf, flags);
+}
+
+/* Engine before 5.0 (4.3.4, Qt5 on a Buildroot glibc 2.36) was built with a
+ * 32-bit time_t, so it imports stat64/lstat64/fstatat64 and plain realpath()
+ * instead of the time64 names and __realpath_chk above. It runs the same eFuse
+ * check, and without these the stat of the synthetic path misses the fixtures
+ * and Engine exits cleanly. Exporting them costs a 5.x guest nothing: its Engine
+ * never calls these names.
+ *
+ * These remap only the eFuse subtree, not every devicetree path as remap()
+ * does. RK3288 MPC builds preload this shim too and share the 32-bit time_t,
+ * so a full remap here would change what MPC sees when it stats a devicetree
+ * path, for no reason that anything has shown. */
+typedef int (*stat64_t)(const char *, struct stat64 *);
+typedef int (*fstatat64_t)(int, const char *, struct stat64 *, int);
+typedef char *(*realpath_t)(const char *, char *);
+
+int stat64(const char *path, struct stat64 *buf) {
+    static stat64_t real_stat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_stat64) real_stat64 = (stat64_t)dlsym(RTLD_NEXT, "stat64");
+    return real_stat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
+int lstat64(const char *path, struct stat64 *buf) {
+    static stat64_t real_lstat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_lstat64) real_lstat64 = (stat64_t)dlsym(RTLD_NEXT, "lstat64");
+    return real_lstat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
+int fstatat64(int dirfd, const char *path, struct stat64 *buf, int flags) {
+    static fstatat64_t real_fstatat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_fstatat64) real_fstatat64 = (fstatat64_t)dlsym(RTLD_NEXT, "fstatat64");
+    const char *p = path && path[0] == '/' ? remap_secure_efuse(path, mapped, sizeof(mapped)) : path;
+    return real_fstatat64(dirfd, p, buf, flags);
+}
+
+char *realpath(const char *path, char *resolved) {
+    static realpath_t real_realpath = NULL;
+    char mapped[PATH_MAX];
+    if (!real_realpath) real_realpath = (realpath_t)dlsym(RTLD_NEXT, "realpath");
+    return real_realpath(remap_secure_efuse(path, mapped, sizeof(mapped)), resolved);
+}
+
+ssize_t readlink(const char *path, char *buf, size_t buf_size) {
+    static readlink_t real_readlink = NULL;
+    if (!real_readlink) real_readlink = (readlink_t)dlsym(RTLD_NEXT, "readlink");
+    return real_readlink(remap(path), buf, buf_size);
+}
+#endif
 
 int open(const char *path, int flags, ...) {
     va_list ap;

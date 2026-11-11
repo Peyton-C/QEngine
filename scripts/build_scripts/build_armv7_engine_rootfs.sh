@@ -450,7 +450,7 @@ chmod 755 /mnt/rootfs/root/dtshim.so \
 # unconditionally and a missing target turns a working read into ENOENT.
 #
 # PRODUCT_CODE selects which device this pretends to be.
-write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
+write_fake_dt /mnt/rootfs "$PRODUCT_CODE" "" rk3288
 
 echo "--- wiring touchbridge.service + $APP_UNIT override ---"
 # The same unit either builder installs, each from its own SoC directory: the

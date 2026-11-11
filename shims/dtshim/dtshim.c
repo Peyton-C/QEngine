@@ -926,6 +926,27 @@ int fstatat64(int dirfd, const char *path, struct stat64 *buf, int flags) {
     return real_fstatat64(dirfd, p, buf, flags);
 }
 
+/* Before glibc 2.33, stat() and lstat() were inline wrappers around __xstat64 and
+ * __lxstat64, so an Engine built against such a libc imports those instead. SC
+ * LIVE 2 2.3.3 (glibc 2.32, signed) stats the eFuse path through them and exits
+ * cleanly when it misses. The legacy builder links this shim against the guest's
+ * own libc, which still exports both. */
+typedef int (*xstat64_t)(int, const char *, struct stat64 *);
+
+int __xstat64(int ver, const char *path, struct stat64 *buf) {
+    static xstat64_t real_xstat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_xstat64) real_xstat64 = (xstat64_t)dlsym(RTLD_NEXT, "__xstat64");
+    return real_xstat64(ver, remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
+int __lxstat64(int ver, const char *path, struct stat64 *buf) {
+    static xstat64_t real_lxstat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_lxstat64) real_lxstat64 = (xstat64_t)dlsym(RTLD_NEXT, "__lxstat64");
+    return real_lxstat64(ver, remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
 char *realpath(const char *path, char *resolved) {
     static realpath_t real_realpath = NULL;
     char mapped[PATH_MAX];

@@ -136,9 +136,11 @@ LEGACY_ENGINE=0
 # 2.32. glibc 2.34 also stopped shipping libc-2.NN.so, so the versioned file
 # alone marks an older libc. /usr/lib lists long enough that grep -q, quitting
 # at the first match, gets tr killed by SIGPIPE and pipefail fails the test.
+# Only /usr/Engine is required beside it, not a product-named entry: SC LIVE 2
+# 2.3.3 ships just /usr/Engine/Engine, and on the EGLFS path the loader refuses
+# every shim and Engine never starts.
 if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' || {
-        "$DEBUGFS" -R 'ls /usr/Engine' "$OUT_PATH" 2>/dev/null |
-            tr -s ' ' '\n' | grep -Eq '^[A-Z]{2}[0-9]{2}$' &&
+        "$DEBUGFS" -R 'stat /usr/Engine' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' &&
         "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
             tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; }; then
     LEGACY_ENGINE=1
@@ -404,7 +406,8 @@ blank_root_password /mnt/rootfs
 if [ "$LEGACY_ENGINE" = 1 ]; then
     # -skipFirmwareUpdate does not exist in 1.x. Do not inject it into the old
     # launchers or install contemporary ALSA/MIDI/EGLFS preloads into this libc.
-    write_fake_dt /mnt/rootfs "$PRODUCT_CODE"
+    # Signed legacy firmware, SC LIVE 2 2.3.3, runs the eFuse check too.
+    write_fake_dt /mnt/rootfs "$PRODUCT_CODE" "" rk3288
     install_legacy_engine /mnt/rootfs /stage
 else
 # Engine's control-surface firmware check; Evil has no such flag to pass.

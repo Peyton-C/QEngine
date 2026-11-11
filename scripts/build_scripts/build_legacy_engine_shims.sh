@@ -23,6 +23,11 @@ dump_library() {
 for lib in libc libdl libpthread; do
     dump_library /usr/lib "^$lib-[0-9.]+\\.so$" "$STAGE/legacy/lib/$lib.so"
 done
+# dtshim's eFuse paths keep per-thread state, and ARM reaches __thread variables in
+# a shared object through __tls_get_addr, which the dynamic loader exports rather
+# than libc. Under -z defs the link fails without it (SC5000 1.4.1, Mixstream Pro
+# 2.3.2).
+dump_library /usr/lib '^ld-[0-9.]+\.so$' "$STAGE/legacy/lib/ld.so"
 dump_library /usr/lib '^libstdc\+\+\.so\.6\.[0-9.]+$' "$STAGE/legacy/lib/libstdc++.so"
 for lib in Core Gui; do
     dump_library /usr/qt/lib "^libQt5$lib\\.so\\.5\\.[0-9.]+$" "$STAGE/legacy/qt/libQt5$lib.so"
@@ -77,7 +82,8 @@ docker run --rm --platform linux/arm/v7 \
     gcc -fPIC -O2 -Wall -c /shims/dtshim/legacy_compat.c -o /stage/legacy/compat.o
     gcc -shared -nostdlib -Wl,-z,defs -o /stage/legacy/dtshim.so \
         /stage/legacy/dtshim.o /stage/legacy/compat.o -lgcc \
-        /stage/legacy/lib/libc.so /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so
+        /stage/legacy/lib/libc.so /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so \
+        /stage/legacy/lib/ld.so
     if [ "$QMLROTATE_BUILD" = 1 ]; then
     g++ -fPIC -O2 -Wall -std=c++17 \
         -I/stage/legacy/include -I/stage/legacy/include/QtCore -I/stage/legacy/include/QtGui \

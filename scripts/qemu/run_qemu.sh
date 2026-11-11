@@ -12,12 +12,8 @@
 #
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
-<<<<<<< HEAD
 # ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
 # QEMU_AUDIO=off omits the emulated sound card; guest loopback audio remains.
-=======
-# ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
->>>>>>> armv7-signed-libmali
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
 # values above and in whether the display backend needed GL, and the copies had

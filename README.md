@@ -182,7 +182,7 @@ LDMF does not build yet: it keeps its content on an eMMC partition QEngine does 
 
 ### Emulated Akai and HeadRush Products
 
-The same `az0x` base distribution carries several more product lines. HeadRush builds with `--device headrush`: Prime boots 5.2.0 as `HG06` on armv7, and VX5 boots 1.2.2 as `HV03` on arm64. Both use silent loopback audio; VX5 has no control surface. See [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md).
+The same `az0x` base distribution carries several more product lines. HeadRush builds with `--device headrush`: Prime boots 5.2.0 as `HG06` on armv7, and VX5 boots 1.2.2 and 1.3.1 as `HV03` on arm64. Both use silent loopback audio; VX5 has no control surface. See [BUILD_HEADRUSH.md](scripts/build_scripts/BUILD_HEADRUSH.md).
 
 ```sh
 scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headrush \

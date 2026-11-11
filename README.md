@@ -108,7 +108,7 @@ version was never released for the device.
 | Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
-| Numark Mixstream Pro    | NH08  | RK3288 | Y         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | ?           |
+| Numark Mixstream Pro    | NH08  | RK3288 | N         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | ?           |
 | Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | ?           |
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |

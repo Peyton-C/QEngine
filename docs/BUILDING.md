@@ -1803,7 +1803,9 @@ The fix is `dtshim` + `write_fake_dt`, no firmware change:
    `fstatat()` through the `time64` symbols rather than `statx()` — the
    same `__ioctl_time64`-class naming trap already documented below.
 
-Only the signed armv7 images carry this check. Each signed release from 5.0.0 beta 3 to 5.3.0 is one image for JC11S, JP11S, JP20, JP21, NH09 and NH10, and every one needs the fixtures. Without them 5.0.x exits cleanly and `runengine` powers the guest off, while 5.1.0 and later quit to TestApp instead. The unsigned images, such as JC11 and JP13 on 5.3.0, boot without the fixtures, JC11 boots with them too, and RK3588 builds never write them. 4.3.4 still exits with the fixtures in place. Its Engine calls `stat64`, `lstat64` and `fstatat64` rather than the `time64` names `dtshim` redirects, which is the likely cause.
+Only the signed armv7 images carry this check. Each signed release from 4.3.4 to 5.3.0 needs the fixtures, and from 5.0.0 each is one image for JC11S, JP11S, JP20, JP21, NH09 and NH10; 4.3.4 predates JC11S, so build it as one of the others. Without the fixtures 4.3.4 and 5.0.x exit cleanly and `runengine` powers the guest off, while 5.1.0 and later quit to TestApp instead. The unsigned images, such as JC11 on 4.3.0 and 5.3.0 and JP13 on 5.3.0, boot without the fixtures, JC11 boots with them too, and RK3588 builds never write them.
+
+Engine before 5.0 was built with a 32-bit `time_t`, so on 4.3.4 it stats the eFuse path through `stat64`, `lstat64` and `fstatat64` and resolves it with plain `realpath`, not the `time64` names and `__realpath_chk` above. `dtshim` interposes those four as well, redirecting only the eFuse subtree, since RK3288 MPC builds preload the same shim.
 
 With the board validation satisfied, `Engine` reaches Qt, where a
 *separate* blocker appeared — unrelated to the eFuse — Qt choosing no EGL

@@ -760,7 +760,9 @@ static int dt_blob_fd(const char *path) {
  * Engine's board validation stats that synthetic path before opening it, and
  * glibc ≥ 2.34 implements stat()/lstat()/fstatat() via the time64 symbols rather
  * than statx(), so the SOC_RK3288 interposition of statx plus the three time64
- * symbols is what makes the redirect reachable. Everything else stays out of it.
+ * symbols is what makes the redirect reachable. Engine before 5.0 has a 32-bit
+ * time_t and uses stat64/lstat64/fstatat64 instead, which redirect only the
+ * eFuse subtree. Everything else stays out of it.
  */
 int access(const char *path, int mode) {
     static access_t real_access = NULL;
@@ -872,6 +874,50 @@ int __fstatat64_time64(int dirfd, const char *path, void *buf, int flags) {
             (fstatat64_time64_t)dlsym(RTLD_NEXT, "__fstatat64_time64");
     const char *mapped = path && path[0] == '/' ? remap(path) : path;
     return real_fstatat64_time64(dirfd, mapped, buf, flags);
+}
+
+/* Engine before 5.0 (4.3.4, Qt5 on a Buildroot glibc 2.36) was built with a
+ * 32-bit time_t, so it imports stat64/lstat64/fstatat64 and plain realpath()
+ * instead of the time64 names and __realpath_chk above. It runs the same eFuse
+ * check, and without these the stat of the synthetic path misses the fixtures
+ * and Engine exits cleanly. Exporting them costs a 5.x guest nothing: its Engine
+ * never calls these names.
+ *
+ * These remap only the eFuse subtree, not every devicetree path as remap()
+ * does. RK3288 MPC builds preload this shim too and share the 32-bit time_t,
+ * so a full remap here would change what MPC sees when it stats a devicetree
+ * path, for no reason that anything has shown. */
+typedef int (*stat64_t)(const char *, struct stat64 *);
+typedef int (*fstatat64_t)(int, const char *, struct stat64 *, int);
+typedef char *(*realpath_t)(const char *, char *);
+
+int stat64(const char *path, struct stat64 *buf) {
+    static stat64_t real_stat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_stat64) real_stat64 = (stat64_t)dlsym(RTLD_NEXT, "stat64");
+    return real_stat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
+int lstat64(const char *path, struct stat64 *buf) {
+    static stat64_t real_lstat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_lstat64) real_lstat64 = (stat64_t)dlsym(RTLD_NEXT, "lstat64");
+    return real_lstat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+}
+
+int fstatat64(int dirfd, const char *path, struct stat64 *buf, int flags) {
+    static fstatat64_t real_fstatat64 = NULL;
+    char mapped[PATH_MAX];
+    if (!real_fstatat64) real_fstatat64 = (fstatat64_t)dlsym(RTLD_NEXT, "fstatat64");
+    const char *p = path && path[0] == '/' ? remap_secure_efuse(path, mapped, sizeof(mapped)) : path;
+    return real_fstatat64(dirfd, p, buf, flags);
+}
+
+char *realpath(const char *path, char *resolved) {
+    static realpath_t real_realpath = NULL;
+    char mapped[PATH_MAX];
+    if (!real_realpath) real_realpath = (realpath_t)dlsym(RTLD_NEXT, "realpath");
+    return real_realpath(remap_secure_efuse(path, mapped, sizeof(mapped)), resolved);
 }
 
 ssize_t readlink(const char *path, char *buf, size_t buf_size) {

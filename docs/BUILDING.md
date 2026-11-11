@@ -1695,16 +1695,6 @@ product code as `JC11S` (Prime 4+) via the same `inmusic,product-code`
 devicetree-property mechanism used throughout this doc, and getting a
 fully-rendered "PRIME 4 PLUS" Settings UI in return, live over VNC.
 
-The Prime 4+ image (`PRIME4PLUS-5.0.4-Update.img`) is a **signed AZ0x**
-container, not a FIT. `binwalk -e` handles it only by brute-force carving
-— it expands the 474 MB image to ~8.3 GB and, on a WSL host, can exhaust
-the guest's resources before finishing. So rootfs extraction goes through
-`scripts/build_scripts/extract_az0x_rootfs.py` instead: it parses the AZ0x
-descriptor table, finds the named `rootfs` payload, verifies its SHA-256,
-and streams the XZ decompression to a raw ext image — bounded in both disk
-and memory. `extract_rootfs.sh` dispatches to it when the image magic is
-`AZ0x` and keeps the binwalk path for the older, unsigned formats.
-
 **New shims** (`shims/dtshim/dtshim.c`,
 `shims/drmatomic/`, `shims/rk3288/touchbridge/`):
 `drmatomic.c` and `touchbridge.c` from the arm64/RMZ2 work
@@ -1812,6 +1802,8 @@ The fix is `dtshim` + `write_fake_dt`, no firmware change:
    the path before opening it, and glibc ≥ 2.34 routes `stat()`/`lstat()`/
    `fstatat()` through the `time64` symbols rather than `statx()` — the
    same `__ioctl_time64`-class naming trap already documented below.
+
+Only the signed armv7 images carry this check. Each signed release from 5.0.0 beta 3 to 5.3.0 is one image for JC11S, JP11S, JP20, JP21, NH09 and NH10, and every one needs the fixtures. Without them 5.0.x exits cleanly and `runengine` powers the guest off, while 5.1.0 and later quit to TestApp instead. The unsigned images, such as JC11 and JP13 on 5.3.0, boot without the fixtures, JC11 boots with them too, and RK3588 builds never write them. 4.3.4 still exits with the fixtures in place. Its Engine calls `stat64`, `lstat64` and `fstatat64` rather than the `time64` names `dtshim` redirects, which is the likely cause.
 
 With the board validation satisfied, `Engine` reaches Qt, where a
 *separate* blocker appeared — unrelated to the eFuse — Qt choosing no EGL

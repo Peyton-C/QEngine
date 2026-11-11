@@ -155,6 +155,8 @@ and the control surface. Neither comes from the devicetree, both come from the
 control-surface MCU over USB. `mpcsurface` now stands in for that MCU, see
 [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md), and what the info screen shows with it has not been looked at.
 
+MPC plays through the host's sound output, with silent inputs. It needs `snd-dummy`, which `get_kernel.sh` builds into the kernel's initrd, so a kernel fetched before then has to be built again with `get_kernel.sh --arch arm64`, or `armhf` for Gen 1. Heard on arm64, `ACVA3`, 3.10.0 only; see [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md#audio).
+
 **Signed FW is a version boundary here, not a per-model one.** Every 2.x image begins `d00dfeed`, a plain U-Boot FIT, which QEngine unpacks with its own reader. Every 3.x image begins `415a3031` (ASCII `AZ01`), which has a reader of its own. The 2.x column is untested: 2.7.0 extracts and is identified as MPC, but no 2.x instance has been booted. The latest 2.x is `2.15.1.1`.
 
 All eight models appear in both majors, joining at different points — `ACV5` and
@@ -172,7 +174,7 @@ keep the columns parallel with the controllers table; `ACVA2`, `ACVR` and a seco
 `ACVM` variant are az05, the rest az01.
 
 ### Alesis drum module
-The drum module runs MPC's codebase on Gen 1's RK3288 platform, and `--device drummodule` builds it with the MPC builder. It boots to the kit screen with touch and the shipped factory kits, and like MPC it has no audio device. The full sample library ships on the module's internal SD card, not in the update image, so QEngine gives each instance a blank card.
+The drum module runs MPC's codebase on Gen 1's RK3288 platform, and `--device drummodule` builds it with the MPC builder. It boots to the kit screen with touch and the shipped factory kits, and it has no audio device. The full sample library ships on the module's internal SD card, not in the update image, so QEngine gives each instance a blank card.
 
 |                          | Code | SOC    | Arch  | 1.x     |
 |--------------------------|------|--------|-------|---------|

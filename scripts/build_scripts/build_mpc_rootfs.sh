@@ -10,13 +10,13 @@
 # rather than acvs.service. Which app this is gets read off the rootfs. MPC needs far less doing to it than Engine
 # does, because it drives KMS directly and links no Mali/EGL, and that holds on
 # both: /usr/bin/MPC in 3.10.0 Gen 2 links libdrm and nothing GL, and no libteec,
-# so none of the arm64 Engine stack (drmatomic, teeshim, alsashim) applies.
+# so neither drmatomic nor teeshim applies. alsashim does, for sound only.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge, dtshim and mpcsurface for $ARCH (the shared sources
+#   4. Build touchbridge, dtshim, mpcsurface and alsashim for $ARCH (the shared sources
 #      under shims/ are architecture-independent — see the build step below).
 #   5. Copy them into /root, wire touchbridge_mpc.service ahead of the app's
 #      unit, and preload dtshim into that unit so the app can read a product code.
@@ -194,6 +194,10 @@ docker run --rm --platform "$SHIM_PLATFORM" \
         # one single-quoted string.)
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /shims/mpcsurface/mpcsurface.c -ldl -lpthread
+        # Also only for MPC, which it gives sound through a second card. It
+        # resolves alsa-lib out of the app it is preloaded into.
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl -lpthread
         if [ "$BUILD_PCMHOLD" = 1 ]; then
             apt-get install -y -qq libasound2-dev >/dev/null 2>&1
             gcc -O2 -Wall -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
@@ -204,7 +208,8 @@ docker run --rm --platform "$SHIM_PLATFORM" \
 # one is named for the architecture it was built for rather than for a device.
 for artifact in touchbridge/touchbridge_$SHIM_ARCH \
                 dtshim/dtshim_$SHIM_ARCH.so \
-                mpcsurface/mpcsurface_$SHIM_ARCH.so; do
+                mpcsurface/mpcsurface_$SHIM_ARCH.so \
+                alsashim/alsashim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -369,8 +374,10 @@ done
 PRELOAD=/root/dtshim.so
 if [ "$APP_UNIT" = acvs.service ]; then
     cp -a /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /mnt/rootfs/root/mpcsurface.so
-    chmod 755 /mnt/rootfs/root/mpcsurface.so
-    PRELOAD="$PRELOAD:/root/mpcsurface.so"
+    # alsashim carries MPC's sound out to QEMU's card, see below.
+    cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+    chmod 755 /mnt/rootfs/root/mpcsurface.so /mnt/rootfs/root/alsashim.so
+    PRELOAD="$PRELOAD:/root/mpcsurface.so:/root/alsashim.so"
 fi
 mkdir -p "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d"
 cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
@@ -379,31 +386,39 @@ Environment=LD_PRELOAD=$PRELOAD
 EOF
 
 if [ "$APP_UNIT" = acvs.service ]; then
-    echo "--- giving MPC the loopback card as its internal audio ---"
+    echo "--- giving MPC a sound card, and its output to QEMU's ---"
     # MPC opens its internal card by udev path, /dev/snd/by-path/platform-sound, as
     # VX5 does. With nothing there 3.10.0 puts "No internal audio device could be
-    # found!" over the UI, and only a touch closes it. On snd-aloop it reports
-    # 44.1 kHz, 56 in and 56 out, and runs; playback is discarded. No pcmhold, MPC
-    # takes the loopback's channel counts as they are.
+    # found!" over the UI, and only a touch closes it. It needs a duplex card that
+    # keeps time at 128-frame periods, its only size: it crashes within a second
+    # on 256 or 512. QEMU's hda cannot be that card, since it moves samples every
+    # 10 ms and the coreaudio backend has no capture at all, and snd-aloop moves in
+    # 4 ms jiffies, on which MPC's streams stall a tick after starting. snd-dummy
+    # keeps time on hrtimers, so MPC gets that, built by get_kernel.sh, and
+    # alsashim copies the first output pair of everything MPC plays onto the hda
+    # card, which run_qemu.sh gives the mpc family. Capture is silent.
     mkdir -p /mnt/rootfs/etc/udev/rules.d
     cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-mpc-audio.rules <<'EOF'
-SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Loopback", SYMLINK+="snd/by-path/platform-sound"
+SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Dummy", SYMLINK+="snd/by-path/platform-sound"
 EOF
     cat > /mnt/rootfs/etc/systemd/system/qengine-mpc-audio.service <<'EOF'
 [Unit]
-Description=Supply MPC with loopback audio as its internal card
+Description=Supply MPC with a dummy card as its internal audio
 After=systemd-udevd.service
 Before=acvs.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/sbin/modprobe snd-aloop
-# The initrd loads snd-aloop before the rootfs rules are available.
-ExecStart=/usr/bin/udevadm trigger --subsystem-match=sound --action=add
+ExecStart=/sbin/modprobe snd-dummy
 ExecStart=/usr/bin/udevadm settle --timeout=10
 EOF
+    # alsashim does only the second output here: MPC's card keeps its own name
+    # and its hw: device, and its ring and period stay as MPC asks. QEMU's hda
+    # card has the id Intel on both architectures.
     cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
+Environment=ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
+Environment=ALSASHIM_CUE_PCM=plughw:Intel ALSASHIM_CUE_CHANNEL=1
 
 [Unit]
 Wants=qengine-mpc-audio.service

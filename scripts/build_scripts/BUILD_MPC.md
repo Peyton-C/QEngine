@@ -58,10 +58,22 @@ To see what MPC sends the panel, such as the lamp for a button with no name yet,
 Tried on arm64, `ACVA3`, 3.10.0 only. The other Gen 2 codes and all of Gen 1 are built with it and untested. The first time MPC met the surface the guest rebooted itself once, and not again.
 
 ## Audio
-MPC opens its internal sound card by udev path, `/dev/snd/by-path/platform-sound`. The build points that path at the kernel's loopback card with a udev rule, and `qengine-mpc-audio.service` loads `snd-aloop` before `acvs.service`. MPC then reports 44.1 kHz with 56 inputs and outputs, where without it MPC shows "No internal audio device could be found!" over its UI. Playback is discarded and capture is silent, so nothing is heard. Tried on arm64, `ACVA3`, 3.10.0 only.
+MPC plays through the host's sound output. It opens its internal card by udev path, `/dev/snd/by-path/platform-sound`, and the build points that path at `snd-dummy`, which `qengine-mpc-audio.service` loads before `acvs.service`. `alsashim` is preloaded into MPC and copies the first pair of everything it plays onto QEMU's HDA card, which `run_qemu.sh` gives the `mpc` family as it does Engine. Inputs are silent.
+
+| Card | Why not |
+| --- | --- |
+| QEMU's HDA | Moves samples every 10 ms, and on macOS has no capture; MPC will not run on a playback-only card |
+| `snd-aloop` | Moves in 4 ms jiffies, and MPC's streams stall a tick after starting |
+| Either, with longer periods | MPC crashes within a second on any period but its own 128 frames |
+
+Debian builds `snd-dummy` for neither architecture, so `get_kernel.sh` builds it from the matching stable kernel source and puts it in the initrd, loaded only when an MPC guest asks for it. A kernel fetched before that has no `snd-dummy`, and MPC shows "No internal audio device could be found!" until `get_kernel.sh` is run again.
+
+The output runs about 30 to 80 ms behind MPC, and the two cards' clocks drift, which can cost a short tick every so often. Run with `QEMU_AUDIO=off` and MPC still plays to the dummy card, unheard.
+
+Heard on arm64, `ACVA3`, 3.10.0, on macOS through CoreAudio. Gen 1 builds the same way and is untested, as is MPC Sample, which looks for the same path and gets no card.
 
 ## Gen 2
-Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so none of arm64 Engine's shims apply. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
+Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so of arm64 Engine's shims only `alsashim` applies, for sound. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
 
 | Model | Code |
 | --- | --- |

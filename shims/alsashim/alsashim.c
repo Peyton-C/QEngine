@@ -185,7 +185,7 @@
  * Env vars:
  *   ALSASHIM_AS     card name to report (default "RMZ2", System One's real
  *                   simple-audio-card name, which is what its allowlist
- *                   contains)
+ *                   contains), or "off" to report every card's own name
  *   ALSASHIM_CARD   only spoof this card index; default -1 = every card
  *   ALSASHIM_NOPLUG non-empty to leave PCM device names alone (skip the
  *                   plughw rewrite), e.g. against a card that already
@@ -334,6 +334,7 @@ const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
     if (!real_get_name) return spoof_name();
 
     const char *real = real_get_name(obj);
+    if (strcmp(spoof_name(), "off") == 0) return real;
 
     int want = spoof_card();
     if (want >= 0) {
@@ -491,7 +492,13 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
             return ret;
         }
     }
-    return real_pcm_open(pcmp, name, stream, mode);
+    int ret = real_pcm_open(pcmp, name, stream, mode);
+    /* Left on hw: by ALSASHIM_NOPLUG, as MPC is, it is still the device the
+     * second output copies from. */
+    if (ret >= 0 && name && strncmp(name, "hw:", 3) == 0 &&
+        stream == ALSASHIM_STREAM_PLAYBACK && pcmp)
+        atomic_store(&g_main_pcm, *pcmp);
+    return ret;
 }
 
 /* --- second output ---------------------------------------------------- */

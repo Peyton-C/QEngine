@@ -94,8 +94,7 @@ MODULES=(
     snd snd_timer snd_pcm snd_hda_core snd_hda_codec snd_hda_codec_generic
     snd_intel_dspcfg snd_hda_intel
     # A software card with a name of our choosing, for an app that insists on
-    # its own card: HeadRush Prime's Evil opens hw:HV01 at startup. The loopback
-    # card, since Debian's armmp kernel does not build snd-dummy.
+    # its own card: HeadRush Prime's Evil opens hw:HV01 at startup.
     snd_aloop
     # Bluetooth stack
     ecc ecdh_generic bluetooth btintel btrtl btmtk btbcm btusb
@@ -103,6 +102,11 @@ MODULES=(
     virtio_gpu drm drm_kms_helper
 )
 MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
+# In the initrd, and so on every guest, but loaded only by whichever guest asks
+# for one. snd-dummy is a card MPC's rootfs loads for itself; loaded everywhere
+# it would also be a card to Engine, whose alsashim renames every card it sees.
+# The container below builds it, since Debian builds it for neither architecture.
+ON_DEMAND_MODULES=(snd_dummy)
 
 INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
@@ -125,6 +129,22 @@ apt-get install -y -qq initramfs-tools $KERNEL_PKG >/dev/null 2>&1
 
 KVER=\$(ls /lib/modules/)
 echo "Kernel version: \$KVER"
+
+# snd-dummy, built out of tree from the stable release Debian's kernel is cut
+# from. MPC runs its card at 128-frame periods, 2.9 ms at 44.1 kHz, and
+# snd-aloop moves in whole jiffies, 4 ms at HZ=250: MPC 3.10.0's streams on it
+# overrun or stall within a tick or two. QEMU's hda only moves samples every
+# 10 ms. MPC will not run on any other period size, and snd-dummy's hrtimer
+# mode is the one card here that keeps that time.
+echo "--- building snd-dummy ---"
+apt-get install -y -qq gcc make curl linux-headers-"\$KVER" >/dev/null 2>&1
+mkdir -p /tmp/snd-dummy
+curl -fsSL -o /tmp/snd-dummy/dummy.c \
+    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/drivers/dummy.c?h=v\${KVER%%+*}"
+printf 'obj-m := snd-dummy.o\nsnd-dummy-y := dummy.o\n' > /tmp/snd-dummy/Kbuild
+make -s -C /usr/src/linux-headers-"\$KVER" M=/tmp/snd-dummy modules
+install -D -m 644 /tmp/snd-dummy/snd-dummy.ko /lib/modules/"\$KVER"/updates/snd-dummy.ko
+depmod "\$KVER"
 
 # copymods relocates the initrd's own /lib/modules/<kver> into a tmpfs on
 # the real root at boot — Ubuntu-cloud-specific (Scott Moser/Canonical),
@@ -184,6 +204,13 @@ sed -i 's/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf
 # every module that wasn't already pulled in some other way, since
 # initramfs-tools then read the whole line as one bogus module name).
 printf '%s\n' ${MODULES[@]} >> /etc/initramfs-tools/modules
+cat > /etc/initramfs-tools/hooks/qengine-on-demand <<'EOF'
+#!/bin/sh
+[ "\$1" != prereqs ] || exit 0
+. /usr/share/initramfs-tools/hook-functions
+manual_add_modules ${ON_DEMAND_MODULES[@]}
+EOF
+chmod +x /etc/initramfs-tools/hooks/qengine-on-demand
 
 echo "--- building initrd ---"
 mkinitramfs -o /tmp/$INITRD "\$KVER"
@@ -192,7 +219,7 @@ echo "--- verifying target modules made it in ---"
 mkdir -p /tmp/verify
 unmkinitramfs /tmp/$INITRD /tmp/verify >/dev/null 2>&1
 MISSING=""
-for name in ${MODULES[@]}; do
+for name in ${MODULES[@]} ${ON_DEMAND_MODULES[@]}; do
     # ecc: compiled directly into this kernel (modules.builtin), not a
     #   loadable .ko at all — already active, expected to "fail" here.
     # snd_ump: genuinely absent from this kernel build. Universal MIDI

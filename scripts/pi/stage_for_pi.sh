@@ -4,8 +4,9 @@
 #
 # Usage: stage_for_pi.sh --name <instance> [--out <dir>] [--wayland]
 #   <instance> is one made by scripts/build_scripts/new_instance.sh; it must be an
-#   arm64 Engine instance and must not be running. Writes build/pi-stage/ by
-#   default. Requires Docker.
+#   arm64 Engine or Gen 2 MPC instance and must not be running. Writes
+#   build/pi-stage/ by default. Engine requires Docker; MPC is only copied, into
+#   mpc/ beside chroot-mpc.sh.
 #
 #   --wayland also stages what Engine needs to run under a Wayland compositor
 #   (PLATFORM=wayland in chroot-engine.sh): a libEGL with the Wayland platform
@@ -58,6 +59,31 @@ INSTANCE_DIR="$REPO_ROOT/build/instances/$NAME"
 # consistent filesystem.
 if pgrep -f "qemu-system.*$INSTANCE_DIR/" >/dev/null 2>&1; then
     echo "ERROR: instance '$NAME' is running; shut it down first." >&2; exit 1
+fi
+
+# The image is mostly holes. Clone it where the filesystem can (macOS/APFS),
+# keep it sparse where cp knows how (GNU), and only then copy every byte.
+copy_image() {
+    cp -c "$1" "$2" 2>/dev/null || cp --sparse=always "$1" "$2" 2>/dev/null || cp "$1" "$2"
+}
+
+# MPC needs nothing from here but its two disks and chroot-mpc.sh: it renders
+# without a GPU, and its shims are already in the rootfs. Staged under mpc/, so
+# that an Engine stage and an MPC one can share a directory.
+if [ "${DEVICE:-}" = mpc ]; then
+    [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ] || {
+        echo "ERROR: instance '$NAME' has no data_disk.img; only Gen 2 MPC runs in a chroot." >&2
+        exit 1; }
+    mkdir -p "$OUT/mpc"
+    echo "--- copying the rootfs and data disk ---"
+    copy_image "$ROOTFS_IMG" "$OUT/mpc/rootfs.img"
+    copy_image "$DATA_IMG" "$OUT/mpc/data_disk.img"
+    cp "$SCRIPT_DIR/chroot-mpc.sh" "$OUT/"
+    echo ""
+    echo "Staged $NAME (${PRODUCT_CODE:-default product}) in $OUT/mpc"
+    echo "Copy it across with something that keeps the images sparse, e.g."
+    echo "  rsync -a --sparse $OUT/ <user>@<host>:qengine/"
+    exit 0
 fi
 
 mkdir -p "$OUT/stage"
@@ -154,11 +180,7 @@ cp "$SCRIPT_DIR/chroot-up.sh" "$SCRIPT_DIR/chroot-engine.sh" "$SCRIPT_DIR/chroot
    "$SCRIPT_DIR/sway-split.config" "$OUT/"
 
 echo "--- copying the rootfs image ---"
-# The image is mostly holes. Clone it where the filesystem can (macOS/APFS),
-# keep it sparse where cp knows how (GNU), and only then copy every byte.
-cp -c "$ROOTFS_IMG" "$OUT/rootfs.img" 2>/dev/null ||
-    cp --sparse=always "$ROOTFS_IMG" "$OUT/rootfs.img" 2>/dev/null ||
-    cp "$ROOTFS_IMG" "$OUT/rootfs.img"
+copy_image "$ROOTFS_IMG" "$OUT/rootfs.img"
 
 echo ""
 echo "Staged $NAME (${PRODUCT_CODE:-default product}) in $OUT"

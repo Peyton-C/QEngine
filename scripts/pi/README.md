@@ -139,6 +139,32 @@ sudo systemctl daemon-reload && sudo systemctl enable qengine-sway rx3
 - sway takes tty1, so there is no login prompt on the display; `chroot-down.sh` leaves tty1 alone while `qengine-sway` is running.
 - To boot Engine alone again: `sudo rm -r /etc/systemd/system/qengine.service.d && sudo systemctl disable qengine-sway rx3`.
 
+## MPC
+[chroot-mpc.sh](chroot-mpc.sh) runs a Gen 2 MPC instance the same way, on any arm64 Linux machine with a 4K-page kernel. It was tried with MPC 3.10.0 as `ACVA3` in an Ubuntu 26.04 VM under UTM, and not yet on a Pi. Gen 1 images are armv7 and it does not run them.
+
+```sh
+scripts/pi/stage_for_pi.sh --name mpc-gen2-3.10.0   # copies its two disks to build/pi-stage/mpc/
+rsync -a --sparse build/pi-stage/ <user>@<host>:qengine/
+sudo qengine/chroot-mpc.sh          # mounts on first use, then starts or restarts MPC
+sudo qengine/chroot-mpc.sh down     # stops MPC and unmounts everything
+```
+
+MPC needs nothing staged beyond its rootfs and data disk. It draws to the display without a GPU, and the instance already carries its shims. The host kernel has to have `snd-dummy`, which becomes MPC's internal card, as in a guest; Ubuntu's does, and the Pi's has not been checked. MPC's main output is copied to `AUDIO_CARD`.
+
+- MPC is restarted whenever it quits, as on the device, because it quits to switch between controller mode and standalone. Shutting down from MPC's own dialog stops it until the next `chroot-mpc.sh`; the machine stays up.
+- While MPC runs, the power button opens its shutdown dialog instead of turning the machine off.
+- In a VM, the QEMU tablet is the touchscreen. Elsewhere `touchbridge --mouse` turns a USB mouse into one, and no pointer is drawn.
+- Logs are `mpc.log`, `touchbridge.log` and `mpcsurface.log` in `/srv/mpc/run/`. The panel takes commands on `/srv/mpc/run/mpcsurface.fifo`, as in a guest.
+- Engine and MPC both take over the display, so run one at a time.
+- A Pi has two DRM devices, and which one MPC opens has not been tried.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `MPC_DIR` | `~/qengine/mpc` | where `rootfs.img` and `data_disk.img` are |
+| `MPC_ROOT` | `/srv/mpc` | where the rootfs is mounted |
+| `AUDIO_CARD` | first USB audio card, else the first real card | as for Engine |
+| `MPC_TB_ARGS` | none with a QEMU tablet, `--mouse` without | touchbridge options |
+
 ## Settings
 
 Both scripts read `~/qengine/pi.env`; [pi.env.example](pi.env.example) lists the common ones and [chroot-engine.sh](chroot-engine.sh) documents all of them. The ones you are most likely to need:

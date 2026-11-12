@@ -21,14 +21,21 @@
 #   AUDIO_CARD   where MPC's main output is heard: an ALSA id from
 #                /proc/asound/cards, or a name in /dev/snd/by-path. Default: the
 #                first USB audio card, else the first card that is not snd-dummy.
-#   MPC_TB_ARGS      touchbridge options. Default: none with a QEMU tablet (a VM),
+#   MPC_TB_ARGS  touchbridge options. Default: none with a QEMU tablet (a VM),
 #                `--mouse` otherwise, which turns a USB mouse into the touchscreen.
+#   PLATFORM     `wayland` to run MPC as a window in a running compositor (sway)
+#                instead of on the display: kmsshim.so is preloaded into MPC as
+#                its display, and kmspresent shows it and is its touchscreen. Both
+#                are looked for in $QENGINE_DIR. Default: MPC drives the display.
+#   WAYLAND_PATH the compositor's socket. Default: the newest in /run/user/*/.
 #   ALSASHIM_METER=1  log the output's peak level in mpc.log every second.
 #
-# Logs are in $MPC_ROOT/run/: mpc.log, touchbridge.log, mpcsurface.log. The panel
-# takes commands on $MPC_ROOT/run/mpcsurface.fifo, as in a guest.
+# Logs are in $MPC_ROOT/run/: mpc.log, touchbridge.log or kmspresent.log,
+# mpcsurface.log. The panel takes commands on $MPC_ROOT/run/mpcsurface.fifo, as
+# in a guest.
 #
-# Engine and MPC both drive the display directly, so run one at a time.
+# Engine and MPC both drive the display directly, so without PLATFORM=wayland
+# run one at a time.
 set -uo pipefail
 
 QENGINE_DIR="${QENGINE_DIR:-$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)/qengine}"
@@ -109,13 +116,37 @@ up() {
         printf '%s\n' "$want" > "$rule"
         udevadm control --reload
         udevadm trigger --subsystem-match=sound --action=change
-        udevadm settle
     fi
+    # The link appears once udev has handled the card modprobe just added, which
+    # it does after modprobe returns.
+    udevadm settle
     [ -e /dev/snd/by-path/platform-sound ] || {
         echo "ERROR: snd-dummy loaded but /dev/snd/by-path/platform-sound is missing." >&2; exit 1; }
+    # A desktop's PipeWire opens every card it finds, MPC's included, and MPC
+    # then cannot. WirePlumber reads this when it next starts.
+    local wp=/etc/wireplumber/wireplumber.conf.d/90-qengine-mpc.conf
+    local wpwant='# Written by qengine chroot-mpc.sh: snd-dummy is MPC'"'"'s internal card, not the desktop'"'"'s.
+monitor.alsa.rules = [
+  {
+    matches = [ { device.name = "~alsa_card.platform-snd_dummy*" } ]
+    actions = { update-props = { device.disabled = true } }
+  }
+]'
+    if [ -d /etc/wireplumber ] || command -v wireplumber >/dev/null; then
+        if [ "$(cat "$wp" 2>/dev/null)" != "$wpwant" ]; then
+            mkdir -p "$(dirname "$wp")"; printf '%s\n' "$wpwant" > "$wp"
+            echo "NOTE: wrote $wp; restart WirePlumber in any desktop session that is running." >&2
+        fi
+    fi
 
-    # The login prompt on tty1 shares the display MPC renders to.
-    systemctl stop getty@tty1.service 2>/dev/null || true
+    # The login prompt on tty1 shares the display MPC renders to. Not under a
+    # compositor, which has the display itself, and only stopped if running,
+    # so that down knows whether to bring it back: a display manager conflicts
+    # with it, and starting the getty would stop the display manager and end
+    # its sessions.
+    if [ "${PLATFORM:-}" != wayland ] && systemctl -q is-active getty@tty1.service; then
+        systemctl stop getty@tty1.service && touch /run/qengine-mpc-getty
+    fi
     echo "chroot ready at $R"
 }
 
@@ -140,6 +171,15 @@ stop() {
             */root/touchbridge_mpc|*/crashpad_handler) kill "$p" 2>/dev/null ;;
         esac
     done
+    # kmspresent runs on the host, so it is found by the pid it left.
+    if [ -f "$R/run/kmspresent.pid" ]; then
+        p="$(cat "$R/run/kmspresent.pid")"
+        # " (deleted)" when kmspresent has been replaced since it started.
+        case "$(readlink "/proc/$p/exe" 2>/dev/null)" in
+            "$QENGINE_DIR/kmspresent"|"$QENGINE_DIR/kmspresent (deleted)") kill "$p" ;;
+        esac
+        rm -f "$R/run/kmspresent.pid"
+    fi
 }
 
 card_index() {
@@ -188,13 +228,52 @@ start() {
         chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/bin/dbus-daemon --system --fork
     fi
 
-    # MPC looks for touchscreens once, as it starts.
-    # shellcheck disable=SC2086  # MPC_TB_ARGS is a list of words on purpose
-    setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /root/touchbridge_mpc $MPC_TB_ARGS \
-        > "$R/run/touchbridge.log" 2>&1 < /dev/null &
-    for _ in $(seq 1 50); do
-        grep -q "TouchBridge Virtual Touchscreen" /proc/bus/input/devices && break; sleep 0.1
-    done
+    local platform="${PLATFORM:-kms}" display_shim="" seat_env=""
+    # MPC looks for touchscreens once, as it starts, so whichever one it gets
+    # has to exist first.
+    if [ "$platform" = wayland ]; then
+        [ -x "$QENGINE_DIR/kmspresent" ] && [ -f "$QENGINE_DIR/kmsshim.so" ] || {
+            echo "ERROR: PLATFORM=wayland needs kmspresent and kmsshim.so in $QENGINE_DIR." >&2; exit 1; }
+        if [ -z "${WAYLAND_PATH:-}" ]; then
+            # Newest first; the names are wayland-N, nothing ls could mangle.
+            # shellcheck disable=SC2010
+            WAYLAND_PATH="$(ls -t /run/user/*/wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -n 1)"
+        fi
+        [ -S "${WAYLAND_PATH:-}" ] || {
+            echo "ERROR: no Wayland compositor socket${WAYLAND_PATH:+ at $WAYLAND_PATH}; start one or set WAYLAND_PATH." >&2
+            exit 1; }
+        # The touchscreen kmspresent makes is MPC's, not the compositor's: a
+        # compositor that took it too would feed every touch back to the window.
+        # On a seat of its own the compositor leaves it alone, and kmsshim shows
+        # MPC that seat as its seat0 (KMSSHIM_SEAT), and nothing else. Not
+        # LIBINPUT_IGNORE_DEVICE: MPC reads input through libinput too.
+        local rule=/etc/udev/rules.d/90-qengine-kmspresent.rules
+        local want='SUBSYSTEM=="input", ATTRS{name}=="QEngine kmspresent touchscreen", ENV{ID_SEAT}="seat-qengine"'
+        if [ "$(cat "$rule" 2>/dev/null)" != "$want" ]; then
+            printf '%s\n' "$want" > "$rule"
+            udevadm control --reload
+        fi
+        # In /run and not in the rootfs: nothing written for a session goes there.
+        cp "$QENGINE_DIR/kmsshim.so" "$R/run/qengine-bin/kmsshim.so"
+        display_shim=:/run/qengine-bin/kmsshim.so
+        seat_env=KMSSHIM_SEAT=seat-qengine
+        setsid env XDG_RUNTIME_DIR="$(dirname "$WAYLAND_PATH")" WAYLAND_DISPLAY="$(basename "$WAYLAND_PATH")" \
+            "$QENGINE_DIR/kmspresent" --socket "$R/run/kmsshim.sock" \
+            > "$R/run/kmspresent.log" 2>&1 < /dev/null &
+        echo $! > "$R/run/kmspresent.pid"
+        for _ in $(seq 1 50); do
+            grep -q "QEngine kmspresent touchscreen" /proc/bus/input/devices && break; sleep 0.1
+        done
+        grep -q "QEngine kmspresent touchscreen" /proc/bus/input/devices || {
+            echo "ERROR: kmspresent did not start; see $R/run/kmspresent.log" >&2; exit 1; }
+    else
+        # shellcheck disable=SC2086  # MPC_TB_ARGS is a list of words on purpose
+        setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /root/touchbridge_mpc $MPC_TB_ARGS \
+            > "$R/run/touchbridge.log" 2>&1 < /dev/null &
+        for _ in $(seq 1 50); do
+            grep -q "TouchBridge Virtual Touchscreen" /proc/bus/input/devices && break; sleep 0.1
+        done
+    fi
 
     # As in a guest's acvs.service drop-in, with alsashim's second output on the
     # host's card in place of QEMU's. The launch is az01-launch-MPC's own, for
@@ -202,12 +281,14 @@ start() {
     # systemd-inhibit stands in and MPC gets the power key, which it reads itself
     # and answers with its own shutdown dialog. Shutting down from that dialog
     # quits MPC; its poweroff request is refused inside the chroot.
-    local env=(LD_PRELOAD=/root/dtshim.so:/root/mpcsurface.so:/root/alsashim.so
+    local env=("LD_PRELOAD=/root/dtshim.so:/root/mpcsurface.so:/root/alsashim.so$display_shim"
+               KMSSHIM_LOG=/run/kmsshim.log
                ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
                MPCSURFACE_LOG=/run/mpcsurface.log
                GLIBC_TUNABLES=glibc.malloc.hugetlb=2 MALLOC_ARENA_MAX=1)
     [ -n "$out_index" ] && env+=("ALSASHIM_CUE_PCM=plughw:$out_index" ALSASHIM_CUE_CHANNEL=1)
     [ -n "${ALSASHIM_METER:-}" ] && env+=(ALSASHIM_METER=1)
+    [ -n "$seat_env" ] && env+=("$seat_env")
     # Restarted whenever it quits, as acvs.service does (Restart=always): MPC
     # quits to switch between controller mode and standalone, and comes back up
     # in the other. Shutting down from MPC's own dialog ends the loop.
@@ -229,8 +310,9 @@ done'
         /bin/sh -c "$SUPERVISOR" mpc-supervisor \
         > "$R/run/mpc.log" 2>&1 < /dev/null &
 
-    echo "started $(cat "$R/root/fake-dt/inmusic,product-code" 2>/dev/null || echo MPC)," \
-         "audio on ${AUDIO_CARD:-<none>}, log in $R/run/mpc.log"
+    echo "started $(cat "$R/root/fake-dt/inmusic,product-code" 2>/dev/null || echo MPC)" \
+         "${display_shim:+in the compositor at $WAYLAND_PATH, }audio on ${AUDIO_CARD:-<none>}," \
+         "log in $R/run/mpc.log"
 }
 
 down() {
@@ -262,7 +344,10 @@ down() {
         echo "chroot at $R unmounted"
     fi
     losetup -j "$MPC_DIR/data_disk.img" 2>/dev/null | cut -d: -f1 | xargs -r -n 1 losetup -d
-    systemctl start --no-block getty@tty1.service 2>/dev/null || true
+    if [ -e /run/qengine-mpc-getty ]; then
+        rm -f /run/qengine-mpc-getty
+        systemctl start --no-block getty@tty1.service 2>/dev/null || true
+    fi
 }
 
 case "${1:-start}" in

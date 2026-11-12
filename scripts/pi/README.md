@@ -143,13 +143,13 @@ sudo systemctl daemon-reload && sudo systemctl enable qengine-sway rx3
 [chroot-mpc.sh](chroot-mpc.sh) runs a Gen 2 MPC instance the same way, on any arm64 Linux machine with a 4K-page kernel. It was tried with MPC 3.10.0 as `ACVA3` in an Ubuntu 26.04 VM under UTM, and not yet on a Pi. Gen 1 images are armv7 and it does not run them.
 
 ```sh
-scripts/pi/stage_for_pi.sh --name mpc-gen2-3.10.0   # copies its two disks to build/pi-stage/mpc/
+scripts/pi/stage_for_pi.sh --name mpc-gen2-3.10.0   # its two disks to build/pi-stage/mpc/, and kmsshim
 rsync -a --sparse build/pi-stage/ <user>@<host>:qengine/
 sudo qengine/chroot-mpc.sh          # mounts on first use, then starts or restarts MPC
 sudo qengine/chroot-mpc.sh down     # stops MPC and unmounts everything
 ```
 
-MPC needs nothing staged beyond its rootfs and data disk. It draws to the display without a GPU, and the instance already carries its shims. The host kernel has to have `snd-dummy`, which becomes MPC's internal card, as in a guest; Ubuntu's does, and the Pi's has not been checked. MPC's main output is copied to `AUDIO_CARD`.
+MPC needs nothing staged beyond its rootfs and data disk to run on the display. It draws without a GPU, and the instance already carries its shims. The host kernel has to have `snd-dummy`, which becomes MPC's internal card, as in a guest; Ubuntu's does, and the Pi's has not been checked. MPC's main output is copied to `AUDIO_CARD`.
 
 - MPC is restarted whenever it quits, as on the device, because it quits to switch between controller mode and standalone. Shutting down from MPC's own dialog stops it until the next `chroot-mpc.sh`; the machine stays up.
 - While MPC runs, the power button opens its shutdown dialog instead of turning the machine off.
@@ -164,6 +164,21 @@ MPC needs nothing staged beyond its rootfs and data disk. It draws to the displa
 | `MPC_ROOT` | `/srv/mpc` | where the rootfs is mounted |
 | `AUDIO_CARD` | first USB audio card, else the first real card | as for Engine |
 | `MPC_TB_ARGS` | none with a QEMU tablet, `--mouse` without | touchbridge options |
+| `PLATFORM` | the display | `wayland` to run MPC as a window, as below |
+
+### MPC under Wayland
+MPC draws its own frames and page-flips them through KMS, so a compositor holding the display would leave it nowhere to draw. With `PLATFORM=wayland`, [kmsshim](../../shims/kmsshim/kmsshim.c) is preloaded into MPC as its display: a fake KMS device whose frames [kmspresent](../../shims/kmsshim/kmspresent.c), on the host, shows as an ordinary window. kmspresent is also MPC's touchscreen, from the window's clicks and touches. Log in to a desktop, or start sway as for Engine, then:
+
+```sh
+sudo PLATFORM=wayland qengine/chroot-mpc.sh
+```
+
+- The window can be any size. MPC keeps its 1280x800 aspect ratio inside it, and clicks are scaled back.
+- MPC sees no input but the window's. The host's keyboard and mice stay with the compositor, and its power button is not MPC's.
+- kmspresent's touchscreen is on a udev seat of its own, `seat-qengine`, which the compositor ignores and kmsshim shows MPC as its seat0. `chroot-mpc.sh` writes the rule.
+- A desktop's PipeWire would open MPC's internal card too. `chroot-mpc.sh up` writes a WirePlumber rule that leaves it alone; restart WirePlumber in a session that was already running. MPC still opens `AUDIO_CARD` directly, and gets it only while PipeWire has it suspended.
+- Run as a window, `chroot-mpc.sh` leaves tty1 alone. A display manager conflicts with the login prompt there, so starting it would end every desktop session.
+- Tried in GNOME 50 on Ubuntu 26.04 in UTM, with sound. sway in the same VM showed a black screen on UTM's display while drawing correctly, so it was not tried further; it needs the user in the `video` group for seatd. Not tried on a Pi.
 
 ## Settings
 

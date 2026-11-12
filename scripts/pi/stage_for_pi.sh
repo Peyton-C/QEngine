@@ -5,8 +5,8 @@
 # Usage: stage_for_pi.sh --name <instance> [--out <dir>] [--wayland]
 #   <instance> is one made by scripts/build_scripts/new_instance.sh; it must be an
 #   arm64 Engine or Gen 2 MPC instance and must not be running. Writes
-#   build/pi-stage/ by default. Engine requires Docker; MPC is only copied, into
-#   mpc/ beside chroot-mpc.sh.
+#   build/pi-stage/ by default. Requires Docker. An MPC instance goes into mpc/,
+#   beside chroot-mpc.sh, kmsshim.so and kmspresent.
 #
 #   --wayland also stages what Engine needs to run under a Wayland compositor
 #   (PLATFORM=wayland in chroot-engine.sh): a libEGL with the Wayland platform
@@ -67,14 +67,41 @@ copy_image() {
     cp -c "$1" "$2" 2>/dev/null || cp --sparse=always "$1" "$2" 2>/dev/null || cp "$1" "$2"
 }
 
-# MPC needs nothing from here but its two disks and chroot-mpc.sh: it renders
-# without a GPU, and its shims are already in the rootfs. Staged under mpc/, so
-# that an Engine stage and an MPC one can share a directory.
+# MPC needs its two disks and chroot-mpc.sh: it renders without a GPU, and its
+# shims are already in the rootfs. Staged under mpc/, so that an Engine stage and
+# an MPC one can share a directory. kmsshim.so and kmspresent are only for
+# PLATFORM=wayland: the first is loaded into MPC, so it is built against the
+# same old glibc as the other shims, and the second runs on the host, built
+# there on bookworm so that any newer distribution can run it.
 if [ "${DEVICE:-}" = mpc ]; then
     [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ] || {
         echo "ERROR: instance '$NAME' has no data_disk.img; only Gen 2 MPC runs in a chroot." >&2
         exit 1; }
     mkdir -p "$OUT/mpc"
+    echo "--- building kmsshim and kmspresent ---"
+    docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
+    docker run --rm --platform linux/arm64 \
+        -v "$REPO_ROOT/shims:/shims:ro" -v "$OUT:/out" \
+        debian:bookworm bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc libc6-dev libdrm-dev libwayland-dev wayland-protocols \
+                libwayland-bin pkg-config >/dev/null 2>&1
+            gcc -shared -fPIC -O2 -Wall -I/usr/include/libdrm \
+                -o /out/kmsshim.so /shims/kmsshim/kmsshim.c -ldl -lpthread
+            P=$(pkg-config --variable=pkgdatadir wayland-protocols)
+            mkdir -p /tmp/proto && cd /tmp/proto
+            for x in xdg-shell:stable/xdg-shell/xdg-shell.xml viewporter:stable/viewporter/viewporter.xml; do
+                wayland-scanner client-header "$P/${x#*:}" "${x%%:*}-client-protocol.h"
+                wayland-scanner private-code "$P/${x#*:}" "${x%%:*}.c"
+            done
+            gcc -O2 -Wall -Wno-missing-field-initializers -I. -I/shims/kmsshim \
+                -o /out/kmspresent /shims/kmsshim/kmspresent.c xdg-shell.c viewporter.c -lwayland-client
+        '
+    for f in kmsshim.so kmspresent; do
+        [ -s "$OUT/$f" ] || { echo "ERROR: $f was not built." >&2; exit 1; }
+    done
     echo "--- copying the rootfs and data disk ---"
     copy_image "$ROOTFS_IMG" "$OUT/mpc/rootfs.img"
     copy_image "$DATA_IMG" "$OUT/mpc/data_disk.img"

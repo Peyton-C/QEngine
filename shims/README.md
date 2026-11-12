@@ -2,7 +2,7 @@
 Shims used to allow running unmodified Engine in QEMU
 
 ## alsashim
-Allows Engine to use emulated sound cards. The SC media players and Prime GO on 1.5.2 and later use a guest-linked build for PCM conversion and four-channel playback-only audio. MPC uses it only to copy what it plays on `snd-dummy` onto QEMU's sound card.
+Allows Engine to use emulated sound cards. The SC media players and Prime GO on 1.5.2 and later use a guest-linked build for PCM conversion and four-channel playback-only audio. MPC and HeadRush VX5 use it only to copy what they play on `snd-dummy` onto QEMU's sound card, and VX5 also to hear a WAV file in place of its input.
 
 ## cursorshim
 Allows for a regular cursor to be displayed in Engine.
@@ -23,7 +23,7 @@ An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the di
 Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.
 
 ## pcmhold
-Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush Prime uses 8 out and 2 in; VX5 uses 2 out and 2 in.
+Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush Prime uses 8 out and 2 in.
 
 ## qmlrotate
 Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush and early SC5000 builds use it to turn their UI, rotated for a sideways portrait panel, back to landscape.
@@ -42,3 +42,6 @@ Converts the absolute values from QEMU's touch screen to a virtual touch screen.
 
 ## vnctouchbridge
 Intercepts mouse input inbetween Qt's VNC server and the VNC client to convert it to a virtual touch screen.
+
+## vx5surface
+An emulated panel for HeadRush VX5: its encoders, switches, phantom-power key and volume knob as input devices at the paths the app opens, and its USB MIDI port as a sequencer client named `f_midi`. Driven through `/run/vx5surface.fifo`.

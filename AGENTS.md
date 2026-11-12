@@ -59,6 +59,7 @@ update .img  ->  new_instance.sh  ->  build/instances/<name>/  ->  run_instance.
 | `scripts/pi/` | Staging an instance for the Pi and running it there, its services and sway configs |
 | `scripts/vm/` | Run inside a guest, as root, to start Engine by hand |
 | `shims/` | `LD_PRELOAD` shims and helpers in C, with SoC-specific ones under `rk3288/` and `rk3588/` |
+| `ui/` | A concept front panel UI in Dear ImGui and SDL3 GPU, drawn from a layout file per device |
 
 Engine itself is never patched. Everything QEngine changes is done around it: shims preloaded into it, files written into the rootfs at build time, and a devicetree served by `dtshim`. MONTERO follows the same rule, a mod carries only its own QML and never a copy of Engine's. Firmware, rootfs images and anything extracted from them are inMusic's and are never committed.
 

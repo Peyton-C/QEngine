@@ -55,10 +55,10 @@ A raw command can send what no panel would. On `ACVA3` a note on for `0x58` on c
 
 To see what MPC sends the panel, such as the lamp for a button with no name yet, set `MPCSURFACE_VERBOSE=1` and `MPCSURFACE_LOG=/data/surface.log` in a drop-in for `acvs.service`.
 
-Tried on arm64, `ACVA3`, 3.10.0 only. The other Gen 2 codes and all of Gen 1 are built with it and untested. The first time MPC met the surface the guest rebooted itself once, and not again.
+Tried on arm64 as every Gen 2 code and on armv7 as every Gen 1 code, `ACV5` `ACV5S` `ACV8` `ACVA` `ACVA2` `ACVB` `ACVM` `ACVR`, all on 3.10.0. Each Gen 1 panel completes the handshake, gets its lamps and plays pads, and MPC names itself after it. Pads on a Key play its default project's Fabric instrument, whose content is in no update image, so they are near silent; the keybed is not emulated. On Gen 2, `ACVC` and `ACVG` play the classic pad notes despite their MPCe pads. `ADA2S` completes the handshake and gets its lamps, but none of the 128 notes on the pad channel play, so Force pads need a mapping `mpcsurface` does not have, and MPC warns that the disk is almost full, likely from the NVMe storage QEngine does not supply. The first time MPC met the surface the guest rebooted itself once, and not again.
 
 ## Audio
-MPC plays through the host's sound output. It opens its internal card by udev path, `/dev/snd/by-path/platform-sound`, and the build points that path at `snd-dummy`, which `qengine-mpc-audio.service` loads before `acvs.service`. `alsashim` is preloaded into MPC and copies the first pair of everything it plays onto QEMU's HDA card, which `run_qemu.sh` gives the `mpc` family as it does Engine. Inputs are silent.
+MPC plays through the host's sound output. It opens its internal card by udev path, `/dev/snd/by-path/platform-sound`, and the build points that path at `snd-dummy`, which `qengine-mpc-audio.service` loads before `acvs.service`. `alsashim` is preloaded into MPC and copies the first pair of everything it plays onto QEMU's card, which `run_qemu.sh` gives the `mpc` family as it does Engine: HDA on arm64, and virtio-sound on armv7, since Debian's armv7 kernel has no HDA driver. Inputs are silent.
 
 | Card | Why not |
 | --- | --- |
@@ -70,7 +70,7 @@ Debian builds `snd-dummy` for neither architecture, so `get_kernel.sh` builds it
 
 The output runs about 30 to 80 ms behind MPC, and the two cards' clocks drift, which can cost a short tick every so often. Run with `QEMU_AUDIO=off` and MPC still plays to the dummy card, unheard.
 
-Heard on arm64, `ACVA3`, 3.10.0, on macOS through CoreAudio. Gen 1 builds the same way and is untested. MPC Sample is covered under its own heading.
+Heard on arm64, `ACVA3`, 3.10.0, on macOS through CoreAudio. On armv7, Gen 1 3.10.0 was recorded through QEMU's wav backend at full level, not listened to. MPC Sample is covered under its own heading.
 
 ## Gen 2
 Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so of arm64 Engine's shims only `alsashim` applies, for sound. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.

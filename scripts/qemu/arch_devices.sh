@@ -251,14 +251,24 @@ fi
 # default and leave playback null, which presents as a stuck XRUN rather than an
 # error (see the note in each engine launcher).
 #
-# hda is PCI, which is why armhf used to get the mmio virtio-sound device instead.
-# It no longer has to, and it should not: Engine's ALSA shim spoofs a specific card
-# name and was only ever written against hda, so the shared card is the pairing more
-# likely to work. Neither has been run on armhf yet — if hda turns out to be the
-# wrong bet there, virtio-sound-device is still reachable through QEMU_EXTRA_ARGS.
+# The card differs by architecture because of what Debian builds, not the machine:
+# linux-image-armmp ships the HDA codec modules but not snd_hda_intel, so in a
+# 32-bit guest an ich9-intel-hda sits on the PCI bus with no driver and no card
+# ever appears. armhf gets virtio-sound instead, whose virtio_snd get_kernel.sh
+# puts in both initrds. arm64 keeps hda, which its audio was confirmed against.
+#
+# streams=1 is one playback stream and no capture, the virtio-sound equivalent
+# of hda-output rather than hda-duplex: QEMU makes the first half of the streams
+# outputs (hw/audio/virtio-snd.c), and a capture PCM would become Engine's default.
+#
 # Kept as a function, rather than folded into a variable, because run_qemu.sh calls
 # it with the -audiodev id it generated.
 #   $1 = the -audiodev id to attach to
 arch_audio_devices() {
-    printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+    # ${ARCH:-}: this runs long after the file was sourced, under set -u.
+    if [ "${ARCH:-}" = armhf ]; then
+        printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1"
+    else
+        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+    fi
 }

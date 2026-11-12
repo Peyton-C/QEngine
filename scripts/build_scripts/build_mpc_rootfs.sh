@@ -431,11 +431,14 @@ ExecStart=/sbin/modprobe snd-dummy$DUMMY_ARGS
 ExecStart=/usr/bin/udevadm settle --timeout=10
 EOF
     # alsashim does only the second output here: MPC's card keeps its own name
-    # and its hw: device, and its ring and period stay as MPC asks. QEMU's hda
-    # card has the id Intel on both architectures.
-    cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
+    # and its hw: device, and its ring and period stay as MPC asks. QEMU's card
+    # is hda, id Intel, on arm64, and virtio-sound, id SoundCard, on armhf, whose
+    # kernel has no hda driver (arch_audio_devices in scripts/qemu/arch_devices.sh).
+    QEMU_CARD=Intel
+    [ "$ARCH" = armhf ] && QEMU_CARD=SoundCard
+    cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 Environment=ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
-Environment=ALSASHIM_CUE_PCM=plughw:Intel ALSASHIM_CUE_CHANNEL=1
+Environment=ALSASHIM_CUE_PCM=plughw:$QEMU_CARD ALSASHIM_CUE_CHANNEL=1
 
 [Unit]
 Wants=qengine-mpc-audio.service

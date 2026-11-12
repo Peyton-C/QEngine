@@ -35,6 +35,7 @@ case "$ARCH" in
         EXPECTED_UNAME="aarch64|arm64"
         EXPECTED_NAME="aarch64"
         EXTRA_MODULES=()
+        EXPECTED_ABSENT=""
         ;;
     armhf)
         KERNEL_PKG="linux-image-armmp"
@@ -56,7 +57,12 @@ case "$ARCH" in
             # through the usbhid above. Costs nothing and keeps the mmio input
             # devices usable from QEMU_EXTRA_ARGS.
             virtio_input
+            # The sound card armhf gets, since armmp builds no snd_hda_intel; see
+            # arch_audio_devices in scripts/qemu/arch_devices.sh.
+            virtio_snd
         )
+        # Not built for armmp, so the check below expects them missing.
+        EXPECTED_ABSENT="|snd_hda_intel|snd_intel_dspcfg"
         ;;
     *)
         echo "ERROR: --arch must be 'arm64' or 'armhf' (got '${ARCH:-}')." >&2
@@ -90,7 +96,7 @@ MODULES=(
     # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio
-    # Onboard HDA
+    # Onboard HDA, arm64 only in practice (EXPECTED_ABSENT above)
     snd snd_timer snd_pcm snd_hda_core snd_hda_codec snd_hda_codec_generic
     snd_intel_dspcfg snd_hda_intel
     # A software card with a name of our choosing, for an app that insists on
@@ -252,7 +258,7 @@ for name in ${MODULES[@]} ${ON_DEMAND_MODULES[@]}; do
     #   USB MIDI 1.0 class-compliant interface (snd_seq_midi/
     #   snd_usbmidi_lib handle that fine without it) — expected too.
     case "\$name" in
-        ecc|snd_ump) continue ;;
+        ecc|snd_ump$EXPECTED_ABSENT) continue ;;
     esac
     pattern=\$(echo "\$name" | sed 's/[_-]/[-_]/g')
     if ! find /tmp/verify -regextype posix-extended -regex ".*/\${pattern}\.ko(\.xz)?" | grep -q .; then

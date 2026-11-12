@@ -4,7 +4,7 @@
  * driver (RANE SYSTEM ONE / RMZ2), reverse-engineered from the real
  * snd-soc-inmusic-az04.ko (unstripped, John Keeping
  * <jkeeping@inmusicbrands.com>, kernel 6.18.9-imb-2026-02-06-rt3) via
- * objdump — see docs/BUILDING.md. The real driver has no register map, no
+ * objdump. See README.md for building and deployment. The real driver has no register map, no
  * I2C/SPI: it's purely two optional GPIO lines (mute/reset) plus
  * devicetree-driven PCM capability negotiation via
  * device_property_read_u32_array() on inmusic,playback-channels /

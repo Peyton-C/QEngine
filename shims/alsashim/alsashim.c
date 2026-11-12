@@ -86,8 +86,8 @@
  * Separately, Engine's MIDI device enumerator rejects any ALSA sequencer
  * client that isn't backed by a sound card: for a userspace client it logs
  * `client id: N - card number unavailable` followed by `The port isn't'
- * opened for Midi::Out::<name>` (the same warning ENGINEOS.md has recorded
- * as unresolved), and never opens the device. snd_seq_client_info_get_card()
+ * opened for Midi::Out::<name>`, and never opens the device. The port warning
+ * comes from cleanup, not a failed open. snd_seq_client_info_get_card()
  * returns -1 for any client created with snd_seq_open() rather than by a
  * card driver, which is what a virtual control surface
  * (shims/midisurface/) necessarily is.

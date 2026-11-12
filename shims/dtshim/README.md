@@ -11,8 +11,7 @@ refuses to compile without one. Everything else — the
 runtime `/proc/interrupts` generation, the `/dev/mem` neutering — is shared.
 
 `drmatomic.so` is required alongside this shim for `eglfs` to produce visible output;
-without it Engine starts fine but the screen stays black. See BUILDING.md's arm64/RK3588
-section for why. Both are installed and preloaded by the rootfs builders.
+without it Engine starts fine but the screen stays black. See [Display and input](../../docs/engine/DISPLAY.md) for why. Both are installed and preloaded by the rootfs builders.
 
 ## What comes from where
 

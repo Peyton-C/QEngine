@@ -86,8 +86,8 @@ for f in "$ROOTFS_IMG" "$DATA_IMG" ${SD_IMG:+"$SD_IMG"}; do
     [ -s "$f" ] || { echo "ERROR: required image missing or empty: $f" >&2; exit 1; }
 done
 
-# Refuse to run two QEMUs against one set of disks. docs/BUILDING.md warns twice
-# that two writers on one image corrupts the filesystem, and it fails silently
+# Refuse to run two QEMUs against one set of disks. Two writers on one image
+# corrupt the filesystem (see docs/BUILDING.md), and it fails silently
 # rather than at startup. The fd stays open across the exec below, so the lock is
 # held for the VM's lifetime and released when it exits. flock is Linux-only, so
 # on macOS QEMU's own image locking is the only guard.

@@ -167,9 +167,8 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # means an edited .c can never be shadowed by a stale .so.
 #
 # debian:bookworm for glibc 2.36, comfortably older than the guest's 2.39
-# (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
-# cross-compiling shims". One container for all of them, since the apt-get
-# dominates the cost.
+# (older is the safe direction) — see docs/BUILDING.md, "Toolchain". One container for all
+# of them, since the apt-get dominates the cost.
 STAGE_DIR="$(mktemp -d /tmp/build-armv7-engine-rootfs-stage.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
@@ -220,7 +219,7 @@ docker run --rm --platform linux/arm/v7 \
         # -lpthread for its upstream relay thread. Only this builder compiles it:
         # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
         # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
-        # from 5.0.4 on. See docs/BUILDING.md section 8.
+        # from 5.0.4 on. See docs/engine/DISPLAY.md.
         gcc -O2 -Wall \
             -o /shims/rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                /shims/rk3288/vnctouchbridge/vnctouchbridge.c -lpthread
@@ -632,4 +631,4 @@ echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch armhf) and a"
 # 931ad49d-ad59-0849-833a-9bf00af5b60e, the single az01-internal partition, which is
 # the same layout the MPC images use. The disk layout tracks the platform generation,
 # not the application.
-echo "/data disk (make_disk.sh --family mpc) — see docs/BUILDING.md's"
+echo "/data disk (make_disk.sh --family mpc) — see docs/BUILDING.md, Disks."

@@ -75,8 +75,8 @@ INITRD="initrd-generic-$ARCH"
 echo Getting Kernel...
 
 # Every module this project has needed and previously had to manually
-# decompress by hand at some point — see ENGINEOS.md's MIDI section and
-# BUILDING.md's Status section for where each group came from — plus the
+# decompress by hand at some point — see docs/engine/AUDIO_MIDI.md and
+# docs/BUILDING.md, Kernel, for the module setup — plus the
 # DRM/virtio-gpu stack, which mkinitramfs's own MODULES=most policy
 # excludes by category the same way it excludes sound/bluetooth.
 MODULES=(
@@ -93,7 +93,7 @@ MODULES=(
     # /data and losetups it to /dev/loop1 before Evil starts; without the module
     # there is no /dev/loop1, and runevil retries losetup forever.
     loop
-    # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
+    # USB-audio/MIDI class stack, in dependency order
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio
     # Onboard HDA, arm64 only in practice (EXPECTED_ABSENT above)

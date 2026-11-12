@@ -1,8 +1,7 @@
 #!/bin/bash
 # build_az04_audio.sh — builds the experimental az04-codec/az04-card ASoC
-# kernel modules (see docs/ENGINEOS.md's "Audio playback: a real ALSA
-# card, reached and opened" and docs/BUILDING.md's "Reimplementing
-# az04-codec as a loadable kernel module"), plus the three snd-soc-core
+# kernel modules (see shims/rk3588/az04-audio/README.md), plus the three
+# snd-soc-core
 # dependency modules this project's trimmed initrd doesn't ship
 # (get_kernel.sh's MODULES= list has no ASoC support at all).
 #
@@ -26,7 +25,7 @@
 #   build/az04-audio/. Requires Docker.
 #
 # These are diagnostic/experimental modules, not part of the normal
-# boot path — see docs/BUILDING.md for how to deploy them into an
+# boot path — see shims/rk3588/az04-audio/README.md to deploy them into an
 # already-booted guest (mount rw, curl over the host's usermode-network
 # gateway at 10.0.2.2, insmod in dependency order: snd-pcm-dmaengine,
 # snd-compress, snd-soc-core, az04_codec, az04_card).
@@ -115,5 +114,4 @@ echo "  $OUT_DIR/snd-soc-core.ko"
 echo "  $OUT_DIR/snd-pcm-dmaengine.ko"
 echo "  $OUT_DIR/snd-compress.ko"
 echo ""
-echo "Deployment into an already-booted guest: docs/BUILDING.md's"
-echo "'Reimplementing az04-codec as a loadable kernel module' section."
+echo "Deployment into an already-booted guest: shims/rk3588/az04-audio/README.md"

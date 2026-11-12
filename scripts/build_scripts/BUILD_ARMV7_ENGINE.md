@@ -72,4 +72,4 @@ Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEng
 
 QEngine installs `touchbridge`, `midisurface`, the devicetree shim and the application override. The data disk uses the single `az01-internal` partition, the same layout as Gen 1 MPC. Direct use of `build_armv7_engine_rootfs.sh` defaults to the shared `build/rootfs_out.img`; use instances to keep devices apart.
 
-See [INSTANCES.md](INSTANCES.md) for instance settings and [BUILDING.md](../../docs/BUILDING.md) for the runtime mechanisms.
+See [INSTANCES.md](INSTANCES.md) for instance settings and [Engine OS](../../docs/engine/README.md) for the runtime mechanisms.

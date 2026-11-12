@@ -6,7 +6,7 @@
 #
 # Engine only binds a control surface that answers its MIDI device-inquiry
 # handshake with inMusic's manufacturer id and this product's id (0x27) — see
-# docs/ENGINEOS.md. A third-party controller cannot answer that, so it can
+# docs/engine/AUDIO_MIDI.md. A third-party controller cannot answer that, so it can
 # never be bound directly, and this rootfs's KnownDevices table has exactly one
 # entry that maps to Engine's decks. That leaves one usable arrangement:
 #

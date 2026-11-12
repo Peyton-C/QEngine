@@ -160,9 +160,8 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # means an edited .c can never be shadowed by a stale .so.
 #
 # debian:bookworm for glibc 2.36, comfortably older than the guest's
-# — see docs/BUILDING.md's "Toolchain for
-# cross-compiling shims". One container for all of them, since the apt-get
-# dominates the cost.
+# — see docs/BUILDING.md, "Toolchain". One container for all
+# of them, since the apt-get dominates the cost.
 
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a

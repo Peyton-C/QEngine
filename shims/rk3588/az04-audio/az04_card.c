@@ -3,8 +3,8 @@
  * Experimental machine driver pairing with az04_codec.c. On real RMZ2
  * hardware the machine driver is mainline `simple-audio-card` binding
  * `inmusic,az04-codec` to `rockchip,rk3588-i2s-tdm` — but that CPU DAI is
- * real RK3588 silicon QEMU's virt machine doesn't emulate at all (see
- * docs/BUILDING.md's "az04-codec driver exists, and is unusable here").
+ * real RK3588 silicon QEMU's virt machine doesn't emulate at all. See
+ * README.md for building and deployment.
  * This binds the same codec to ASoC's built-in dummy CPU DAI/platform
  * (`snd_soc_dummy_dlc`, exported by soc-core) instead — a real,
  * fully-probing ALSA card and PCM device with nothing behind it, entirely
@@ -13,9 +13,9 @@
  *
  * Card name is literally "RMZ2", matching the real hardware's
  * simple-audio-card node name (`build/systemone_linux_debive_tree.dtb`),
- * on the chance Engine's device manager string-matches against it —
- * already tested and ruled out once before with a renamed HDA ALSA id
- * (see BUILDING.md), but cheap to also cover here.
+ * so Engine's card-name allowlist can accept it. Changing an HDA card
+ * id alone does not change the shortname that check reads; see
+ * docs/engine/AUDIO_MIDI.md.
  *
  * The CPU DAI role uses `snd_soc_dummy_dlc` (exported by soc-core) fine.
  * The PLATFORM role does not: soc-utils.c's dummy_dma_open() has a guard

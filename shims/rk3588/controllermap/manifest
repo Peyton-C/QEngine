@@ -16,9 +16,9 @@
 # starting point and change the note/CC numbers to what your controller emits
 # (`aseqdump`-style capture, or the controller's MIDI implementation chart).
 # The structure — which QML component provides which function — stays as-is;
-# only the numbers and the per-section midiChannel need to change. See
-# docs/ENGINEOS.md for the RMZ2 defaults (decks on MIDI channels 0x04/0x05,
-# mixer channels 0x00/0x01, global 0x0F).
+# only the numbers and the per-section midiChannel need to change.
+# The RMZ2 defaults put decks on MIDI channels 0x04/0x05,
+# mixer channels 0x00/0x01, global 0x0F.
 #
 # Nothing is listed by default: a mapping's note/CC numbers can be written from
 # a MIDI implementation chart, but the vid:pid can only be read off the unit,

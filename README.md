@@ -119,6 +119,21 @@ Mixstream Pro 2.0.1 to 2.3.2 boot on the same legacy path as 1.x and need no aud
 
 ## Other inMusic devices
 
+### OS eras
+The other platforms split along the same lines as Engine OS. Modern is Yocto `az0x` scarthgap with glibc 2.39 in an `AZ0x` or `AZ01` container. Classic is Buildroot with glibc 2.34 or later and `libmali`, which QEngine replaces with Mesa. Legacy is anything older than glibc 2.34, in a plain FIT image. A range such as 3.4.1+ is inferred from the releases checked within it, and nothing in the legacy column has been booted.
+
+| Platform                   | Modern  | Classic | Legacy  |
+|----------------------------|---------|---------|---------|
+| MPC                        | 3.4.1+  | –       | 2.x     |
+| MPC Force                  | 3.5.0+  | –       | < 3.5.0 |
+| MPC Sample                 | 1.x     | –       | –       |
+| Alesis drum module         | 1.5.2.3 | –       | –       |
+| HeadRush VX5               | 1.x     | –       | –       |
+| HeadRush Prime, Flex Prime | –       | 5.2.0   | –       |
+| Sheeran Looper X           | –       | 1.0.2   | –       |
+| HeadRush Pedalboard        | –       | –       | 2.7     |
+| HeadRush Looperboard       | –       | –       | 2.0.5   |
+
 ### Emulated MPCs
 
 Same shape as the table above. **Code** is again the `inmusic,product-code` value,

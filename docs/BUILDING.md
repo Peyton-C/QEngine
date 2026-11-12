@@ -995,8 +995,10 @@ This section is only what you have to *do* to get sound out of a build.
 `-device hda-duplex`:
 
 ```
--device ich9-intel-hda -device hda-output,audiodev=mac -audiodev coreaudio,id=mac
+-device ich9-intel-hda -device hda-output,audiodev=mac -audiodev coreaudio,out.frequency=48000,id=mac
 ```
+
+The launchers run CoreAudio at 48 kHz. QEMU's coreaudio backend does not resample: it asks the output device for its own rate, 44.1 kHz by default, and a device that stays at 48 kHz, such as AirPods, plays the stream fast with gaps. Set `AUDIODEV_BACKEND` to override it.
 
 With a capture PCM present, Engine makes the capture device its default and
 leaves the playback slot unassigned, then drives capture only — playback sits

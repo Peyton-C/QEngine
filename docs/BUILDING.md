@@ -52,8 +52,8 @@ Use a new instance name for another device or firmware version. Use `--force` to
 | `engine` | arm64, RK3588 | [arm64 Engine](../scripts/build_scripts/BUILD_ARM64.md) |
 | `engine` | armv7, RK3288 | [armv7 Engine](../scripts/build_scripts/BUILD_ARMV7_ENGINE.md) |
 | `mpc` | armv7 or arm64 | [MPC and Force](../scripts/build_scripts/BUILD_MPC.md) |
-| `mpc-sample` | arm64, RK3566 | [MPC Sample](../scripts/build_scripts/BUILD_MPC.md) |
-| `drummodule` | armv7, RK3288 | [Alesis drum modules](../scripts/build_scripts/BUILD_MPC.md) |
+| `mpc-sample` | arm64, RK3566 | [MPC Sample](../scripts/build_scripts/BUILD_MPC_SAMPLE.md) |
+| `drummodule` | armv7, RK3288 | [Alesis drum modules](../scripts/build_scripts/BUILD_ALESIS.md) |
 | `headrush` | armv7 or arm64 | [HeadRush](../scripts/build_scripts/BUILD_HEADRUSH.md) |
 
 The [README](../README.md) lists booted firmware versions and feature support. For Engine OS runtime differences, read [modern](engine/MODERN.md), [classic](engine/CLASSIC.md) or [legacy](engine/LEGACY.md). The [Pi guide](../scripts/pi/README.md) covers staging an arm64 Engine instance for a chroot.

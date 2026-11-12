@@ -1,248 +1,131 @@
-# Instances — running several emulated devices side by side
-
-One directory per emulated device, in the spirit of an Android AVD. Each instance
-owns its disks and its configuration, so building or booting one never disturbs
-another.
-
-Without this, every rootfs build writes `build/rootfs_out.img` and every launcher
-opens that same path on port 2225: a second device silently overwrites the first,
-and a second VM either fails to bind the port or — worse — two QEMUs write the
-same disk, which corrupts it without an error.
+# Instances
+QEngine keeps each emulated device in `build/instances/<name>/`, with its own rootfs, writable disks, ports and configuration. Kernels and initrds are shared per architecture. Use separate instances to run different devices or firmware versions side by side.
 
 ## Create
+Run from the repository root with Docker running:
 
 ```sh
-# --device is optional; the family is identified from the firmware when omitted
 scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 \
-    --firmware ~/firmware/SYSTEMONE-5.0.4-Update.img
-
-scripts/build_scripts/new_instance.sh --name mpc-3.9.1 --device mpc \
-    --firmware ~/firmware/MPC-3.9.1-Gen1-update.img
+    --product-code RMZ2 --firmware /path/to/SYSTEMONE-5.0.4-Update.img
 ```
 
-That is the whole setup — the kernel is built on demand, once per architecture, and
-reused by every later instance that needs it.
+`--firmware` accepts an update image or desktop updater. QEngine detects the family and architecture, builds the rootfs, creates missing writable disks and prepares the matching kernel. See [Build](../../docs/BUILDING.md) for requirements and extraction details.
 
-`--device` selects the device family, which decides the shim stack and the disk
-layout: `engine` (Engine OS), `mpc` (Akai MPC), `mpc-sample` (MPC Sample), `drummodule` (Alesis drum module), or `headrush` (Prime and VX5). Add `--force` to rebuild an
-existing rootfs, `--size` to change the image size.
+| Option | Effect |
+| --- | --- |
+| `--name NAME` | Selects the instance directory |
+| `--firmware PATH` | Supplies firmware, required on every invocation |
+| `--device FAMILY` | Selects `engine`, `mpc`, `mpc-sample`, `drummodule` or `headrush`; QEngine checks the rootfs matches |
+| `--product-code CODE` | Selects the identity built into the rootfs |
+| `--montero` / `--no-montero` | Enables or removes MONTERO for Qt 6 Engine |
+| `--size BYTES` | Sets rootfs capacity, normally 4 GiB |
+| `--force` | Rebuilds the rootfs while keeping writable disks |
+| `--binwalk` | Uses unverified extraction for this invocation |
 
-QEngine extracts the rootfs with its own reader for each firmware container. `--firmware` also takes a desktop updater in place of the image, the zipped Mac `.app` or the Windows `.exe`, and `extract_updater.py` unpacks the `Update.img` inside it first, with no 7-Zip needed. HeadRush ships only updaters. `--binwalk` uses binwalk instead, for a container none of the readers knows. Nothing is verified that way, binwalk 3 cannot unpack plain FIT images (Prime GO 4.3.0 and earlier, MPC 2.x), and binwalk 2 builds a broken SYSTEM ONE 5.2.0 rootfs. It applies to that run only and is not recorded in `instance.env`.
-
-### Device families are a registry, and the choice is checked
-
-The families live in one table in `new_instance.sh`, a row per family/architecture
-combination:
-
-```
-<family>|<arch>|<rootfs markers>|<rootfs builder>|<disk layout>|<data image name>|<extra disk>
-engine|arm64|/usr/Engine|build_arm64_rootfs.sh|engine|data_disk.img|-
-engine|armhf|/usr/Engine,/usr/JP07/JP07|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
-mpc-sample|arm64|/usr/bin/launch-ac50|build_mpc_rootfs.sh|engine|data_disk.img|-
-mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
-mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
-drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img
-headrush|arm64|/usr/bin/HV03|build_mpc_rootfs.sh|engine|data_disk.img|-
-headrush|armhf|/usr/Evil|build_armv7_engine_rootfs.sh|mpc|emmc.img|-
-```
-
-The extra disk is a third drive beside `/data`, as `<make_disk.sh family>:<image name>`, or `-` for none. Only the drum module has one, its internal SD card. It is kept across `--force` like `/data` and recorded in `instance.env` as `SD_IMG`.
-
-The markers are whitespace-separated requirements that must all match. A requirement can contain comma-separated alternatives, as `/usr/Engine,/usr/JP07/JP07` does for early SC5000 firmware. Rows are tried in order, so put a family with more specific markers before one it would also match. Add a family or architecture by adding a row.
-
-Architecture is part of the key because two things differ along it rather than along
-the family. Engine OS on armv7 needs its own rootfs builder — a different shim stack,
-and RK3288 devicetree paths — and it wants the single-partition `mpc` disk layout
-rather than the RK3588 `data`+`factory` pair, because its `data.mount` asks for the
-`az01-internal` PARTUUID. Disk layout tracks the platform generation, not the
-application. The markers themselves say nothing about architecture (the same
-`/usr/Engine` tree ships on both), so that comes from the dynamic loader's name.
-
-`--device` is optional. It narrows the builder down to a family, and that much can be
-decided from the firmware instead, so when it is omitted the family is resolved in
-order of cost: what was asked for, then what this instance was built as before (free,
-its rootfs is already on disk), then the firmware itself, which costs one extraction
-of a few seconds.
-
-Passing `--device` skips that extraction only when the family pins a single row, which today is only `drummodule`: Engine OS and MPC both ship on both architectures, so the firmware is looked at to pick the row. Gen 1 and Gen 2 MPC share `build_mpc_rootfs.sh`, which `new_instance.sh` tells which by exporting the row's `ARCH`. Gen 2 takes the `engine` disk layout, because its `data.mount` and `factory.mount` ask for the same PARTUUIDs as RMZ2's. Either way, stating
-the family records the intent in `instance.env` and in shell history.
-
-Either way it is verified rather than trusted: once the rootfs exists it is identified
-from its markers, and a disagreement is a hard error before the data disk is created.
-
-That check earns its keep on a mismatch the architecture guards cannot see. Those
-compare a rootfs against their own builder's architecture, so engine-versus-mpc
-confusion is only caught while the two families differ in architecture. An arm64 MPC
-image built as `--device engine` passes them and gets the entire Engine shim stack
-installed into an MPC rootfs — an instance that boots and can never work.
-
-### Architecture is detected, not assumed
-
-`--device` deliberately does **not** imply the architecture. Engine OS ships on both
-RK3288 (armv7) and RK3588 (arm64), and so does MPC, and the container format does not
-settle it either — the `AZ0x` images span both. So the architecture is read off the
-built rootfs by looking for its dynamic loader (`ld-linux-aarch64.so.1` vs
-`ld-linux-armhf.so.3`), which is unambiguous and needs no product-code table to keep
-up to date.
-
-This works because the kernel is not needed until boot: by the time one has to be
-chosen, the filesystem that decides it has already been built. The result is recorded
-as `ARCH` in `instance.env` along with the kernel paths it selected.
-
-The launchers follow that result rather than their own name. `arch_devices.sh`,
-sourced by each of them, resolves the QEMU binary and the architecture-dependent
-devices from `ARCH`:
-
-| | arm64 | armhf |
-|---|---|---|
-| machine | `virt,highmem=on` | `virt,highmem=off` |
-| GPU | `virtio-gpu-pci` | `virtio-gpu-pci` |
-| input | `usb-ehci`/`qemu-xhci` + `usb-kbd`/`usb-tablet` | same |
-| net | `virtio-net-pci` | `virtio-net-pci` |
-| audio | `ich9-intel-hda` + `hda-output` | same |
-| RAM default | 4096 | 2048, and 3072 is a hard ceiling |
-| CPU / accel | `max` (`host` under HVF/KVM) | `host,aarch64=off` under KVM on an arm64 Linux host, else `cortex-a15` + TCG |
-
-Only the first two rows really differ, and the second follows from the first. armhf
-used to attach everything over virtio-mmio because the Debian armmp kernel could not
-probe that machine's PCI host bridge (`pci-host-generic ... failed with error -75`),
-which made every `-pci` device invisible, USB controllers included. That error is
-`-EOVERFLOW`, and it is a memory-map problem rather than a missing driver: with
-`highmem=on` the PCIe ECAM sits at `0x40_10000000`, beyond what the non-LPAE armmp
-kernel's 32-bit `resource_size_t` can hold. `highmem=off` moves it to `0x3f000000`
-and the bus enumerates normally, so both architectures now use the same devices.
-
-**A 32-bit guest is not stuck with TCG.** An arm64 Linux host whose cores implement
-AArch32 at EL1 — Cortex-A53 and A72 among them — can run one under KVM, and the
-difference is not small: a JP13 guest reaches a login prompt in 11-13s that way,
-against roughly two minutes emulated on an x86_64 workstation. Two details hide it.
-`qemu-system-arm` is packaged TCG-only, so checking *that* binary suggests the host
-cannot do it; the guest actually runs under `qemu-system-aarch64` with
-`-cpu host,aarch64=off`. `arch_devices.sh` picks this automatically when the host and
-the selected binary both allow it, so an armv7 instance on such a host needs no flags.
-Apple Silicon is excluded: M-series dropped AArch32 outright.
-
-The cost is that the guest's physical address space stops at 4GB, and since RAM
-starts at `0x40000000` that leaves 3072 as the most armhf can be given — past it
-QEMU refuses to start outright, so `arch_devices.sh` checks `MEM` and says why. If an
-armhf guest ever needs more, the alternative is `linux-image-armmp-lpae`, which has
-`CONFIG_PHYS_ADDR_T_64BIT=y` and can therefore keep `highmem=on`.
-
-One thing is still arm64-only in practice: `GPU_MAX_OUTPUTS` no longer *rejects*
-armhf, since per-head `usb-tablet`s need the USB that needed PCI, but multi-head has
-only been run on arm64.
-
-The virgl display modes used to be arm64-only too, and are not any more — armhf
-renders through virgl on the host's GPU. It needs three things together: a GL display
-mode, a QEMU with virglrenderer built in, and the virgl-capable Mesa
-`build_virgl_mesa.sh` produces. arm64 works too, and needed a different fix: its
-Mesa is a shared-gallium build with no plug-in slot, so the driver that builder used
-to copy into `/usr/lib/dri` was never consulted, and the whole `libgallium` is
-replaced instead. Which of the two layouts a guest uses follows its firmware rather
-than its architecture, so `detect_mesa.sh` reads it off the rootfs.
-
-One binary serves both — `qemu-system-aarch64` offers `cortex-a15`/`cortex-a7` and
-boots a 32-bit zImage, verified against the armv7 MPC rootfs. `qemu-system-arm` is
-used only as a fallback where the 64-bit build is not installed, and `QEMU_BIN`
-overrides the choice.
-
-armv7 Engine is no longer one of those: `build_armv7_engine_rootfs.sh` produces one,
-and it boots to a rendered UI with a virtual control surface bound, rendering through
-virgl in a GL display mode. Audio is what it still lacks. arm64 MPC (Gen 2) boots too, to a rendered UI with touch, and without audio, as on Gen 1.
+Use a new name for another device or firmware version. Build one architecture at a time.
 
 ## Run
-
 ```sh
 scripts/qemu/run_instance.sh --list
-scripts/qemu/run_instance.sh --name mpc-3.9.1
-scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display vnc
-scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl      # rasterize on the guest CPU
-scripts/qemu/run_instance.sh --name rmz2-5.0.4 --gl         # render on the host GPU
+scripts/qemu/run_instance.sh --name rmz2-5.0.4
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display egl-vnc
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl
 ```
 
-`--display` overrides the `DISPLAY_MODE` recorded in `instance.env` for one run. The
-modes are `sdl`, `sdl-gl`, `cocoa`, `vnc`, `egl-vnc` and `none`; see
-[../qemu/display_modes.sh](../qemu/display_modes.sh).
+The launcher reads `instance.env` and starts QEMU. It prints the serial-console setup, SSH forwarding and applicable VNC addresses. Log in as `root` without a password on the serial console. The forwarded SSH port reaches guest port 22 when the guest runs an SSH server.
 
-### GL is the default, and both directions are one flag
+Different names can produce the same port allocation. If a port is occupied, change `SSH_PORT`, `VNC_DISPLAY` or `ENGINE_VNC_PORT` in that instance's configuration. QEMU VNC listens on TCP port `5900 + VNC_DISPLAY`.
 
-The display modes come in pairs — `sdl`/`sdl-gl` and `vnc`/`egl-vnc` — differing only
-in whether rendering goes to the host GPU through virgl or is rasterized on the
-emulated guest CPU. That difference is worth two orders of magnitude of frame time, so
-**new instances are created with the GL mode** (`sdl-gl` on Linux; macOS keeps `cocoa`,
-which has no GL variant among these modes).
+Legacy Engine serves its interface at the separate `Engine VNC` address. QEMU VNC shows its console. See the [legacy guide](../../docs/engine/LEGACY.md) for viewer requirements and input limits.
 
-`--gl` and `--no-gl` move within the pair for one run, and compose with `--display`:
+## Display
+| Mode | Output | Rendering |
+| --- | --- | --- |
+| `sdl-gl` | Local window | Host GPU through virgl |
+| `egl-vnc` | VNC | Host GPU through virgl |
+| `sdl` | Local window | Guest software renderer |
+| `cocoa` | macOS window | Guest software renderer |
+| `vnc` | VNC | Guest software renderer |
+| `none` | No graphical output | No display backend |
 
-| | effect |
-|---|---|
-| `--gl` | promote to the GL member (`vnc` → `egl-vnc`, `sdl` → `sdl-gl`). Use it on an instance created before GL was the default, or one whose `instance.env` records a non-GL mode. |
-| `--no-gl` | demote to the non-GL member. The escape hatch when GL itself is what you are ruling out — a rendering artefact, a driver question, a host GPU you would rather not involve. |
-| neither | the recorded mode, honoured as recorded. |
+`--display MODE` overrides the recorded mode for one run. `--gl` promotes SDL to `sdl-gl`, or VNC and Cocoa to `egl-vnc`. `--no-gl` selects the software mode; from `egl-vnc`, it selects `vnc`. These flags compose with `--display`.
 
-Equivalently, `VIRGL=on`/`VIRGL=off` in the environment, which is how `run_qemu.sh`
-takes it when run directly.
+New instances record `sdl-gl` on Linux. On macOS, they record `egl-vnc` when QEngine's local virgl QEMU build exists, otherwise `cocoa`. Legacy instances record `vnc` for their console and keep their own software-rendered application display.
 
-**A GL mode this QEMU cannot serve is demoted rather than refused.** Debian's arm64
-QEMU has neither `virtio-gpu-gl-pci` nor `egl-headless`, so on such a host a GL mode
-would otherwise fail at startup with a message about an unknown device, which does not
-say that the binary is the problem. `display_modes.sh` probes `-device help` and
-`-display help`, drops to the non-GL member, and prints a warning naming what is
-missing. Guests handle their half the same way: Mesa falls back to software rendering,
-verified on both architectures — armv7 maps `kms_swrast_dri.so` despite
-`MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu`, and arm64 falls back inside its replaced
-`libgallium`. So the guest still renders, just slowly, and the warning is the only
-thing that tells you which happened.
+If QEMU lacks the requested GL backend, the launcher warns and falls back to software rendering. See [macOS virgl](../../docs/MACOS_VIRGL.md) for the macOS build, and [Display and input](../../docs/engine/DISPLAY.md) for Engine's guest graphics stack.
 
-Existing instances keep whatever `DISPLAY_MODE` they were created with — it is a
-one-word edit in `instance.env`, or `--gl` per run.
-
-## Layout
-
-```
-build/
-  vmlinuz-generic-arm64, initrd-generic-arm64    shared by every engine instance
-  vmlinuz-generic-armhf, initrd-generic-armhf    shared by every mpc instance
-  instances/
-    rmz2-5.0.4/{rootfs.img, data_disk.img, instance.env}
-    mpc-3.9.1/{rootfs.img, emmc.img, instance.env}
-```
-
-The kernel and initrd are deliberately **not** per-instance: they are generic
-distro kernels, byte-identical for every instance of the same architecture. Building
-one is a no-op once it exists, so creating a second instance of the same
-architecture skips straight to the rootfs.
-
-## instance.env
-
-Generated once, then yours to edit — nothing regenerates it unless you delete it:
+## Configuration
+Edit `build/instances/<name>/instance.env` to keep launch settings between runs. The file uses shell assignments; quote paths containing spaces.
 
 | Key | Meaning |
-|---|---|
-| `DEVICE` | the device family, detected from the rootfs (see above) |
-| `DISPLAY_MODE` | which display backend to boot with; defaults to the host's, GL where there is a GL variant (`cocoa` on macOS, `sdl-gl` elsewhere). Demoted at boot with a warning if this QEMU cannot serve GL |
-| `ROOTFS_IMG`, `DATA_IMG` | this instance's disks |
-| `ROOT_UUID` | read off the built image; it differs per firmware version, which is why it is never hardcoded |
-| `ARCH` | `arm64` or `armhf`, detected from the rootfs (see above) |
-| `KERNEL_IMG`, `INITRD_IMG` | the kernel that matches `ARCH`, shared by every instance of it |
-| `ENGINE_VNC_PORT` | Legacy Engine only: host port forwarded to its VNC touch bridge; QEMU VNC remains the console |
-| `SMP` | Legacy Engine records `4` for its CPU-affinity setup; other instances use the launcher default unless set |
-| `SSH_PORT`, `VNC_DISPLAY` | derived from the instance name so two instances cannot collide. Edit if a port is already taken on the host |
+| --- | --- |
+| `INSTANCE_NAME` | Recorded instance name; launch selection uses `--name` |
+| `DEVICE` | Firmware family |
+| `FIRMWARE_IMG` | Recorded source firmware path |
+| `ARCH` | Detected architecture, `arm64` or `armhf` |
+| `PRODUCT_CODE` | Requested build identity; blank uses the builder's default |
+| `MONTERO` | Recorded MONTERO build choice |
+| `ROOTFS_IMG` | Application rootfs image |
+| `DATA_IMG` | Writable data disk |
+| `SD_IMG` | Extra internal SD image, empty for families without one |
+| `ROOT_UUID` | Recorded filesystem UUID; the launcher rereads it from the image |
+| `KERNEL_IMG`, `INITRD_IMG` | Shared kernel and initrd paths |
+| `DISPLAY_MODE` | Persistent display choice |
+| `SSH_PORT` | Host TCP port forwarded to guest port 22 |
+| `VNC_DISPLAY` | QEMU VNC display number |
+| `ENGINE_VNC_PORT` | Legacy Engine's host port forwarded to its VNC touch bridge |
+| `SMP` | CPU count; legacy instances record 4, otherwise the launcher defaults to 8 |
+| `GPU_MAX_OUTPUTS` | Optional display count; set 3 for JP22 |
 
-`run_instance.sh` exports these and execs `run_qemu.sh`, which resolves the machine
-type, devices, kernel, accelerator, audio and display from `ARCH`, `DEVICE` and
-`DISPLAY_MODE`. There are no per-device or per-display launcher scripts: they were
-seven near-copies of one command line, and every value that distinguished them now
-lives in `instance.env` where it can be read and edited.
+Changing `PRODUCT_CODE` or `MONTERO` in this file does not modify an existing rootfs. Rebuild with the corresponding options. `DEVICE` and `ARCH` must agree with the built firmware; use another instance for a different target.
 
-`run_qemu.sh` falls back to the paths and ports those launchers used to hardcode, so it
-can also be run directly against a hand-built `build/rootfs_out.img`.
+Pass other QEMU overrides through the environment:
 
-## Notes
+```sh
+MEM=2048 QEMU_AUDIO=off scripts/qemu/run_instance.sh --name rmz2-5.0.4
+```
 
-- Booting the same instance twice is refused via a lock file. `flock` is
-  Linux-only, so on macOS QEMU's own image locking is the only guard.
-- `data_disk.img` / `emmc.img` hold the guest's own state and survive `--force`.
-  Delete one by hand for a factory-fresh guest.
-- See [BUILD_ARM64.md](BUILD_ARM64.md) and [BUILD_MPC.md](BUILD_MPC.md) for what
-  each device family needs beyond this.
+| Override | Effect |
+| --- | --- |
+| `QEMU_BIN` | Selects the QEMU executable |
+| `ACCEL`, `CPU` | Overrides automatic accelerator and CPU selection |
+| `MEM` | RAM in MiB, default 4096 on arm64 or 2048 on armhf; armhf accepts at most 3072 |
+| `QEMU_AUDIO=off` | Omits the emulated output card; guest dummy or loopback cards remain |
+| `AUDIODEV_BACKEND` | Overrides the host audio backend and its options |
+| `RENDERNODE` | Selects the Linux render node for `egl-vnc` |
+| `SCREEN` | Guest display size as `WIDTHxHEIGHT`; the default follows the family |
+| `SERIAL` | Serial/monitor backend, default `mon:stdio` |
+| `KERNEL_EXTRA_ARGS` | Additional kernel command-line arguments |
+| `QEMU_EXTRA_ARGS` | Additional QEMU arguments, split on whitespace |
+
+For a persistent override from this second table, use an exported assignment such as `export MEM=2048` in `instance.env`. Plain assignments for these keys are not forwarded by `run_instance.sh`. Recorded keys such as `SMP` take precedence over an incoming environment value.
+
+## Rebuild
+Stop the guest, then rerun creation with `--force`:
+
+```sh
+scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 \
+    --firmware /path/to/SYSTEMONE-5.0.4-Update.img --force
+```
+
+QEngine keeps the recorded product-code and MONTERO choices unless you override them. It keeps `data_disk.img`, `emmc.img` and `sdcard.img`, so guest settings and writable overlays survive. Pass `--size` again if you need a non-default rootfs size.
+
+Every creation run rewrites `instance.env`, even when it reuses a completed rootfs. Save custom ports, display settings and other overrides before running it, then reapply them. Without `--force`, changed firmware or build options do not replace an existing completed rootfs. Failed rootfs builds lack `.rootfs.complete` and are rebuilt on the next attempt.
+
+## Files
+| Path | Contents |
+| --- | --- |
+| `build/instances/<name>/rootfs.img` | Built rootfs |
+| `build/instances/<name>/data_disk.img` | Data/factory disk on newer platforms |
+| `build/instances/<name>/emmc.img` | Single-partition data disk on RK3288 platforms |
+| `build/instances/<name>/sdcard.img` | Alesis drum module's internal SD |
+| `build/instances/<name>/instance.env` | Instance configuration |
+| `build/instances/<name>/.rootfs.complete` | Successful rootfs-build marker |
+| `build/vmlinuz-generic-<arch>`, `build/initrd-generic-<arch>` | Kernel and initrd shared by architecture |
+
+Back up writable disks before resetting guest state. With the guest stopped, removing its data or SD image lets the next creation run make a blank replacement. Copy sparse images with `rsync --sparse`; check allocated storage with `du -h`.
+
+## Stopping
+Run `poweroff` in the guest and wait for QEMU to exit before rebuilding or copying images. Never run two guests against the same disks. The launcher takes an instance lock when `flock` is available; otherwise QEMU's image locking is the remaining guard.
+
+For feature support, use the [device tables](../../README.md). Target-specific instructions live in [arm64 Engine](BUILD_ARM64.md), [armv7 Engine](BUILD_ARMV7_ENGINE.md), [MPC](BUILD_MPC.md), [MPC Sample](BUILD_MPC_SAMPLE.md), [Alesis](BUILD_ALESIS.md) and [HeadRush](BUILD_HEADRUSH.md).

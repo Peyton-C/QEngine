@@ -97,7 +97,7 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | HeadRush Flex Prime | `HG12` | ? | ? | Untested |
 | HeadRush Pedalboard | `MG01` | ? | ? | Untested |
 
-Use the [MPC guide](scripts/build_scripts/BUILD_MPC.md) for MPC Sample and Alesis, and the [HeadRush guide](scripts/build_scripts/BUILD_HEADRUSH.md) for Prime and VX5. The VX5 audio and control checks cover 1.2.2; 1.3.1 is listed as booted.
+Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](scripts/build_scripts/BUILD_ALESIS.md) and [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) guides for target-specific setup and limits. The VX5 audio and control checks cover 1.2.2; 1.3.1 is listed as booted.
 
 ## Documentation
 | Guide | Contents |
@@ -106,7 +106,7 @@ Use the [MPC guide](scripts/build_scripts/BUILD_MPC.md) for MPC Sample and Alesi
 | [Instances](scripts/build_scripts/INSTANCES.md) | Instance settings, ports and launch options |
 | [Engine OS](docs/engine/README.md) | Modern, classic and legacy runtimes; shared internals |
 | [arm64 Engine](scripts/build_scripts/BUILD_ARM64.md) / [armv7 Engine](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) | Target build instructions |
-| [MPC](scripts/build_scripts/BUILD_MPC.md) / [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) | Other target instructions |
+| [MPC](scripts/build_scripts/BUILD_MPC.md) / [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md) / [Alesis](scripts/build_scripts/BUILD_ALESIS.md) / [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) | Other target instructions |
 | [Raspberry Pi](scripts/pi/README.md) / [FLX10](scripts/pi/flx10/README.md) | Chroot setup and controller integration |
 | [macOS virgl](docs/MACOS_VIRGL.md) | QEMU with GPU rendering on macOS |
 | [Remote access](docs/REMOTE_ACCESS.md) | Working with a remote guest |

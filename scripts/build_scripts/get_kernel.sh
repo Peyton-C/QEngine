@@ -141,6 +141,31 @@ apt-get install -y -qq gcc make curl linux-headers-"\$KVER" >/dev/null 2>&1
 mkdir -p /tmp/snd-dummy
 curl -fsSL -o /tmp/snd-dummy/dummy.c \
     "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/drivers/dummy.c?h=v\${KVER%%+*}"
+# Plus one model of our own. snd-dummy's own card is U8/S16 stereo, which Gen 2
+# MPC runs on, but MPC Sample 1.3.0 opens its card as four channels of S32_LE at
+# 44.1 kHz (AK4558's two pairs) and gets nothing it can use from that. Loading
+# with model=qengine-ac50 gives it that card, and leaves Gen 2's untouched.
+cat > /tmp/snd-dummy/qengine_models.c <<'EOF'
+static const struct dummy_model model_qengine_ac50 = {
+	.name = "qengine-ac50",
+	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
+	.channels_min = 1,
+	.channels_max = 4,
+	.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000,
+	.rate_min = 44100,
+	.rate_max = 48000,
+};
+
+EOF
+awk -v models=/tmp/snd-dummy/qengine_models.c '
+    index(\$0, "static const struct dummy_model *dummy_models[] = {") == 1 {
+        while ((getline line < models) > 0) print line
+        print; print "\t&model_qengine_ac50,"; next
+    }
+    { print }' /tmp/snd-dummy/dummy.c > /tmp/snd-dummy/dummy.c.new
+mv /tmp/snd-dummy/dummy.c.new /tmp/snd-dummy/dummy.c
+grep -q '&model_qengine_ac50,' /tmp/snd-dummy/dummy.c || {
+    echo "ERROR: could not add the qengine-ac50 model to this dummy.c." >&2; exit 1; }
 printf 'obj-m := snd-dummy.o\nsnd-dummy-y := dummy.o\n' > /tmp/snd-dummy/Kbuild
 make -s -C /usr/src/linux-headers-"\$KVER" M=/tmp/snd-dummy modules
 install -D -m 644 /tmp/snd-dummy/snd-dummy.ko /lib/modules/"\$KVER"/updates/snd-dummy.ko

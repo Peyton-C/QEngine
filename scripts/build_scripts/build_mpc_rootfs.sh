@@ -20,7 +20,7 @@
 #      under shims/ are architecture-independent — see the build step below).
 #   5. Copy them into /root, wire touchbridge_mpc.service ahead of the app's
 #      unit, and preload dtshim into that unit so the app can read a product code.
-#      MPC itself also gets mpcsurface, its virtual control surface.
+#      MPC and MPC Sample also get mpcsurface, a virtual control surface.
 #   6. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind the fullscreen display.
@@ -369,10 +369,11 @@ done
 # for its panel among the sound cards, as a USB card with Akai's ids, and opens it
 # as rawmidi, where Engine's midisurface only has to be a sequencer client. It picks
 # the panel from the product code written above and does nothing for a code it does
-# not know. MPC Sample, VX5 and the drum module reach their panels some other way,
-# none of them looked at yet.
+# not know. MPC Sample looks the same way for a serial card named "Control Surface",
+# which mpcsurface is too, as AC50. VX5 and the drum module reach their panels some
+# other way, not looked at yet.
 PRELOAD=/root/dtshim.so
-if [ "$APP_UNIT" = acvs.service ]; then
+if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
     cp -a /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /mnt/rootfs/root/mpcsurface.so
     # alsashim carries MPC's sound out to QEMU's card, see below.
     cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
@@ -385,7 +386,7 @@ cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 Environment=LD_PRELOAD=$PRELOAD
 EOF
 
-if [ "$APP_UNIT" = acvs.service ]; then
+if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
     echo "--- giving MPC a sound card, and its output to QEMU's ---"
     # MPC opens its internal card by udev path, /dev/snd/by-path/platform-sound, as
     # VX5 does. With nothing there 3.10.0 puts "No internal audio device could be
@@ -397,20 +398,28 @@ if [ "$APP_UNIT" = acvs.service ]; then
     # keeps time on hrtimers, so MPC gets that, built by get_kernel.sh, and
     # alsashim copies the first output pair of everything MPC plays onto the hda
     # card, which run_qemu.sh gives the mpc family. Capture is silent.
+    #
+    # MPC Sample 1.3.0 opens the same path at the same period, but as four
+    # channels of S32_LE at 44.1 kHz, which snd-dummy's own card does not offer.
+    # get_kernel.sh adds a qengine-ac50 model that does, chosen here only for the
+    # Sample, so Gen 2 keeps the card it was heard on. Its first pair is the
+    # speaker and line out and follows MAIN VOLUME, which mpcsurface reports.
+    DUMMY_ARGS=""
+    [ "$APP_UNIT" = ac50.service ] && DUMMY_ARGS=" model=qengine-ac50"
     mkdir -p /mnt/rootfs/etc/udev/rules.d
     cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-mpc-audio.rules <<'EOF'
 SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Dummy", SYMLINK+="snd/by-path/platform-sound"
 EOF
-    cat > /mnt/rootfs/etc/systemd/system/qengine-mpc-audio.service <<'EOF'
+    cat > /mnt/rootfs/etc/systemd/system/qengine-mpc-audio.service <<EOF
 [Unit]
 Description=Supply MPC with a dummy card as its internal audio
 After=systemd-udevd.service
-Before=acvs.service
+Before=$APP_UNIT
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/sbin/modprobe snd-dummy
+ExecStart=/sbin/modprobe snd-dummy$DUMMY_ARGS
 ExecStart=/usr/bin/udevadm settle --timeout=10
 EOF
     # alsashim does only the second output here: MPC's card keeps its own name

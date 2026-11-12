@@ -70,7 +70,7 @@ Debian builds `snd-dummy` for neither architecture, so `get_kernel.sh` builds it
 
 The output runs about 30 to 80 ms behind MPC, and the two cards' clocks drift, which can cost a short tick every so often. Run with `QEMU_AUDIO=off` and MPC still plays to the dummy card, unheard.
 
-Heard on arm64, `ACVA3`, 3.10.0, on macOS through CoreAudio. Gen 1 builds the same way and is untested, as is MPC Sample, which looks for the same path and gets no card.
+Heard on arm64, `ACVA3`, 3.10.0, on macOS through CoreAudio. Gen 1 builds the same way and is untested. MPC Sample is covered under its own heading.
 
 ## Gen 2
 Gen 2 runs the same MPC application on RK3588, and needs the same small shim stack as Gen 1: it drives KMS through libdrm with no Mali or EGL, and links no TEE client, so of arm64 Engine's shims only `alsashim` applies, for sound. `build_mpc_rootfs.sh` builds `dtshim` with the RK3588 table, which already serves everything the Gen 2 dtbs declare at the root: `inmusic,product-code`. The default product code is `ACVA3`.
@@ -105,11 +105,33 @@ scripts/qemu/run_instance.sh --name mpc-sample-1.3.0 --display vnc
 | Display | Landscape, software rendering, no SPI panel emulation |
 | Storage | `/data` and `/factory` mount with the existing arm64 disk layout |
 | Factory content | Separate content partition absent from the updater, not supplied by QEngine; bundled temporary project loads |
-| Audio | No audio device supplied |
-| Controls | No control surface supplied; clicking the virtual mouse does not switch tabs |
+| Audio | Plays through the host, inputs silent, see below |
+| Controls | `mpcsurface` as its panel, see below; the mouse does nothing, as the device has no touchscreen |
 | TEE | No additional shim needed to reach the UI |
 
 MPC Sample uses physical buttons rather than a touchscreen, so the build skips touchbridge. Only arm64, `AC50`, firmware 1.3.0 has been booted.
+
+### Sample control surface
+The Sample's panel is a microcontroller on a UART, which the app finds as a sound card named "Control Surface". `mpcsurface` is that card when the product code is `AC50`, and takes the same fifo commands as on MPC, with `set` for the knobs:
+
+```sh
+echo 'pad 6 120' > /run/mpcsurface.fifo
+echo 'set volume 127' > /run/mpcsurface.fifo
+```
+
+| Command | What |
+| --- | --- |
+| `button <name> [ms]`, `hold`, `release` | `sample` `seq` `pad-fx` `knob-fx` `shift` `pad-bank` `erase` `note-repeat` `screen-1` `screen-2` `screen-3` `chop` `mute` `loop` `16-levels` `sample-select` `tap-tempo` `minus` `plus` `sample-rec` `seq-rec` `stop` `play` `dial` |
+| `pad <1-16> [velocity] [ms]` | Strike a pad |
+| `turn dial <steps>` | The data dial |
+| `set <k1\|k2\|k3\|volume\|fader> <0-127>` | Move a knob or the fader to a position |
+
+MAIN VOLUME is the Sample's software volume, and the app learns it only from the panel, so `mpcsurface` reports 100 when the app starts. Set `MPCSURFACE_VOLUME` in a drop-in for `ac50.service` to start elsewhere. K1 to K3 and the fader are not reported, since the app takes them as a move on the open page.
+
+The button names and protocol come from [virtual-mpc-sample](https://github.com/orrpunk-art/virtual-mpc-sample), which checked them against a real panel. Pads, the screen buttons, `seq`, `play`, `sample-select`, the dial and volume were tried here. The firmware tool that runs before the app still reports no panel, which does not stop it.
+
+### Sample audio
+The Sample plays the same way MPC does: `snd-dummy` as `platform-sound`, and `alsashim` copying its first pair, the speaker and line out, to QEMU's HDA card. It opens that card as four channels of S32_LE at 44.1 kHz, which `snd-dummy`'s own card does not offer, so `get_kernel.sh` adds a `qengine-ac50` model that the Sample's guest loads. A kernel fetched before that has the model missing, and the Sample gets no sound until `get_kernel.sh --arch arm64` is run again. Heard on macOS through AirPods Pro 3 once QEMU's CoreAudio output ran at 48 kHz, which the launchers now do; at QEMU's default 44.1 kHz it clicked.
 
 ## Alesis drum module
 The drum module's `/usr/bin/DrumModule` is MPC's codebase on Gen 1's platform, armv7 with the same `/data` PARTUUID, and `build_mpc_rootfs.sh` builds it. It reads the app off the rootfs and preloads `dtshim` into `alesis-drummodule.service` in place of `acvs.service`. The default product code is `LDMD`.

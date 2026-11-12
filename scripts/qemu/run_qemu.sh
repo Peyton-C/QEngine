@@ -153,11 +153,11 @@ if [ -n "${ENGINE_VNC_PORT:-}" ]; then
     NETDEV="$NETDEV,hostfwd=tcp:127.0.0.1:${ENGINE_VNC_PORT}-:5900"
 fi
 
-# Engine plays on the card itself, MPC through alsashim's copy of what it plays
+# Engine plays on the card itself, MPC and MPC Sample through alsashim's copy of what they play
 # on snd-dummy (build_mpc_rootfs.sh). The other families have no use for one yet.
 AUDIO_ARGS=""
 # Keep card omission available for diagnosing guest audio startup.
-case "$DEVICE" in engine|mpc) _audio=1 ;; *) _audio=0 ;; esac
+case "$DEVICE" in engine|mpc|mpc-sample) _audio=1 ;; *) _audio=0 ;; esac
 if [ "$_audio" = 1 ] && [ "${QEMU_AUDIO:-on}" != off ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
 fi

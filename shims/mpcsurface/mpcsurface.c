@@ -1,4 +1,4 @@
-/* A virtual control surface for an emulated Akai MPC or Force, preloaded into MPC.
+/* A virtual control surface for an emulated Akai MPC, Force or MPC Sample, preloaded into the app.
  *
  * MPC's pads, buttons and encoders are a separate microcontroller that the
  * application reaches as a USB MIDI device. With none there MPC still starts,
@@ -50,6 +50,7 @@
  *   pad <n> [velocity] [ms]  strike pad n, 1 to 16, pad 1 at the bottom left
  *   turn <name> <steps>      turn dial or q1 to q4, negative for anticlockwise
  *   touch <name> [ms]        touch q1 to q4 without turning it
+ *   set <pot> <0-127>        MPC Sample only: k1 to k3, volume or fader
  *   list                     log the button names this product has
  *   press <ch> <note> [ms]   raw note on, then off
  *   on    <ch> <note> [vel]  raw note on
@@ -62,6 +63,9 @@
  * else, and can also send what no real panel would: on ACVA3, 3.10.0, a note on
  * for 0x58, one past its fourth Q-Link's touch note, stops MPC listening to the
  * panel until it is restarted.
+ *
+ * MPCSURFACE_VOLUME sets where MPC Sample's MAIN VOLUME starts, 100 unless
+ * given, the level the Sample's panel reports when the app asks.
  *
  * MPCSURFACE_VERBOSE=1 logs what MPC sends and what it is sent, leaving out pad
  * colours and pings, and 2 logs those too. That log is how the lamp or note for
@@ -116,30 +120,41 @@ static void log_line(const char *fmt, ...) {
  * Akai's vendor id 09e8, and the product byte of the panel's SysEx. Gen 2
  * restarted the numbering from zero.
  *
- * ACV5S, the MPC X SE, shares the X's panel and its id. */
+ * ACV5S, the MPC X SE, shares the X's panel and its id.
+ *
+ * MPC Sample is not in that table and its panel is not USB. AC50's panel MCU
+ * sits on a UART, fe670000, under snd-serial-generic, which inMusic's kernel
+ * names after the devicetree label: a card "Control Surface" with the driver
+ * "SerialMIDI" and one rawmidi port. "MPC Sample" 1.3.0 walks the cards for
+ * that name and driver and opens hw:<card>,<dev>. The protocol is MIDI with no
+ * handshake: the app sends F0 47 7F 5C 42 00 00 F7 once it starts, and the
+ * panel answers with its pot positions. 0x5C is the product byte in AC50's
+ * identity reply. */
 struct product {
     const char *code;
     unsigned char id;
     const char *name;
     int pads;                  /* 16 on an MPC, 64 on a Force */
+    int uart;                  /* 1: MPC Sample's serial panel, 0: a USB one */
 };
 
 static const struct product PRODUCTS[] = {
-    {"ACV5",  0x3A, "MPC X",        16},
-    {"ACV5S", 0x3A, "MPC X SE",     16},
-    {"ACV8",  0x3B, "MPC Live",     16},
-    {"ACVA",  0x46, "MPC One",      16},
-    {"ACVA2", 0x56, "MPC One+",     16},
-    {"ACVA3", 0x00, "MPC One",      16},
-    {"ACVB",  0x47, "MPC Live II",  16},
-    {"ACVC",  0x5A, "MPC XL",       16},
-    {"ACVG",  0x58, "MPC Live III", 16},
-    {"ACVM",  0x4B, "MPC Key 61",   16},
-    {"ACVM2", 0x02, "MPC Key 61",   16},
-    {"ACVR",  0x57, "MPC Key 37",   16},
-    {"ACVR2", 0x01, "MPC Key 37",   16},
-    {"ADA2",  0x40, "Force",        64},
-    {"ADA2S", 0x04, "Force",        64},
+    {"ACV5",  0x3A, "MPC X",        16, 0},
+    {"ACV5S", 0x3A, "MPC X SE",     16, 0},
+    {"ACV8",  0x3B, "MPC Live",     16, 0},
+    {"ACVA",  0x46, "MPC One",      16, 0},
+    {"ACVA2", 0x56, "MPC One+",     16, 0},
+    {"ACVA3", 0x00, "MPC One",      16, 0},
+    {"ACVB",  0x47, "MPC Live II",  16, 0},
+    {"ACVC",  0x5A, "MPC XL",       16, 0},
+    {"ACVG",  0x58, "MPC Live III", 16, 0},
+    {"ACVM",  0x4B, "MPC Key 61",   16, 0},
+    {"ACVM2", 0x02, "MPC Key 61",   16, 0},
+    {"ACVR",  0x57, "MPC Key 37",   16, 0},
+    {"ACVR2", 0x01, "MPC Key 37",   16, 0},
+    {"ADA2",  0x40, "Force",        64, 0},
+    {"ADA2S", 0x04, "Force",        64, 0},
+    {"AC50",  0x5C, "MPC Sample",   16, 1},
 };
 #define AKAI_VENDOR 0x09E8
 
@@ -165,7 +180,9 @@ static void pick_product(void) {
     code[strcspn(code, "\r\n")] = '\0';
     for (size_t i = 0; i < sizeof PRODUCTS / sizeof PRODUCTS[0]; i++)
         if (strcmp(PRODUCTS[i].code, code) == 0) product = &PRODUCTS[i];
-    if (product)
+    if (product && product->uart)
+        LOG("panel for %s (%s), serial", product->code, product->name);
+    else if (product)
         LOG("panel for %s (%s), USB %04x:%04x", product->code, product->name,
             AKAI_VENDOR, product->id);
     else
@@ -217,6 +234,9 @@ static int kind_of(int fd, int *subdevice) {
  * once, but nothing here depends on that. */
 #define PORT_PUBLIC 0
 #define PORT_PRIVATE 1
+/* The port the panel speaks on: the private one on a USB panel, the only one,
+ * 0, on MPC Sample's. */
+#define PANEL_PORT (product->uart ? PORT_PUBLIC : PORT_PRIVATE)
 #define MAX_CONNS 8
 static struct conn {
     int fd;                    /* -1: free */
@@ -225,6 +245,8 @@ static struct conn {
     unsigned char buf[4096];   /* a message MPC has not finished sending */
     size_t len;
     unsigned char running;     /* its running status */
+    int app_fd;                /* MPC's end, which its PARAMS ioctl names */
+    unsigned int mode;         /* the framing and clock MPC asked for there */
 } conns[MAX_CONNS];
 static int wake_pipe[2] = {-1, -1};
 
@@ -268,6 +290,7 @@ static int open_midi(int flags) {
     int sub = preferred_subdevice;
     preferred_subdevice = -1;
     if (sub != PORT_PUBLIC && sub != PORT_PRIVATE) sub = PORT_PUBLIC;
+    if (product->uart) sub = PORT_PUBLIC;
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0) return -1;
     pthread_mutex_lock(&lock);
@@ -280,6 +303,8 @@ static int open_midi(int flags) {
         conns[slot].input = (flags & O_ACCMODE) != O_WRONLY;
         conns[slot].len = 0;
         conns[slot].running = 0;
+        conns[slot].app_fd = sv[0];
+        conns[slot].mode = 0;
     }
     pthread_mutex_unlock(&lock);
     if (slot < 0) {
@@ -291,7 +316,8 @@ static int open_midi(int flags) {
     if (flags & O_NONBLOCK) fcntl(sv[0], F_SETFL, O_NONBLOCK);
     fcntl(sv[1], F_SETFL, O_NONBLOCK);
     remember(sv[0], FD_MIDI, sub);
-    LOG("MPC opened the %s port for %s", sub == PORT_PRIVATE ? "private" : "public",
+    LOG("MPC opened the %s port for %s",
+        product->uart ? "panel" : sub == PORT_PRIVATE ? "private" : "public",
         (flags & O_ACCMODE) == O_RDONLY ? "input"
         : (flags & O_ACCMODE) == O_WRONLY ? "output" : "both");
     if (write(wake_pipe[1], "o", 1) < 0) { /* the thread polls again soon anyway */ }
@@ -354,6 +380,15 @@ static void fill_midi_info(struct snd_rawmidi_info *info, int subdevice) {
     info->card = fake_card;
     info->flags = SNDRV_RAWMIDI_INFO_OUTPUT | SNDRV_RAWMIDI_INFO_INPUT |
                   SNDRV_RAWMIDI_INFO_DUPLEX;
+    if (product->uart) {
+        /* As snd-serial-generic names its one port under inMusic's patch. */
+        snprintf((char *)info->id, sizeof info->id, "SerialMIDI");
+        snprintf((char *)info->name, sizeof info->name, "Control Surface");
+        snprintf((char *)info->subname, sizeof info->subname, "Control Surface");
+        info->subdevices_count = 1;
+        info->subdevices_avail = 1;
+        return;
+    }
     snprintf((char *)info->id, sizeof info->id, "USB MIDI");
     snprintf((char *)info->name, sizeof info->name, "%s Controller", product->name);
     snprintf((char *)info->subname, sizeof info->subname, "%s %s", product->name,
@@ -374,6 +409,16 @@ static int ctl_ioctl(unsigned long req, void *arg) {
         struct snd_ctl_card_info *ci = arg;
         memset(ci, 0, sizeof *ci);
         ci->card = fake_card;
+        if (product->uart) {
+            /* What MPC Sample matches the panel by: the name and the driver.
+             * The id is what alsa-lib would make of that name. */
+            snprintf((char *)ci->id, sizeof ci->id, "ControlSurface");
+            snprintf((char *)ci->driver, sizeof ci->driver, "SerialMIDI");
+            snprintf((char *)ci->name, sizeof ci->name, "Control Surface");
+            snprintf((char *)ci->longname, sizeof ci->longname,
+                     "Control Surface at serial2 (QEngine)");
+            return 0;
+        }
         snprintf((char *)ci->id, sizeof ci->id, "Controller");
         snprintf((char *)ci->driver, sizeof ci->driver, "USB-Audio");
         snprintf((char *)ci->name, sizeof ci->name, "%s Controller", product->name);
@@ -394,7 +439,10 @@ static int ctl_ioctl(unsigned long req, void *arg) {
         return 0;
     case _IOC_NR(SNDRV_CTL_IOCTL_RAWMIDI_INFO): {
         struct snd_rawmidi_info *info = arg;
-        if (info->device != 0 || info->subdevice > 1) { errno = ENXIO; return -1; }
+        if (info->device != 0 || info->subdevice > (product->uart ? 0 : 1)) {
+            errno = ENXIO;
+            return -1;
+        }
         fill_midi_info(info, (int)info->subdevice);
         return 0;
     }
@@ -424,11 +472,27 @@ static int midi_ioctl(int fd, int subdevice, unsigned long req, void *arg) {
     case _IOC_NR(SNDRV_RAWMIDI_IOCTL_INFO):
         fill_midi_info(arg, subdevice);
         return 0;
-    case _IOC_NR(SNDRV_RAWMIDI_IOCTL_PARAMS):
+    case _IOC_NR(SNDRV_RAWMIDI_IOCTL_PARAMS): {
         /* Buffer sizes and wake-up thresholds. The socket has its own, but the
-         * size is kept so that status can report all of it free. */
-        fds[fd].buffer = ((struct snd_rawmidi_params *)arg)->buffer_size;
+         * size is kept so that status can report all of it free.
+         *
+         * The mode matters. MPC Sample 1.3.0 reads its panel with
+         * snd_rawmidi_tread, which sets FRAMING_TSTAMP here, and then each read
+         * is whole 32-byte records with a timestamp, not MIDI bytes. Raw bytes
+         * on that port are read as garbage records and the panel does nothing.
+         * Gen 2 MPC asks for no framing. */
+        struct snd_rawmidi_params *params = arg;
+        fds[fd].buffer = params->buffer_size;
+        if (params->stream == SNDRV_RAWMIDI_STREAM_INPUT) {
+            pthread_mutex_lock(&lock);
+            for (int i = 0; i < MAX_CONNS; i++)
+                if (conns[i].fd >= 0 && conns[i].app_fd == fd) conns[i].mode = params->mode;
+            pthread_mutex_unlock(&lock);
+            if (params->mode & SNDRV_RAWMIDI_MODE_FRAMING_MASK)
+                LOG("MPC reads the panel in timestamped records");
+        }
         return 0;
+    }
     case _IOC_NR(SNDRV_RAWMIDI_IOCTL_STATUS): {
         /* Nothing is ever lost, and there is always room to write. MPC asks
          * for this to decide whether its output is backing up. */
@@ -507,13 +571,51 @@ static void log_bytes(const char *what, int port, const unsigned char *b, size_t
         line, n > 48 ? " ..." : "");
 }
 
+/* The bytes as the kernel frames them for a port in FRAMING_TSTAMP mode: a
+ * record of up to sixteen bytes each, stamped from the clock MPC chose. Returns
+ * the length written to out. */
+static size_t frame(unsigned int mode, const unsigned char *buf, size_t len,
+                    unsigned char *out, size_t room) {
+    clockid_t clock;
+    switch (mode & SNDRV_RAWMIDI_MODE_CLOCK_MASK) {
+    case SNDRV_RAWMIDI_MODE_CLOCK_REALTIME: clock = CLOCK_REALTIME; break;
+    case SNDRV_RAWMIDI_MODE_CLOCK_MONOTONIC_RAW: clock = CLOCK_MONOTONIC_RAW; break;
+    default: clock = CLOCK_MONOTONIC; break;
+    }
+    struct timespec ts = {0, 0};
+    if ((mode & SNDRV_RAWMIDI_MODE_CLOCK_MASK) != SNDRV_RAWMIDI_MODE_CLOCK_NONE)
+        clock_gettime(clock, &ts);
+    size_t o = 0;
+    for (size_t i = 0; i < len && o + sizeof(struct snd_rawmidi_framing_tstamp) <= room;) {
+        struct snd_rawmidi_framing_tstamp r;
+        memset(&r, 0, sizeof r);
+        size_t n = len - i < SNDRV_RAWMIDI_FRAMING_DATA_LENGTH
+                   ? len - i : SNDRV_RAWMIDI_FRAMING_DATA_LENGTH;
+        r.length = (unsigned char)n;
+        r.tv_sec = (__u64)ts.tv_sec;
+        r.tv_nsec = (__u32)ts.tv_nsec;
+        memcpy(r.data, buf + i, n);
+        memcpy(out + o, &r, sizeof r);
+        o += sizeof r;
+        i += n;
+    }
+    return o;
+}
+
 static void send_bytes(int port, const unsigned char *buf, size_t len) {
     pthread_mutex_lock(&lock);
     for (int i = 0; i < MAX_CONNS; i++) {
         /* Not to a descriptor MPC only writes to: nothing would drain it, and
          * once its buffer filled every send after would fail. */
         if (conns[i].fd < 0 || conns[i].port != port || !conns[i].input) continue;
-        if (send(conns[i].fd, buf, len, MSG_NOSIGNAL) < 0)
+        const unsigned char *out = buf;
+        size_t out_len = len;
+        unsigned char framed[1024];
+        if (conns[i].mode & SNDRV_RAWMIDI_MODE_FRAMING_MASK) {
+            out_len = frame(conns[i].mode, buf, len, framed, sizeof framed);
+            out = framed;
+        }
+        if (send(conns[i].fd, out, out_len, MSG_NOSIGNAL) < 0)
             LOG("send to MPC failed: %s", strerror(errno));
         else if (verbose && quiet(buf, len) < verbose)
             log_bytes("MPC <-", port, buf, len);
@@ -544,7 +646,31 @@ static void akai(int command, const unsigned char *data, size_t len) {
     if (len > sizeof m - 8) return;
     memcpy(m + 7, data, len);
     m[7 + len] = 0xF7;
-    send_bytes(PORT_PRIVATE, m, len + 8);
+    send_bytes(PANEL_PORT, m, len + 8);
+}
+
+/* MPC Sample's pots, K1 to K3, MAIN VOLUME and the fader, as CC 0x10 to 0x14.
+ * They are absolute, and the app knows where one is only from what the panel
+ * last sent. MAIN VOLUME is the Sample's software volume, so a panel that never
+ * reports it leaves the app silent. */
+#define CC_POT 0x10
+enum { POT_K1, POT_K2, POT_K3, POT_VOLUME, POT_FADER, POTS };
+static unsigned char pots[POTS] = {64, 64, 64, 100, 64};
+
+/* When to report MAIN VOLUME again, in CLOCK_MONOTONIC ms, 0 for never. */
+static long long report_due;
+
+static long long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Only MAIN VOLUME: the app takes K1 to K3 or the fader arriving as a move on
+ * whatever page is open, so reporting them at start would edit the project. */
+static void report_pots(void) {
+    send3(PANEL_PORT, 0xB0, CC_POT + POT_VOLUME, pots[POT_VOLUME]);
+    if (verbose) LOG("reported MAIN VOLUME %d", pots[POT_VOLUME]);
 }
 
 /* One complete message from MPC.
@@ -561,6 +687,17 @@ static void from_mpc(int port, const unsigned char *m, size_t n) {
     if (n < 6 || m[0] != 0xF0) return;
 
     /* The universal identity request, F0 7E <device> 06 01 F7. */
+    if (m[1] == 0x7E && m[3] == 0x06 && m[4] == 0x01 && product->uart) {
+        /* AC50's MCU: product 5C, then firmware 1.0.0.051 as four bytes, the
+         * version 1.3.0's UpdateImage.rbin carries, so az0x-firmware-tool
+         * finds nothing to update. */
+        static const unsigned char reply[] = {
+            0xF0, 0x7E, 0x00, 0x06, 0x02, 0x47, 0x5C, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x33, 0xF7};
+        send_bytes(PANEL_PORT, reply, sizeof reply);
+        if (verbose) LOG("answered the identity request");
+        return;
+    }
     if (m[1] == 0x7E && m[3] == 0x06 && m[4] == 0x01) {
         /* Manufacturer 47 is Akai, then the product byte, which is how MPC
          * tells which panel this is. MPC reads the firmware version from bytes
@@ -576,13 +713,23 @@ static void from_mpc(int port, const unsigned char *m, size_t n) {
         memset(reply + 18, 0x7F, 16);
         if (serial[0]) memcpy(reply + 18, serial, 15);
         reply[34] = 0xF7;
-        send_bytes(PORT_PRIVATE, reply, sizeof reply);
+        send_bytes(PANEL_PORT, reply, sizeof reply);
         if (verbose) LOG("answered MPC's identity request");
         return;
     }
     if (m[1] != 0x47 || n < 8) return;
     const unsigned char *data = m + 7;
     size_t len = n - 8;
+    if (product->uart) {
+        /* The Sample's request for the pots, sent as it starts. The reference
+         * panel found an answer sent at once was lost, as the app writes this
+         * before it reads, so the report goes again a moment later. */
+        if (m[4] == 0x42) {
+            report_pots();
+            report_due = now_ms() + 1500;
+        }
+        return;
+    }
     switch (m[4]) {
     case 0x52: {
         /* A ping, every few seconds, carrying four bytes to send back. The
@@ -648,6 +795,8 @@ static void command(char *line);
 static void *surface_thread(void *unused) {
     (void)unused;
     pthread_setname_np(pthread_self(), "mpcsurface");
+    const char *volume = getenv("MPCSURFACE_VOLUME");
+    if (volume && *volume) pots[POT_VOLUME] = (unsigned char)(atoi(volume) & 0x7F);
     const char *fifo = getenv("MPCSURFACE_FIFO");
     if (!fifo || !*fifo) fifo = "/run/mpcsurface.fifo";
     /* Ours to make: nothing else has to run before MPC for the panel to work.
@@ -670,9 +819,19 @@ static void *surface_thread(void *unused) {
         for (int i = 0; i < MAX_CONNS; i++)
             if (conns[i].fd >= 0) { p[n].fd = conns[i].fd; p[n].events = POLLIN; who[n++] = i; }
         pthread_mutex_unlock(&lock);
-        if (poll(p, (nfds_t)n, -1) < 0) {
+        int timeout = -1;
+        if (report_due) {
+            long long left = report_due - now_ms();
+            timeout = left > 0 ? (int)left : 0;
+        }
+        int ready = poll(p, (nfds_t)n, timeout);
+        if (ready < 0) {
             if (errno == EINTR) continue;
             break;
+        }
+        if (report_due && now_ms() >= report_due) {
+            report_due = 0;
+            report_pots();
         }
         for (int k = 0; k < n; k++) {
             if (!p[k].revents) continue;
@@ -742,8 +901,23 @@ static const struct button ACVA3_BUTTONS[] = {
     {NULL, 0},
 };
 
+/* AC50, MPC Sample, on 1.3.0. From the control map virtual-mpc-sample checked
+ * against a real panel. The three screen buttons have no lamp; every other
+ * lamp is the button's own number. The dial's push is 0x6F as on the MPCs. */
+static const struct button AC50_BUTTONS[] = {
+    {"sample", 0x06}, {"seq", 0x07}, {"pad-fx", 0x01}, {"knob-fx", 0x00},
+    {"shift", 0x31}, {"pad-bank", 0x23}, {"erase", 0x09}, {"note-repeat", 0x0B},
+    {"screen-1", 0x0C}, {"screen-2", 0x0D}, {"screen-3", 0x0E},
+    {"chop", 0x4B}, {"mute", 0x2B}, {"loop", 0x4A}, {"16-levels", 0x28},
+    {"sample-select", 0x24}, {"tap-tempo", 0x35}, {"minus", 0x37}, {"plus", 0x36},
+    {"sample-rec", 0x49}, {"seq-rec", 0x50}, {"stop", 0x51}, {"play", 0x52},
+    {"dial", 0x6F},
+    {NULL, 0},
+};
+
 static const struct { const char *code; const struct button *buttons; } BUTTONS[] = {
     {"ACVA3", ACVA3_BUTTONS},
+    {"AC50", AC50_BUTTONS},
 };
 
 static const struct button *buttons(void) {
@@ -783,6 +957,10 @@ static const unsigned char PAD_NOTES[16] = {
 static int encoder(const char *name, int *qlink) {
     *qlink = -1;
     if (strcasecmp(name, "dial") == 0) return CC_DIAL;
+    if (product->uart) {
+        LOG("MPC Sample has only the dial; its knobs take set");
+        return -1;
+    }
     if ((name[0] == 'q' || name[0] == 'Q') && name[1] >= '1' && name[1] <= '4' && !name[2]) {
         *qlink = name[1] - '1';
         return CC_QLINK + *qlink;
@@ -791,10 +969,22 @@ static int encoder(const char *name, int *qlink) {
     return -1;
 }
 
+/* MPC Sample's absolute pots, by name, or -1. */
+static int pot(const char *name) {
+    static const char *const NAMES[POTS] = {"k1", "k2", "k3", "volume", "fader"};
+    for (int i = 0; i < POTS; i++)
+        if (strcasecmp(name, NAMES[i]) == 0) return i;
+    LOG("no pot '%s'; there are k1 k2 k3 volume fader", name);
+    return -1;
+}
+
+/* A button lets go with a note off, as the Sample's panel sends, and a USB
+ * panel with a note on of velocity 0, as MPC's always has. */
 static void tap(int status_channel, int note, int velocity, int ms) {
-    send3(PORT_PRIVATE, 0x90 | status_channel, note, velocity);
+    send3(PANEL_PORT, 0x90 | status_channel, note, velocity);
     usleep((useconds_t)ms * 1000);
-    send3(PORT_PRIVATE, 0x90 | status_channel, note, 0);
+    if (product->uart) send3(PANEL_PORT, 0x80 | status_channel, note, 0);
+    else send3(PANEL_PORT, 0x90 | status_channel, note, 0);
 }
 
 static void command(char *line) {
@@ -809,7 +999,8 @@ static void command(char *line) {
         int ms = 80, note;
         if (sscanf(rest, "%31s %i", name, &ms) < 1 || (note = button_note(name)) < 0) return;
         if (cmd[0] == 'b') tap(0, note, 0x7F, ms);
-        else send3(PORT_PRIVATE, 0x90, note, cmd[0] == 'h' ? 0x7F : 0);
+        else if (cmd[0] == 'h') send3(PANEL_PORT, 0x90, note, 0x7F);
+        else send3(PANEL_PORT, product->uart ? 0x80 : 0x90, note, 0);
     } else if (strcmp(cmd, "pad") == 0) {
         int pad, velocity = 100, ms = 80;
         if (sscanf(rest, "%i %i %i", &pad, &velocity, &ms) < 1) return;
@@ -829,12 +1020,12 @@ static void command(char *line) {
             return;
         /* One detent a message. A Q-Link is touched for as long as it is
          * turned, as a real one cannot be turned without. */
-        if (qlink >= 0) send3(PORT_PRIVATE, 0x90, NOTE_QLINK_TOUCH + qlink, 0x7F);
+        if (qlink >= 0) send3(PANEL_PORT, 0x90, NOTE_QLINK_TOUCH + qlink, 0x7F);
         for (int i = 0; i < abs(steps); i++) {
-            send3(PORT_PRIVATE, 0xB0, cc, steps > 0 ? 1 : 0x7F);
+            send3(PANEL_PORT, 0xB0, cc, steps > 0 ? 1 : 0x7F);
             usleep(5000);
         }
-        if (qlink >= 0) send3(PORT_PRIVATE, 0x90, NOTE_QLINK_TOUCH + qlink, 0);
+        if (qlink >= 0) send3(PANEL_PORT, 0x90, NOTE_QLINK_TOUCH + qlink, 0);
     } else if (strcmp(cmd, "touch") == 0) {
         int ms = 500, qlink;
         if (sscanf(rest, "%31s %i", name, &ms) < 1 || encoder(name, &qlink) < 0) return;
@@ -843,6 +1034,19 @@ static void command(char *line) {
             return;
         }
         tap(0, NOTE_QLINK_TOUCH + qlink, 0x7F, ms);
+    } else if (strcmp(cmd, "set") == 0) {
+        int value, which;
+        if (!product->uart) {
+            LOG("set is for MPC Sample's knobs; this panel's turn");
+            return;
+        }
+        if (sscanf(rest, "%31s %i", name, &value) != 2 || (which = pot(name)) < 0) return;
+        if (value < 0 || value > 127) {
+            LOG("usage: set <k1|k2|k3|volume|fader> <0-127>");
+            return;
+        }
+        pots[which] = (unsigned char)value;
+        send3(PANEL_PORT, 0xB0, CC_POT + which, value);
     } else if (strcmp(cmd, "list") == 0) {
         char names[1024] = "";
         size_t o = 0;
@@ -856,22 +1060,22 @@ static void command(char *line) {
     } else if (strcmp(cmd, "on") == 0) {
         int ch, note, vel = 0x7F;
         if (sscanf(rest, "%i %i %i", &ch, &note, &vel) >= 2)
-            send3(PORT_PRIVATE, 0x90 | (ch & 15), note, vel);
+            send3(PANEL_PORT, 0x90 | (ch & 15), note, vel);
     } else if (strcmp(cmd, "off") == 0) {
         int ch, note;
         if (sscanf(rest, "%i %i", &ch, &note) == 2)
-            send3(PORT_PRIVATE, 0x80 | (ch & 15), note, 0);
+            send3(PANEL_PORT, 0x80 | (ch & 15), note, 0);
     } else if (strcmp(cmd, "cc") == 0) {
         int ch, cc, val;
         if (sscanf(rest, "%i %i %i", &ch, &cc, &val) == 3)
-            send3(PORT_PRIVATE, 0xB0 | (ch & 15), cc, val);
+            send3(PANEL_PORT, 0xB0 | (ch & 15), cc, val);
     } else if (strcmp(cmd, "sysex") == 0) {
         unsigned char buf[512];
         size_t len = 0;
         for (char *tok = strtok(rest, " \t\r"); tok && len < sizeof buf;
              tok = strtok(NULL, " \t\r"))
             buf[len++] = (unsigned char)strtol(tok, NULL, 16);
-        if (len) send_bytes(PORT_PRIVATE, buf, len);
+        if (len) send_bytes(PANEL_PORT, buf, len);
     } else {
         LOG("unknown command: %s", cmd);
     }

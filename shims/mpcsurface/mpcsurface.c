@@ -47,9 +47,11 @@
  *   button <name> [ms]       press and release a named button (default 80 ms)
  *   hold <name>              press a named button and keep it down, as for shift
  *   release <name>           let it go
- *   pad <n> [velocity] [ms]  strike pad n, 1 to 16, pad 1 at the bottom left
- *   turn <name> <steps>      turn dial or q1 to q4, negative for anticlockwise
- *   touch <name> [ms]        touch q1 to q4 without turning it
+ *   pad <n> [velocity] [ms]  strike pad n, 1 to 16 with pad 1 at the bottom left,
+ *                            or on a Force 1 to 64 with pad 1 at the top left
+ *   turn <name> <steps>      turn dial or q1 to q4, q8 on a Force, negative for
+ *                            anticlockwise
+ *   touch <name> [ms]        touch a Q-Link without turning it
  *   set <pot> <0-127>        MPC Sample only: k1 to k3, volume or fader
  *   list                     log the button names this product has
  *   press <ch> <note> [ms]   raw note on, then off
@@ -59,7 +61,8 @@
  *   sysex <hex bytes...>     raw SysEx
  *
  * Button names are known only for the products in BUTTONS, where each was
- * pressed and seen to do what its name says. The raw commands reach anything
+ * pressed and seen to do what its name says, except most of the Force's, which
+ * come from IamForce (see FORCE_BUTTONS). The raw commands reach anything
  * else, and can also send what no real panel would: on ACVA3, 3.10.0, a note on
  * for 0x58, one past its fourth Q-Link's touch note, stops MPC listening to the
  * panel until it is restarted.
@@ -915,9 +918,39 @@ static const struct button AC50_BUTTONS[] = {
     {NULL, 0},
 };
 
+/* The Force, ADA2 and ADA2S. From IamForce (TheKikGen/MPCLiveXplore-libs,
+ * src/tkgl_midimapper.h), which runs the Force app on an MPC's panel and so had
+ * to send it the Force's own numbers. Those are the Gen 1 Force's. On ADA2S,
+ * 3.10.0, matrix, note, mixer, menu, play and stop were pressed and did what the
+ * name says; the rest are IamForce's. The mute row is the eight buttons under
+ * the pads, which the mute, solo, rec-arm and clip-stop buttons repurpose, and
+ * the column row the eight above them. */
+static const struct button FORCE_BUTTONS[] = {
+    {"navigate", 0}, {"knobs", 1}, {"menu", 2}, {"matrix", 3}, {"note", 4},
+    {"master", 5}, {"clip", 9}, {"mixer", 11},
+    {"load", 35}, {"save", 36}, {"edit", 37}, {"delete", 38},
+    {"shift", 0x31}, {"select", 52}, {"tap-tempo", 0x35},
+    {"plus", 54}, {"minus", 55}, {"undo", 67}, {"copy", 122},
+    {"rec", 73}, {"stop", 81}, {"play", 82}, {"stop-all", 95},
+    {"up", 112}, {"down", 113}, {"left", 114}, {"right", 115},
+    {"launch", 116}, {"step-seq", 117}, {"arp", 118},
+    {"mute", 91}, {"solo", 92}, {"rec-arm", 93}, {"clip-stop", 94},
+    {"assign-a", 123}, {"assign-b", 124},
+    {"launch-1", 56}, {"launch-2", 57}, {"launch-3", 58}, {"launch-4", 59},
+    {"launch-5", 60}, {"launch-6", 61}, {"launch-7", 62}, {"launch-8", 63},
+    {"column-1", 96}, {"column-2", 97}, {"column-3", 98}, {"column-4", 99},
+    {"column-5", 100}, {"column-6", 101}, {"column-7", 102}, {"column-8", 103},
+    {"mute-1", 41}, {"mute-2", 42}, {"mute-3", 43}, {"mute-4", 44},
+    {"mute-5", 45}, {"mute-6", 46}, {"mute-7", 47}, {"mute-8", 48},
+    {"dial", 0x6F},
+    {NULL, 0},
+};
+
 static const struct { const char *code; const struct button *buttons; } BUTTONS[] = {
     {"ACVA3", ACVA3_BUTTONS},
     {"AC50", AC50_BUTTONS},
+    {"ADA2", FORCE_BUTTONS},
+    {"ADA2S", FORCE_BUTTONS},
 };
 
 static const struct button *buttons(void) {
@@ -939,7 +972,11 @@ static int button_note(const char *name) {
 }
 
 /* The pads are notes on channel 10, with the velocity struck, in the order the
- * MPC has always numbered them rather than in a run. Pad 1 is bottom left. */
+ * MPC has always numbered them rather than in a run. Pad 1 is bottom left.
+ * The Force's 64 are a run from FORCE_PAD_NOTE, top left along each row, which
+ * is the order pad numbers here follow. A Force starts with its pads launching
+ * clips, so they make no sound until note mode is chosen with the note button. */
+#define FORCE_PAD_NOTE 0x36
 static const unsigned char PAD_NOTES[16] = {
     0x25, 0x24, 0x2A, 0x52, 0x28, 0x26, 0x2E, 0x2C,
     0x30, 0x2F, 0x2D, 0x2B, 0x31, 0x37, 0x33, 0x35};
@@ -952,6 +989,14 @@ static const unsigned char PAD_NOTES[16] = {
 #define CC_DIAL 0x64
 #define CC_QLINK 0x10
 #define NOTE_QLINK_TOUCH 0x54
+/* The Force has eight, with the same control changes and touch notes one lower,
+ * from IamForce. */
+#define NOTE_FORCE_QLINK_TOUCH 0x53
+
+static int qlinks(void) { return product->pads == 64 ? 8 : 4; }
+static int qlink_touch(int qlink) {
+    return (product->pads == 64 ? NOTE_FORCE_QLINK_TOUCH : NOTE_QLINK_TOUCH) + qlink;
+}
 
 /* -1, or the control change for an encoder's name. */
 static int encoder(const char *name, int *qlink) {
@@ -961,11 +1006,12 @@ static int encoder(const char *name, int *qlink) {
         LOG("MPC Sample has only the dial; its knobs take set");
         return -1;
     }
-    if ((name[0] == 'q' || name[0] == 'Q') && name[1] >= '1' && name[1] <= '4' && !name[2]) {
+    if ((name[0] == 'q' || name[0] == 'Q') && name[1] >= '1' && name[1] < '1' + qlinks() &&
+        !name[2]) {
         *qlink = name[1] - '1';
         return CC_QLINK + *qlink;
     }
-    LOG("no encoder '%s'; there are dial and q1 to q4", name);
+    LOG("no encoder '%s'; there are dial and q1 to q%d", name, qlinks());
     return -1;
 }
 
@@ -1004,28 +1050,24 @@ static void command(char *line) {
     } else if (strcmp(cmd, "pad") == 0) {
         int pad, velocity = 100, ms = 80;
         if (sscanf(rest, "%i %i %i", &pad, &velocity, &ms) < 1) return;
-        if (product->pads != 16) {
-            LOG("pad knows only the sixteen-pad layout; %s has %d", product->code,
-                product->pads);
+        if (pad < 1 || pad > product->pads || velocity < 1 || velocity > 127) {
+            LOG("usage: pad <1-%d> [velocity 1-127] [ms]", product->pads);
             return;
         }
-        if (pad < 1 || pad > 16 || velocity < 1 || velocity > 127) {
-            LOG("usage: pad <1-16> [velocity 1-127] [ms]");
-            return;
-        }
-        tap(9, PAD_NOTES[pad - 1], velocity, ms);
+        tap(9, product->pads == 64 ? FORCE_PAD_NOTE + pad - 1 : PAD_NOTES[pad - 1],
+            velocity, ms);
     } else if (strcmp(cmd, "turn") == 0) {
         int steps, qlink, cc;
         if (sscanf(rest, "%31s %i", name, &steps) != 2 || (cc = encoder(name, &qlink)) < 0)
             return;
         /* One detent a message. A Q-Link is touched for as long as it is
          * turned, as a real one cannot be turned without. */
-        if (qlink >= 0) send3(PANEL_PORT, 0x90, NOTE_QLINK_TOUCH + qlink, 0x7F);
+        if (qlink >= 0) send3(PANEL_PORT, 0x90, qlink_touch(qlink), 0x7F);
         for (int i = 0; i < abs(steps); i++) {
             send3(PANEL_PORT, 0xB0, cc, steps > 0 ? 1 : 0x7F);
             usleep(5000);
         }
-        if (qlink >= 0) send3(PANEL_PORT, 0x90, NOTE_QLINK_TOUCH + qlink, 0);
+        if (qlink >= 0) send3(PANEL_PORT, 0x90, qlink_touch(qlink), 0);
     } else if (strcmp(cmd, "touch") == 0) {
         int ms = 500, qlink;
         if (sscanf(rest, "%31s %i", name, &ms) < 1 || encoder(name, &qlink) < 0) return;
@@ -1033,7 +1075,7 @@ static void command(char *line) {
             LOG("the dial has no touch sensor");
             return;
         }
-        tap(0, NOTE_QLINK_TOUCH + qlink, 0x7F, ms);
+        tap(0, qlink_touch(qlink), 0x7F, ms);
     } else if (strcmp(cmd, "set") == 0) {
         int value, which;
         if (!product->uart) {

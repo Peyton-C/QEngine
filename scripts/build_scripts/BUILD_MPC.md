@@ -30,8 +30,8 @@ echo 'button play' > /run/mpcsurface.fifo
 | --- | --- |
 | `button <name> [ms]` | Press and release a button |
 | `hold <name>`, `release <name>` | Keep a button down, as for `shift`, and let it go |
-| `pad <1-16> [velocity] [ms]` | Strike a pad, pad 1 at the bottom left |
-| `turn dial <steps>`, `turn q1 <steps>` | Turn the data dial or Q-Link 1 to 4, negative for anticlockwise |
+| `pad <1-16> [velocity] [ms]` | Strike a pad, pad 1 at the bottom left; on a Force `pad <1-64>`, pad 1 at the top left |
+| `turn dial <steps>`, `turn q1 <steps>` | Turn the data dial or Q-Link 1 to 4, 1 to 8 on a Force, negative for anticlockwise |
 | `touch q1 [ms]` | Touch a Q-Link without turning it |
 | `list` | Log the button names this product has |
 | `press <ch> <note> [ms]` | Raw note on and off, channels from 0 |
@@ -39,7 +39,7 @@ echo 'button play' > /run/mpcsurface.fifo
 | `cc <ch> <cc> <value>` | Raw control change |
 | `sysex <hex bytes>` | Raw SysEx |
 
-Buttons have names only on `ACVA3`. On any other product use `press`, the numbers differ between panels. `pad` covers the sixteen-pad products and not Force.
+Buttons have names on `ACVA3` and the Force, `ADA2` and `ADA2S`. On any other product use `press`, the numbers differ between panels. A Force starts with its pads launching clips, so they play nothing until `button note`.
 
 | `ACVA3` buttons | |
 | --- | --- |
@@ -49,13 +49,23 @@ Buttons have names only on `ACVA3`. On any other product use `press`, the number
 | Modes | `sample-edit` `pad-mixer` `track-mixer` `program-edit` `song` `arrange` `grid` `next-seq` `track-mute` `pad-color` `pad-perform` `xyfx` |
 | Q-Link modes | `qlink-project` `qlink-track` `qlink-pad-scene` `qlink-pad-param` `qlink-screen` |
 
+| Force buttons | |
+| --- | --- |
+| Transport | `play` `stop` `rec` `stop-all` |
+| Modes | `menu` `matrix` `note` `launch` `step-seq` `mixer` `clip` `master` `knobs` `navigate` `arp` |
+| Editing | `shift` `select` `undo` `copy` `delete` `edit` `load` `save` `plus` `minus` `tap-tempo` `dial` |
+| Grid | `up` `down` `left` `right` `launch-1` to `launch-8` `column-1` to `column-8` `mute-1` to `mute-8` |
+| Track row | `mute` `solo` `rec-arm` `clip-stop` `assign-a` `assign-b` |
+
+The Force's numbers come from [IamForce](https://github.com/TheKikGen/MPCLiveXplore-libs), which runs the Force app on an MPC panel. `menu`, `matrix`, `mixer`, `note`, `play` and `stop` were tried on `ADA2S`; the rest are IamForce's Gen 1 Force numbers and untried.
+
 The names are what each button did on screen or to its lamps, with no real panel to check them against. A button that changed neither has no name.
 
 A raw command can send what no panel would. On `ACVA3` a note on for `0x58` on channel 0 stops MPC listening to the surface until `acvs.service` is restarted.
 
 To see what MPC sends the panel, such as the lamp for a button with no name yet, set `MPCSURFACE_VERBOSE=1` and `MPCSURFACE_LOG=/data/surface.log` in a drop-in for `acvs.service`.
 
-Tried on arm64 as every Gen 2 code and on armv7 as every Gen 1 code, `ACV5` `ACV5S` `ACV8` `ACVA` `ACVA2` `ACVB` `ACVM` `ACVR`, all on 3.10.0. Each Gen 1 panel completes the handshake, gets its lamps and plays pads, and MPC names itself after it. Pads on a Key play its default project's Fabric instrument, whose content is in no update image, so they are near silent; the keybed is not emulated. On Gen 2, `ACVC` and `ACVG` play the classic pad notes despite their MPCe pads. `ADA2S` completes the handshake and gets its lamps, but none of the 128 notes on the pad channel play, so Force pads need a mapping `mpcsurface` does not have, and MPC warns that the disk is almost full, likely from the NVMe storage QEngine does not supply. The first time MPC met the surface the guest rebooted itself once, and not again.
+Tried on arm64 as every Gen 2 code and on armv7 as every Gen 1 code, `ACV5` `ACV5S` `ACV8` `ACVA` `ACVA2` `ACVB` `ACVM` `ACVR`, all on 3.10.0. Each Gen 1 panel completes the handshake, gets its lamps and plays pads, and MPC names itself after it. Pads on a Key play its default project's Fabric instrument, whose content is in no update image, so they are near silent; the keybed is not emulated. On Gen 2, `ACVC` and `ACVG` play the classic pad notes despite their MPCe pads. `ADA2S` plays all 64 pads in note mode, and MPC warns that the disk is almost full, likely from the NVMe storage QEngine does not supply. The first time MPC met the surface the guest rebooted itself once, and not again.
 
 ## Audio
 MPC plays through the host's sound output. It opens its internal card by udev path, `/dev/snd/by-path/platform-sound`, and the build points that path at `snd-dummy`, which `qengine-mpc-audio.service` loads before `acvs.service`. `alsashim` is preloaded into MPC and copies the first pair of everything it plays onto QEMU's card, which `run_qemu.sh` gives the `mpc` family as it does Engine: HDA on arm64, and virtio-sound on armv7, since Debian's armv7 kernel has no HDA driver. Inputs are silent.
@@ -83,6 +93,8 @@ Gen 2 runs the same MPC application on RK3588, and needs the same small shim sta
 | MPC XL | `ACVC` |
 | MPC Live III | `ACVG` |
 | Force (Gen 2) | `ADA2S` |
+
+Both images carry every product of both generations in one hardware table, so the split between them is architecture, not product. The Gen 2 image runs as a Gen 1 product when given its code: `ADA2`, the first Force, plays all its pads in note mode and opens the clip matrix, and `ACVA`, `ACV5` and `ACVB` play pads at full level, each with the panel setup MPC gives that Gen 1 model. A Gen 1 product run this way gets Gen 2's speed under HVF. Running the Gen 1 image as a Gen 2 product is untested.
 
 The dtbs also set `chosen` flags per model that QEngine does not serve: `acvs-loopback-content`, `emmc-synths` and `nvme-fitted`. Without them the guest skips `storage.mount`, `content.mount` and `nvme.mount`. Where MPC then keeps user content is untested.
 

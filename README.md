@@ -125,7 +125,7 @@ Same shape as the table above. **Code** is again the `inmusic,product-code` valu
 read here from the `model` and `inmusic,product-code` properties of the
 `/boot/rk3288-*.dtb` files the firmware ships. Version cells hold the exact firmware
 version booted, `?` for untested. The Gen 1 MPCs all ship from one image covering
-eight models, so a version column is the *image* version. The six Gen 2 models share one image too, which carries its dtbs in the update image rather than in `/boot`; their codes are read from there.
+nine models, so a version column is the *image* version. The six Gen 2 models share one image too, which carries its dtbs in the update image rather than in `/boot`; their codes are read from there.
 
 |                    | Code  | SOC    | Signed FW | Arch  | 2.x | 3.x          |
 |--------------------|-------|--------|-----------|-------|-----|--------------|
@@ -142,6 +142,7 @@ eight models, so a version column is the *image* version. The six Gen 2 models s
 | MPC Key 61 (Gen 2) | ACVM2 | RK3588 | Y         | arm64 | –   | 3.10.0       |
 | MPC Key 37         | ACVR  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
 | MPC Key 37 (Gen 2) | ACVR2 | RK3588 | Y         | arm64 | –   | 3.10.0       |
+| Force              | ADA2  | RK3288 | ?         | armv7 | –   | 3.10.0       |
 | Force (Gen 2)      | ADA2S | RK3588 | Y         | arm64 | –   | 3.10.0       |
 
 The MPC build spoofs a product code the same way the Engine builds do: `PRODUCT_CODE`
@@ -194,7 +195,6 @@ scripts/build_scripts/new_instance.sh --name headrush-prime-5.2.0 --device headr
 
 | Line | Codes | Notes |
 |------|-------|-------|
-| Akai Force | `ADA2` | Standalone groovebox, closest sibling to the MPC line. Force (Gen 2) ships in the MPC Gen 2 image and builds as an MPC |
 | Akai MPC Sample | `AC50` | Boots 1.3.0 on RK3566/arm64 with `--device mpc-sample`, with sound and a virtual control surface. See [BUILD_MPC.md](scripts/build_scripts/BUILD_MPC.md#mpc-sample) |
 | HeadRush | `HV01` (Core), `HV03` (VX5), `HG02` (Gigboard), `HG03` (Looperboard), `HG04` (MX5), `HG06` (Prime), `HG12` (Flex Prime), `MG01` (Pedalboard) | Guitar FX/amp modellers |
 

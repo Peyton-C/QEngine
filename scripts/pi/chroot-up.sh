@@ -58,8 +58,12 @@ mountpoint -q "$R/run/udev" || mount --bind /run/udev "$R/run/udev"
 # the real system too (media.mount).
 mountpoint -q "$R/media" || mount -t tmpfs -o mode=1777 tmpfs "$R/media"
 mountpoint -q "$R/tmp"   || mount -t tmpfs tmpfs "$R/tmp"
-mountpoint -q "$R/var/volatile" || mount -t tmpfs tmpfs "$R/var/volatile"
-mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
+# Yocto's, which Engine OS 4.4 and later has. Buildroot's (4.3.4 and earlier)
+# has no /var/volatile.
+if [ -d "$R/var/volatile" ]; then
+    mountpoint -q "$R/var/volatile" || mount -t tmpfs tmpfs "$R/var/volatile"
+    mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
+fi
 
 # edisksd mounts every block device udev shows it unless told otherwise, and in
 # a chroot it sees the host's. Engine OS marks its own internal storage with

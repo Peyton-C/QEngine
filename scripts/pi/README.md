@@ -22,7 +22,7 @@ scripts/pi/stage_for_pi.sh --name jp24-5.1.1
 rsync -a --sparse build/pi-stage/ <user>@<pi>:qengine/
 ```
 
-An armv7 instance stages the same way and runs as 32-bit programs on the Pi's kernel. Prime 4 5.3.0 as `JC11` ran on the display and as a window in sway, with v3d and HDMI audio. Its qtwayland builds in an emulated armv7 container, which takes about 45 minutes on an M-series Mac. Stage it into a directory of its own on the Pi and point `QENGINE_DIR` at it, with `ENGINE_ROOT` set in its `pi.env`, so that it sits beside an arm64 one. An armv7 instance built before its eFuse fixtures were added to `write_fake_dt.sh` aborts at start-up; rebuild it with `new_instance.sh --force`.
+An armv7 instance stages the same way and runs as 32-bit programs on the Pi's kernel. Prime 4 5.3.0 as `JC11` ran on the display and as a window in sway, with v3d and HDMI audio. Its qtwayland builds in an emulated armv7 container, which takes about 45 minutes on an M-series Mac. Stage it into a directory of its own on the Pi and point `QENGINE_DIR` at it, with `ENGINE_ROOT` set in its `pi.env`, so that it sits beside an arm64 one. Prime GO 4.3.0 as `JC11`, the Qt 5 Engine of 4.3.4 and earlier, runs on the display with v3d and HDMI audio too; its stage carries the Mesa that replaces the Mali driver, rebuilt with the Pi's drivers, and has no `--wayland`. An armv7 instance built before its eFuse fixtures were added to `write_fake_dt.sh` aborts at start-up; rebuild it with `new_instance.sh --force`.
 
 ## On the Pi
 

@@ -3,12 +3,17 @@
 # armv7 Engine OS 4.3.4 and earlier (and HeadRush), so that a guest renders through
 # virgl instead of having no working GL at all.
 #
-# Usage: build_mali_mesa.sh [--force]
+# Usage: build_mali_mesa.sh [--extra-drivers <list>] [--force]
 #   Writes build/mesa-<ver>-armhf-mali/, laid out as the rootfs's /usr/lib:
 #   libEGL, libGLESv1_CM, libGLESv2, libgbm and libglapi, dri/ with virtio_gpu,
 #   kms_swrast and swrast, and a libmali.so.14.0 that stands in for the blob.
 #   The version is MALI_MESA_VERSION from detect_mesa.sh. Cached like
 #   build_virgl_mesa.sh's output; --force rebuilds. Requires Docker.
+#
+#   --extra-drivers adds gallium drivers for real hardware, `v3d,vc4` for a
+#   Raspberry Pi, cached as mesa-<ver>-armhf-mali+v3d+vc4/. The whole set goes in
+#   together on the Pi, since a DRI driver has to come from the same build as the
+#   libglapi beside it.
 #
 # Why a whole Mesa rather than a driver, as build_virgl_mesa.sh builds: these
 # rootfs images have no Mesa to plug a driver into. libmali.so.14.0 provides EGL
@@ -36,8 +41,10 @@ OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
 FORCE=0
+EXTRA_DRIVERS=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --extra-drivers) EXTRA_DRIVERS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -48,6 +55,11 @@ done
 . "$REPO_ROOT/scripts/build_scripts/detect_mesa.sh"
 MESA_VER="$MALI_MESA_VERSION"
 OUT="$OUT_DIR/mesa-$MESA_VER-armhf-mali"
+GALLIUM_DRIVERS=virgl,swrast
+if [ -n "$EXTRA_DRIVERS" ]; then
+    GALLIUM_DRIVERS="$GALLIUM_DRIVERS,$EXTRA_DRIVERS"
+    OUT="$OUT+${EXTRA_DRIVERS//,/+}"
+fi
 
 if [ -s "$OUT/libmali.so.14.0" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
@@ -67,7 +79,7 @@ docker pull -q --platform "$PLATFORM" debian:bookworm >/dev/null
 STAGE="$(mktemp -d /tmp/build-mali-mesa.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 
-docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -v "$STAGE:/out" \
+docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -v "$STAGE:/out" \
     debian:bookworm bash -euo pipefail -c '
         export DEBIAN_FRONTEND=noninteractive
         dpkg --add-architecture armhf
@@ -118,7 +130,7 @@ EOF
         meson setup build --cross-file /cross.txt --prefix=/usr --libdir=lib \
             -Dcpp_link_args=-static-libstdc++ \
             -Dbuildtype=release \
-            -Dgallium-drivers=virgl,swrast \
+            -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
             -Dplatforms= \
             -Dglx=disabled \

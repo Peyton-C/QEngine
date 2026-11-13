@@ -139,14 +139,26 @@ mkdir -p "$OUT/stage"
 # shellcheck source=../build_scripts/detect_mesa.sh
 . "$REPO_ROOT/scripts/build_scripts/detect_mesa.sh"
 detect_mesa "$ROOTFS_IMG"
-case "${MESA_LAYOUT:-}" in gallium|dri) ;; *)
+# A rootfs whose Mali blob the builder replaced (4.3.4 and earlier) now has
+# Mesa's own layout, and reads as dri. Its backup of the blob tells it apart: its
+# drivers have to come from build_mali_mesa.sh, on the rootfs's older glibc.
+DEBUGFS=""
+for c in debugfs /sbin/debugfs /usr/sbin/debugfs /opt/homebrew/opt/e2fsprogs/sbin/debugfs; do
+    if command -v "$c" >/dev/null 2>&1; then DEBUGFS="$c"; break; fi
+done
+if [ -n "$DEBUGFS" ] && "$DEBUGFS" -R 'stat /usr/lib/libmali.so.14.0.vendor' "$ROOTFS_IMG" 2>/dev/null |
+        grep 'Inode:' >/dev/null; then
+    MESA_LAYOUT=mali
+    MESA_VERSION="$MALI_MESA_VERSION"
+fi
+case "${MESA_LAYOUT:-}" in gallium|dri|mali) ;; *)
     echo "ERROR: this rootfs's Mesa layout is '${MESA_LAYOUT:-unknown}'; see build_virgl_mesa.sh." >&2
     exit 1 ;;
 esac
 # A stage refreshed without --wayland must not install an earlier one's files,
 # nor one for the other layout.
 rm -rf "$OUT/stage/libEGL.so.1.0.0" "$OUT/stage/wayland" "$OUT/stage/qtwayland" \
-    "$OUT/stage/dri" "$OUT/stage"/libgallium-*.so
+    "$OUT/stage/dri" "$OUT/stage/mali" "$OUT/stage"/libgallium-*.so
 # The gallium layout (arm64 5.x) replaces the vendor libgallium whole. The dri
 # layout (armv7 5.3.0) loads /usr/lib/dri/<kernel driver>_dri.so, so the one
 # megadriver is staged under the Pi's two names, v3d and vc4, beside the vendor's.
@@ -164,7 +176,17 @@ stage_mesa() {
         cp "$REPO_ROOT/build/$MESA_SO$1.so" "$OUT/stage/dri/vc4_dri.so"
     fi
 }
-if [ "$WAYLAND" -eq 1 ]; then
+if [ "$MESA_LAYOUT" = mali ]; then
+    # Qt 5.15.2 Engine (4.3.4 and earlier): the rootfs builder already put
+    # build_mali_mesa.sh's Mesa in place of the Mali blob. The Pi gets the same
+    # build with v3d and vc4 added, whole, since its drivers and libglapi have
+    # to come from one build.
+    [ "$WAYLAND" -eq 0 ] || {
+        echo "ERROR: --wayland needs Qt 6 Engine; this rootfs has Qt 5 and the Mali blob's layout." >&2
+        exit 1; }
+    "$REPO_ROOT/scripts/build_scripts/build_mali_mesa.sh" --extra-drivers v3d,vc4
+    cp -R "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+v3d+vc4" "$OUT/stage/mali"
+elif [ "$WAYLAND" -eq 1 ]; then
     # The libEGL and the driver come from one build, so they go in together.
     "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch "$ARCH" \
         --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT" --extra-drivers v3d,vc4 \

@@ -37,6 +37,18 @@ for so in "$STAGE"/libgallium-*.so; do
     echo "installed $name"
 done
 
+# Mesa in place of the Mali blob (armv7 4.3.4 and earlier), which the rootfs
+# builder already installed for virgl: the same build with the Pi's drivers.
+if [ -d "$STAGE/mali" ]; then
+    [ -e "$R/usr/lib/libmali.so.14.0.vendor" ] || {
+        echo "ERROR: this rootfs's Mali blob was never replaced; rebuild the instance." >&2; exit 1; }
+    cp -af "$STAGE"/mali/lib*.so.* "$R/usr/lib/"
+    cp -af "$STAGE"/mali/dri/*_dri.so "$R/usr/lib/dri/"
+    chown -h 0:0 "$R"/usr/lib/libmali.so.14.0 "$R"/usr/lib/libEGL.so* "$R"/usr/lib/libGLES* \
+        "$R"/usr/lib/libgbm.so* "$R"/usr/lib/libglapi.so* "$R"/usr/lib/dri/*_dri.so
+    echo "installed Mesa in place of libmali, with $(cd "$STAGE/mali/dri" && echo *_dri.so | wc -w) drivers"
+fi
+
 # Mesa in the dri layout (armv7 5.3.0): the Pi's drivers, under the names its
 # loader derives from the kernel's, beside the vendor megadriver, which stays.
 for so in "$STAGE"/dri/*_dri.so; do

@@ -119,8 +119,17 @@ up() {
     [ -f "$MPC_DIR/rootfs.img" ] && [ -f "$MPC_DIR/data_disk.img" ] || {
         echo "ERROR: no rootfs.img and data_disk.img in $MPC_DIR (set MPC_DIR)." >&2; exit 1; }
     mkdir -p "$R"
+    # The mount point is bound onto itself and made private before anything goes
+    # on it. Services that run in a mount namespace of their own (logind, udevd,
+    # resolved, colord, ...) otherwise get a copy of every mount made here, which
+    # no unmount on the host reaches once /sys and /dev are slaves, and which keeps
+    # the loop devices busy until the next boot. Only the empty bind propagates.
+    if ! mountpoint -q "$R"; then
+        mount --bind "$R" "$R" && mount --make-private "$R"
+    fi
     # Read-only, as on the device. Everything MPC writes goes to /data or a tmpfs.
-    mountpoint -q "$R" || mount -o loop,ro "$MPC_DIR/rootfs.img" "$R" || exit 1
+    findmnt -n -o SOURCE --mountpoint "$R" | grep -q '^/dev/loop' ||
+        mount -o loop,ro "$MPC_DIR/rootfs.img" "$R" || exit 1
     app_detect
     [ -n "$APP_BIN" ] && [ -e "$R/lib/ld-linux-aarch64.so.1" ] || {
         echo "ERROR: $MPC_DIR/rootfs.img is not an arm64 MPC, MPC Sample or VX5 rootfs." >&2
@@ -433,14 +442,12 @@ down() {
             [ -z "$pids" ] || kill -9 $pids 2>/dev/null
         fi
         sync
-        # Not --make-rslave "$R" as a whole, unlike chroot-down.sh: services with
-        # a private mount namespace (udevd, logind, resolved) got copies of these
-        # mounts as they were made, and only a shared unmount reaches them; a
-        # slave one leaves them holding the loop devices until the next boot.
-        # /sys and /dev were made slaves in up, which is what keeps the host's.
-        mount --make-rslave "$R/sys"
-        mount --make-rslave "$R/dev"
-        if ! umount -R "$R"; then
+        # /sys and /dev were made slaves in up, which is what keeps the host's
+        # own submounts of them mounted. Twice: the rootfs, then the private
+        # bind under it.
+        mount --make-rslave "$R/sys" 2>/dev/null
+        mount --make-rslave "$R/dev" 2>/dev/null
+        if ! { umount -R "$R" && { ! mountpoint -q "$R" || umount "$R"; }; }; then
             echo "WARNING: could not unmount $R; still mounted:" >&2
             findmnt -R -n -o TARGET "$R" >&2
             exit 1

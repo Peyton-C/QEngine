@@ -19,7 +19,8 @@ eval "$_caller_env"
 R="${ENGINE_ROOT:-/srv/engine}"
 STAGE="$QENGINE_DIR/stage"
 
-mountpoint -q "$R" || { echo "ERROR: run chroot-up.sh first." >&2; exit 1; }
+# Not "$R" itself, which chroot-up.sh binds before the rootfs goes on it.
+mountpoint -q "$R/proc" || { echo "ERROR: run chroot-up.sh first." >&2; exit 1; }
 [ -d "$STAGE" ] || { echo "ERROR: no stage directory at $STAGE." >&2; exit 1; }
 
 # Mesa. The library is replaced whole and has to match the version the rootfs's

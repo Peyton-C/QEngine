@@ -26,7 +26,16 @@ R="${ENGINE_ROOT:-/srv/engine}"
     echo "ERROR: no rootfs.img in $QENGINE_DIR (set QENGINE_DIR)." >&2; exit 1; }
 
 mkdir -p "$R"
-mountpoint -q "$R" || mount -o loop "$QENGINE_DIR/rootfs.img" "$R"
+# The mount point is bound onto itself and made private before anything goes
+# on it. Services that run in a mount namespace of their own (logind, udevd,
+# resolved, colord, ...) otherwise get a copy of every mount made here, which
+# no unmount on the host reaches once /sys and /dev are slaves, and which keeps
+# the loop devices busy until the next boot. Only the empty bind propagates.
+if ! mountpoint -q "$R"; then
+    mount --bind "$R" "$R" && mount --make-private "$R"
+fi
+findmnt -n -o SOURCE --mountpoint "$R" | grep -q '^/dev/loop' ||
+    mount -o loop "$QENGINE_DIR/rootfs.img" "$R"
 
 # /data must be ext4 with the encrypt feature: Engine fscrypts two directories
 # under it at every launch (usr/Engine/Scripts/encrypt-fs.sh), and a host root

@@ -201,13 +201,14 @@ SHIMS=/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIM
 [ "$PLATFORM" = eglfs ] && SHIMS=/root/cursorshim.so:$SHIMS
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
 if [ "$PLATFORM" = wayland ]; then
-    # No decorations: the window is the whole interface, and the compositor
-    # can draw a frame if it wants one. Engine ignores mouse clicks, so the
+    # Decorations are left to Qt: it asks the compositor to draw the frame
+    # (xdg-decoration, which sway and KDE do) and draws its own, bradient, where
+    # the compositor will not (GNOME). Engine ignores mouse clicks, so the
     # Wayland plugin hands the left button over as touch (what touchbridge does
     # under eglfs) -- an option of this build of it, see build_qtwayland.sh.
     QPA=(QT_QPA_PLATFORM=wayland-egl XDG_RUNTIME_DIR=/run/user/0
          "WAYLAND_DISPLAY=/run/qengine-wayland/$(basename "$WAYLAND_PATH")"
-         QT_WAYLAND_DISABLE_WINDOWDECORATION=1 QT_WAYLAND_MOUSE_AS_TOUCH=1)
+         QT_WAYLAND_MOUSE_AS_TOUCH=1)
     # Also this build's: the screen reported as the window's size.
     [ -n "${SCREEN:-}" ] && QPA+=("QT_WAYLAND_SCREEN_SIZE=${SCREEN/ /x}")
 else

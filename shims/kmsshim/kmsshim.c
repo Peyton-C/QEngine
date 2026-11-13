@@ -387,6 +387,10 @@ static int drm_ioctl(unsigned long req, void *arg) {
     case _IOC_NR(DRM_IOCTL_GET_MAGIC):
     case _IOC_NR(DRM_IOCTL_AUTH_MAGIC):
     case _IOC_NR(DRM_IOCTL_MODE_DIRTYFB):
+    /* MPC Sample 1.3.0 hides a hardware cursor it was never going to draw. The
+     * window's cursor is the compositor's, so there is none to hide. */
+    case _IOC_NR(DRM_IOCTL_MODE_CURSOR):
+    case _IOC_NR(DRM_IOCTL_MODE_CURSOR2):
         return 0;
     case _IOC_NR(DRM_IOCTL_MODE_GETRESOURCES): {
         struct drm_mode_card_res *r = arg;

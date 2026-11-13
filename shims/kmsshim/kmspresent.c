@@ -6,7 +6,16 @@
  * the app's kmsshim connects to (inside the chroot's /run), receives each dumb
  * buffer as a memfd and each framebuffer's layout, and attaches whichever one
  * the app flips to as a wl_shm buffer: no copy. The window can be any size;
- * wp_viewporter scales the picture to it, and input is scaled back.
+ * wp_viewporter scales the picture to it, keeping the app's aspect ratio, and
+ * input is scaled back.
+ *
+ * The window frame is libdecor's: GNOME leaves decorations to the client, and
+ * libdecor draws them with its GTK or cairo plugin there, or asks for the
+ * compositor's own where there are any (sway, KDE). A window with no size of
+ * its own given opens at the app's screen times --scale, so that a small panel
+ * is not a postage stamp; by default the smallest whole multiple at least 800
+ * wide. GNOME names a window after the .desktop file matching --app-id, which
+ * chroot-mpc.sh writes.
  *
  * Input: MPC reads its touchscreen from evdev and looks for it once, as it
  * starts. kmspresent therefore creates a uinput multitouch device before the
@@ -14,13 +23,18 @@
  * as a touch. A udev rule (see chroot-mpc.sh) keeps libinput, and so the
  * compositor, from taking that device as a touchscreen of its own.
  *
- * Usage: kmspresent [--socket PATH] [--size WxH] [--title TEXT]
+ * Usage: kmspresent [--socket PATH] [--size WxH] [--title TEXT] [--app-id ID] [--scale N] [--name NAME]
  *   --socket  where to listen. Default /srv/mpc/run/kmsshim.sock
  *   --size    the app's screen, for the touchscreen's range. Default 1280x800
+ *   --title   the window's title. Default MPC
+ *   --app-id  the window's app id. Default qengine-kmspresent
+ *   --scale   the window's first size, in multiples of the app's screen
+ *   --name    the touchscreen's device name, for udev rules to match. Default
+ *             "QEngine kmspresent touchscreen"
  * WAYLAND_DISPLAY and XDG_RUNTIME_DIR name the compositor, as for any client.
  *
- * Build: wayland-scanner client-header/private-code for xdg-shell and viewporter,
- * then gcc -O2 -o kmspresent kmspresent.c xdg-shell.c viewporter.c -lwayland-client
+ * Build: wayland-scanner client-header/private-code for viewporter, then
+ * gcc -O2 -o kmspresent kmspresent.c viewporter.c -lwayland-client -ldecor-0
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -37,7 +51,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <wayland-client.h>
-#include "xdg-shell-client-protocol.h"
+#include <libdecor.h>
 #include "viewporter-client-protocol.h"
 #include "kmsproto.h"
 
@@ -50,15 +64,16 @@ static struct wl_display *dpy;
 static struct wl_compositor *comp;
 static struct wl_shm *shm;
 static struct wl_seat *seat;
-static struct xdg_wm_base *wm;
 static struct wp_viewporter *vporter;
 static struct wl_surface *surf;
-static struct xdg_surface *xsurf;
-static struct xdg_toplevel *top;
+static struct libdecor *dec;
+static struct libdecor_frame *frame;
+static int def_w, def_h;   /* the size to open at, when the compositor leaves it to us */
 static struct wp_viewport *vport;
 static struct wl_callback *frame_cb;
 static int configured, win_w, win_h;   /* the surface's size: the app's aspect, fitted in the tile */
 static int app_w = 1280, app_h = 800;
+static const char *dev_name = "QEngine kmspresent touchscreen";
 
 static struct { struct wl_shm_pool *pool; } bufs[MAX_BUFS];
 static struct { struct wl_buffer *wb; int w, h; } fbs[MAX_FBS];
@@ -100,7 +115,7 @@ static void make_touchscreen(void) {
     }
     struct uinput_setup s = {0};
     s.id.bustype = BUS_VIRTUAL; s.id.vendor = 0x5145; s.id.product = 0x4b4d;
-    snprintf(s.name, sizeof s.name, "QEngine kmspresent touchscreen");
+    snprintf(s.name, sizeof s.name, "%s", dev_name);
     if (ioctl(ui, UI_DEV_SETUP, &s) < 0 || ioctl(ui, UI_DEV_CREATE) < 0) {
         perror("uinput create"); exit(1);
     }
@@ -138,23 +153,30 @@ static void touch_up(int slot) {
 
 /* ---- Wayland input -------------------------------------------------------- */
 
+/* The frame's surfaces are libdecor's and share the seat: only what happens on
+ * the picture is the app's. */
+static int ptr_in;
 static void p_enter(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *w, wl_fixed_t x, wl_fixed_t y) {
-    (void)d; (void)p; (void)s; (void)w;
+    (void)d; (void)p; (void)s;
+    ptr_in = w == surf;
     /* No cursor of our own is set, so the compositor's stays: the app draws none. */
     ptr_x = wl_fixed_to_double(x); ptr_y = wl_fixed_to_double(y);
 }
 static void p_leave(void *d, struct wl_pointer *p, uint32_t s, struct wl_surface *w) {
-    (void)d; (void)p; (void)s; (void)w;
+    (void)d; (void)p; (void)s;
+    if (w != surf) return;
+    ptr_in = 0;
     if (ptr_down) { touch_up(SLOTS - 1); ptr_down = 0; }
 }
 static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl_fixed_t y) {
     (void)d; (void)p; (void)t;
+    if (!ptr_in) return;
     ptr_x = wl_fixed_to_double(x); ptr_y = wl_fixed_to_double(y);
     if (ptr_down) touch_move(SLOTS - 1, ptr_x, ptr_y);
 }
 static void p_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t b, uint32_t st) {
     (void)d; (void)p; (void)s; (void)t;
-    if (b != BTN_LEFT) return;
+    if (b != BTN_LEFT || !ptr_in) return;
     if (st == WL_POINTER_BUTTON_STATE_PRESSED && !ptr_down) { ptr_down = 1; touch_down(SLOTS - 1, ptr_x, ptr_y); }
     else if (st == WL_POINTER_BUTTON_STATE_RELEASED && ptr_down) { ptr_down = 0; touch_up(SLOTS - 1); }
 }
@@ -173,7 +195,8 @@ static int slot_for(int32_t id, int alloc) {
     return -1;
 }
 static void t_down(void *d, struct wl_touch *t, uint32_t s, uint32_t tm, struct wl_surface *w, int32_t id, wl_fixed_t x, wl_fixed_t y) {
-    (void)d; (void)t; (void)s; (void)tm; (void)w;
+    (void)d; (void)t; (void)s; (void)tm;
+    if (w != surf) return;
     int sl = slot_for(id, 1);
     if (sl < 0) return;
     touch_down(sl, wl_fixed_to_double(x), wl_fixed_to_double(y));
@@ -239,34 +262,40 @@ static void show_pending(void) {
     wl_surface_commit(surf);
 }
 
-static void xs_configure(void *d, struct xdg_surface *x, uint32_t serial) {
+/* The picture keeps the app's aspect ratio: the surface is the largest box of
+ * that shape inside what the compositor offers, and a tiling compositor leaves
+ * the rest of the tile empty. A floating window is resized to that shape. MPC's
+ * touch targets are sized for its own screen, and a stretched picture would put
+ * them out of proportion too. */
+static void fr_configure(struct libdecor_frame *f, struct libdecor_configuration *c, void *d) {
     (void)d;
-    xdg_surface_ack_configure(x, serial);
+    int w = 0, h = 0;
+    if (!libdecor_configuration_get_content_size(c, f, &w, &h) || w <= 0 || h <= 0) { w = def_w; h = def_h; }
+    if (!vport) { w = app_w; h = app_h; }  /* no viewporter: 1:1 */
+    if ((long)w * app_h > (long)h * app_w) { win_h = h; win_w = (int)((long)h * app_w / app_h); }
+    else { win_w = w; win_h = (int)((long)w * app_h / app_w); }
+    struct libdecor_state *st = libdecor_state_new(win_w, win_h);
+    libdecor_frame_commit(f, st, c);
+    libdecor_state_free(st);
     configured = 1;
     set_view();
     dmg_full = 1; shown_fb = -1;
+    if (frame_cb) { wl_callback_destroy(frame_cb); frame_cb = NULL; }
     if (want_fb >= 0) show_pending();
     else wl_surface_commit(surf);
 }
-static const struct xdg_surface_listener xs_l = {xs_configure};
-
-/* The picture keeps the app's aspect ratio: the surface is the largest box of
- * that shape inside what the compositor offers, and a tiling compositor leaves
- * the rest of the tile empty. MPC's touch targets are sized for its own screen,
- * and a stretched picture would put them out of proportion too. */
-static void top_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h, struct wl_array *st) {
-    (void)d; (void)t; (void)st;
-    if (w <= 0 || h <= 0 || !vport) { win_w = app_w; win_h = app_h; return; }  /* no viewporter: 1:1 */
-    if ((long)w * app_h > (long)h * app_w) { win_h = h; win_w = (int)((long)h * app_w / app_h); }
-    else { win_w = w; win_h = (int)((long)w * app_h / app_w); }
+/* Closing the window leaves the app running with nothing to show it;
+ * chroot-mpc.sh start brings both back. */
+static void fr_close(struct libdecor_frame *f, void *d) { (void)f; (void)d; exit(0); }
+static void fr_commit(struct libdecor_frame *f, void *d) { (void)f; (void)d; wl_surface_commit(surf); }
+static void fr_dismiss(struct libdecor_frame *f, const char *seat, void *d) { (void)f; (void)seat; (void)d; }
+static struct libdecor_frame_interface fr_l = {
+    .configure = fr_configure, .close = fr_close, .commit = fr_commit, .dismiss_popup = fr_dismiss,
+};
+static void dec_error(struct libdecor *c, enum libdecor_error e, const char *msg) {
+    (void)c; fprintf(stderr, "libdecor error %d: %s\n", e, msg); exit(1);
 }
-static void top_close(void *d, struct xdg_toplevel *t) { (void)d; (void)t; }
-static void top_bounds(void *d, struct xdg_toplevel *t, int32_t w, int32_t h) { (void)d; (void)t; (void)w; (void)h; }
-static void top_caps(void *d, struct xdg_toplevel *t, struct wl_array *c) { (void)d; (void)t; (void)c; }
-static const struct xdg_toplevel_listener top_l = {top_configure, top_close, top_bounds, top_caps};
-
-static void wm_ping(void *d, struct xdg_wm_base *w, uint32_t s) { (void)d; xdg_wm_base_pong(w, s); }
-static const struct xdg_wm_base_listener wm_l = {wm_ping};
+static struct libdecor_interface dec_l = {.error = dec_error};
 
 static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char *iface, uint32_t ver) {
     (void)d;
@@ -275,9 +304,6 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
     else if (!strcmp(iface, wl_seat_interface.name)) {
         seat = wl_registry_bind(r, name, &wl_seat_interface, ver < 5 ? ver : 5);
         wl_seat_add_listener(seat, &seat_l, NULL);
-    } else if (!strcmp(iface, xdg_wm_base_interface.name)) {
-        wm = wl_registry_bind(r, name, &xdg_wm_base_interface, 1);
-        xdg_wm_base_add_listener(wm, &wm_l, NULL);
     } else if (!strcmp(iface, wp_viewporter_interface.name))
         vporter = wl_registry_bind(r, name, &wp_viewporter_interface, 1);
 }
@@ -360,13 +386,20 @@ static int recv_msg(int s, struct kmsmsg *m, int *fd) {
 }
 
 int main(int argc, char **argv) {
-    const char *path = "/srv/mpc/run/kmsshim.sock", *title = "MPC";
+    const char *path = "/srv/mpc/run/kmsshim.sock", *title = "MPC", *app_id = "qengine-kmspresent";
+    int scale = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--socket") && i + 1 < argc) path = argv[++i];
         else if (!strcmp(argv[i], "--size") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &app_w, &app_h) != 2) { fprintf(stderr, "bad --size\n"); return 1; }
         } else if (!strcmp(argv[i], "--title") && i + 1 < argc) title = argv[++i];
-        else { fprintf(stderr, "usage: %s [--socket PATH] [--size WxH] [--title TEXT]\n", argv[0]); return 1; }
+        else if (!strcmp(argv[i], "--app-id") && i + 1 < argc) app_id = argv[++i];
+        else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--name") && i + 1 < argc) dev_name = argv[++i];
+        else {
+            fprintf(stderr, "usage: %s [--socket PATH] [--size WxH] [--title TEXT] [--app-id ID] [--scale N] [--name NAME]\n", argv[0]);
+            return 1;
+        }
     }
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stderr, NULL, _IOLBF, 0);
@@ -376,20 +409,20 @@ int main(int argc, char **argv) {
     struct wl_registry *reg = wl_display_get_registry(dpy);
     wl_registry_add_listener(reg, &reg_l, NULL);
     wl_display_roundtrip(dpy);
-    if (!comp || !shm || !wm) { fprintf(stderr, "compositor lacks wl_compositor, wl_shm or xdg_wm_base\n"); return 1; }
+    if (!comp || !shm) { fprintf(stderr, "compositor lacks wl_compositor or wl_shm\n"); return 1; }
     wl_display_roundtrip(dpy);
 
     make_touchscreen();
 
     surf = wl_compositor_create_surface(comp);
     if (vporter) vport = wp_viewporter_get_viewport(vporter, surf);
-    xsurf = xdg_wm_base_get_xdg_surface(wm, surf);
-    xdg_surface_add_listener(xsurf, &xs_l, NULL);
-    top = xdg_surface_get_toplevel(xsurf);
-    xdg_toplevel_add_listener(top, &top_l, NULL);
-    xdg_toplevel_set_title(top, title);
-    xdg_toplevel_set_app_id(top, "qengine-kmspresent");
-    wl_surface_commit(surf);
+    if (scale <= 0) scale = app_w >= 800 ? 1 : (800 + app_w - 1) / app_w;
+    def_w = app_w * scale; def_h = app_h * scale;
+    dec = libdecor_new(dpy, &dec_l);
+    frame = libdecor_decorate(dec, surf, &fr_l, NULL);
+    libdecor_frame_set_title(frame, title);
+    libdecor_frame_set_app_id(frame, app_id);
+    libdecor_frame_map(frame);
 
     unlink(path);
     int ls = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
@@ -401,14 +434,12 @@ int main(int argc, char **argv) {
     int cs = -1;
 
     for (;;) {
-        while (wl_display_prepare_read(dpy) != 0) wl_display_dispatch_pending(dpy);
+        /* libdecor dispatches the display, and its plugin's own work (GTK's). */
+        if (libdecor_dispatch(dec, 0) < 0) { fprintf(stderr, "compositor went away\n"); break; }
         wl_display_flush(dpy);
-        struct pollfd p[3] = {{wl_display_get_fd(dpy), POLLIN, 0}, {ls, POLLIN, 0}, {cs, POLLIN, 0}};
-        if (poll(p, cs >= 0 ? 3 : 2, -1) < 0 && errno != EINTR) { wl_display_cancel_read(dpy); break; }
-        if (p[0].revents & POLLIN) { if (wl_display_read_events(dpy) < 0) break; }
-        else wl_display_cancel_read(dpy);
+        struct pollfd p[3] = {{libdecor_get_fd(dec), POLLIN, 0}, {ls, POLLIN, 0}, {cs, POLLIN, 0}};
+        if (poll(p, cs >= 0 ? 3 : 2, -1) < 0 && errno != EINTR) break;
         if (p[0].revents & (POLLERR | POLLHUP)) { fprintf(stderr, "compositor went away\n"); break; }
-        if (wl_display_dispatch_pending(dpy) < 0) break;
 
         if (p[1].revents & POLLIN) {
             int n = accept4(ls, NULL, NULL, SOCK_CLOEXEC);

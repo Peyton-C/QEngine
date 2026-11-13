@@ -46,6 +46,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$NAME" ] || { echo "ERROR: --name is required." >&2; exit 1; }
+# Absolute, since it is handed to docker -v, which takes a relative path for a
+# volume name.
+mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)"
 
 INSTANCE_DIR="$REPO_ROOT/build/instances/$NAME"
 [ -f "$INSTANCE_DIR/instance.env" ] || {
@@ -87,17 +90,15 @@ if [ "${DEVICE:-}" = mpc ]; then
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
             apt-get install -y -qq gcc libc6-dev libdrm-dev libwayland-dev wayland-protocols \
-                libwayland-bin pkg-config >/dev/null 2>&1
+                libwayland-bin libdecor-0-dev pkg-config >/dev/null 2>&1
             gcc -shared -fPIC -O2 -Wall -I/usr/include/libdrm \
                 -o /out/kmsshim.so /shims/kmsshim/kmsshim.c -ldl -lpthread
             P=$(pkg-config --variable=pkgdatadir wayland-protocols)
             mkdir -p /tmp/proto && cd /tmp/proto
-            for x in xdg-shell:stable/xdg-shell/xdg-shell.xml viewporter:stable/viewporter/viewporter.xml; do
-                wayland-scanner client-header "$P/${x#*:}" "${x%%:*}-client-protocol.h"
-                wayland-scanner private-code "$P/${x#*:}" "${x%%:*}.c"
-            done
-            gcc -O2 -Wall -Wno-missing-field-initializers -I. -I/shims/kmsshim \
-                -o /out/kmspresent /shims/kmsshim/kmspresent.c xdg-shell.c viewporter.c -lwayland-client
+            wayland-scanner client-header "$P/stable/viewporter/viewporter.xml" viewporter-client-protocol.h
+            wayland-scanner private-code "$P/stable/viewporter/viewporter.xml" viewporter.c
+            gcc -O2 -Wall -Wno-missing-field-initializers -I. -I/shims/kmsshim $(pkg-config --cflags libdecor-0) \
+                -o /out/kmspresent /shims/kmsshim/kmspresent.c viewporter.c -lwayland-client -ldecor-0
         '
     for f in kmsshim.so kmspresent; do
         [ -s "$OUT/$f" ] || { echo "ERROR: $f was not built." >&2; exit 1; }

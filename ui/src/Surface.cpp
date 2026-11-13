@@ -324,6 +324,23 @@ void drawLed(const Painter& g, const json& p, bool lit) {
     const ImVec2 c = g.P(vec2(p, "at"));
     const float r = g.L(num(p, "size", 1.2f) * 0.5f);
     const ImVec4 col = colour(p, "color", {1, 0.2f, 0.2f, 1});
+    const std::string shape = str(p, "shape");
+
+    // An arrow, as beside a pitch fader to say which way it is from the
+    // tempo playing.
+    if (shape == "up" || shape == "down") {
+        const float d = shape == "up" ? -1.0f : 1.0f;
+        const ImVec2 a = c + ImVec2(0, d * r);
+        const ImVec2 b = c + ImVec2(-r, -d * r * 0.7f);
+        const ImVec2 e = c + ImVec2(r, -d * r * 0.7f);
+
+        if (lit) {
+            g.haloCircle(c, r * 0.7f, g.L(1.4f), {0, 0}, col, 0.45f);
+        }
+
+        g.dl->AddTriangleFilled(a, b, e, g.C(lit ? col : mix(col, {0.12f, 0.12f, 0.13f, 1}, 0.78f)));
+        return;
+    }
 
     if (lit) {
         g.haloCircle(c, r, g.L(1.6f), {0, 0}, col, 0.5f);
@@ -334,7 +351,7 @@ void drawLed(const Painter& g, const json& p, bool lit) {
     }
 }
 
-void drawMeter(const Painter& g, const json& p, float level) {
+void drawMeter(const Painter& g, const json& p, float level, float peak = -1.0f) {
     const ImVec4 r = rect(p, "rect");
     const int n = std::max(1, int(num(p, "segments", 10)));
     const bool vertical = r.w > r.z;
@@ -355,7 +372,9 @@ void drawMeter(const Painter& g, const json& p, float level) {
 
     for (int i = 0; i < n; ++i) {
         const ImVec4 c = colours[size_t(i) * colours.size() / size_t(n)];
-        const bool on = (float(i) + 0.5f) / float(n) <= level;
+        // The peak lights the one segment it holds at.
+        const int held = peak > 0 ? std::clamp(int(std::ceil(peak * float(n))) - 1, 0, n - 1) : -1;
+        const bool on = (float(i) + 0.5f) / float(n) <= level || i == held;
         const float along = float(i) * (seg + gap);
         ImVec2 p0, p1;
 
@@ -724,8 +743,25 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
     const ImVec2 p1 = c + half;
     const float r = g.L(std::min(size.x, size.y) * 0.07f);
     const ImVec4 cap = colour(p, "cap", {0.13f, 0.13f, 0.14f, 1});
-    const ImVec4 lamp = colour(p, "lamp", {0.4f, 0.3f, 1, 1});
-    const float idle = num(p, "glow", 0.0f);
+    ImVec4 lamp = colour(p, "lamp", {0.4f, 0.3f, 1, 1});
+    float idle = num(p, "glow", 0.0f);
+
+    // Driven by the guest, a pad glows in what it lit, or not at all.
+    if (st.guest && lampsOn) {
+        ImVec4 sum = {0, 0, 0, 0};
+
+        for (const ImVec4& q : st.quads) {
+            if (q.w > 0) sum += ImVec4(q.x, q.y, q.z, 1);
+        }
+
+        if (sum.w > 0) {
+            lamp = {sum.x / sum.w, sum.y / sum.w, sum.z / sum.w, 1};
+        } else if (st.lit) {
+            lamp = st.lamp.w > 0 ? st.lamp : lamp;
+        } else {
+            idle = 0.0f;
+        }
+    }
     const float hit = std::max(st.flash, st.pressed ? 1.0f : 0.0f);
     const bool lit = lampsOn && st.lit;
 
@@ -748,6 +784,31 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
     }
 
     const bool quarters = flag(p, "quadrants");
+
+    // Engine lights each quarter of a split pad on its own note.
+    if (lampsOn && quarters) {
+        const ImVec2 mid = (p0 + p1) * 0.5f;
+
+        for (int q = 0; q < 4; ++q) {
+            const ImVec4 qc = st.quads[q];
+
+            if (qc.w <= 0) {
+                continue;
+            }
+
+            const ImVec2 q0 = {q % 2 ? mid.x : p0.x, q / 2 ? mid.y : p0.y};
+            const ImVec2 q1 = {q % 2 ? p1.x : mid.x, q / 2 ? p1.y : mid.y};
+            const ImDrawFlags corner = q == 0 ? ImDrawFlags_RoundCornersTopLeft
+                                       : q == 1 ? ImDrawFlags_RoundCornersTopRight
+                                       : q == 2 ? ImDrawFlags_RoundCornersBottomLeft
+                                                : ImDrawFlags_RoundCornersBottomRight;
+            const int start = g.dl->VtxBuffer.Size;
+            g.dl->AddRectFilled(q0, q1, g.C(qc), r, corner);
+            // Scaled rather than lightened, so a dim lamp stays dim.
+            const ImVec4 top = {std::min(qc.x * 1.2f, 1.0f), std::min(qc.y * 1.2f, 1.0f), std::min(qc.z * 1.2f, 1.0f), 1};
+            g.shade(start, q0.y, q1.y, top, mix(qc, cap, 0.3f));
+        }
+    }
 
     if (hit > 0) {
         ImVec2 h0 = p0, h1 = p1;
@@ -1234,10 +1295,37 @@ void drawPressedOverlay(const Painter& g, const Element& e, const ControlState& 
     }
 }
 
-// The element's own fields, with its lamp in the colour the guest lit it.
-json guestLamp(const json& p, ImVec4 c) {
+std::string hexColour(ImVec4 c) {
     char hex[8];
     std::snprintf(hex, sizeof hex, "#%02x%02x%02x", int(c.x * 255.0f), int(c.y * 255.0f), int(c.z * 255.0f));
+    return hex;
+}
+
+// An LED, an encoder's halo or a jog's ring as the guest has it: in the
+// colour it lit it, or dark. Unchanged while the guest has not touched it.
+json guestRing(const json& p, const ControlState& st) {
+    if (!st.guest) {
+        return p;
+    }
+
+    json q = p;
+
+    for (const char* key : {"color", "halo", "ring"}) {
+        if (!q.contains(key)) {
+            continue;
+        }
+
+        const ImVec4 own = colour(p, key, {1, 1, 1, 1});
+        const ImVec4 lit = st.lamp.w > 0 ? st.lamp : own;
+        q[key] = hexColour(st.lit ? lit : mix(own, {0.1f, 0.1f, 0.11f, 1}, 0.85f));
+    }
+
+    return q;
+}
+
+// The element's own fields, with its lamp in the colour the guest lit it.
+json guestLamp(const json& p, ImVec4 c) {
+    const std::string hex = hexColour(c);
     json q = p;
     q["lamp"] = hex;
 
@@ -1659,7 +1747,7 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
             st.flash = std::max(0.0f, st.flash - io.DeltaTime * 2.5f);
         }
 
-        if (e.kind == "meter") {
+        if (e.kind == "meter" && !st.guest) {
             float level = 0.0f;
 
             if (options.animateMeters) {
@@ -1723,16 +1811,16 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         else if (e.kind == "frame") drawFrame(g, p);
         else if (e.kind == "line") drawLine(g, p);
         else if (e.kind == "text") drawText(g, p);
-        else if (e.kind == "led") drawLed(g, p, options.layoutLamps && flag(p, "lit"));
-        else if (e.kind == "meter") drawMeter(g, p, st.value);
+        else if (e.kind == "led") drawLed(g, guestRing(p, st), st.guest ? st.lit : options.layoutLamps && flag(p, "lit"));
+        else if (e.kind == "meter") drawMeter(g, p, st.value, st.peak);
         else if (e.kind == "lcd") drawLcd(g, p, options.screen);
         else if (e.kind == "hatch") drawHatch(g, p);
         else if (e.kind == "button") drawButton(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);
         else if (e.kind == "pad") drawPad(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);
         else if (e.kind == "knob") drawKnob(g, p, st, false);
-        else if (e.kind == "encoder") drawKnob(g, p, st, true);
+        else if (e.kind == "encoder") drawKnob(g, guestRing(p, st), st, true);
         else if (e.kind == "fader") drawFader(g, p, st);
-        else if (e.kind == "jog") drawJog(g, p, st);
+        else if (e.kind == "jog") drawJog(g, guestRing(p, st), st);
         else if (e.kind == "footswitch") drawFootswitch(g, p, st);
         else if (e.kind == "icon") drawIconElement(g, p);
         else if (e.kind == "screw") drawScrew(g, p);

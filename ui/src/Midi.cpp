@@ -54,6 +54,12 @@ int messageLength(unsigned char status) {
 
 bool isPair(const json& cc) { return cc.is_array() && cc.size() == 2; }
 
+// Whether the guest can light it.
+bool lamps(const Element& e) {
+    const json& m = e.p["midi"];
+    return m.contains("lamp") || m.contains("note");
+}
+
 // What a knob, fader or jog would send right now, to tell when it changes.
 int outputOf(const Element& e, const ControlState& st) {
     const json& m = e.p["midi"];
@@ -253,6 +259,7 @@ void GuestLink::close() {
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;
+        restoreLamps_ = true;
         say("disconnected");
     }
 }
@@ -343,15 +350,29 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
         return;
     }
 
-    auto light = [&](int ch, int note, auto&& set) {
+    // A colour for the whole control, or for one quarter of a split pad.
+    auto light = [&](bool rgb, int ch, int note, bool lit, auto&& colour) {
         auto it = lamps_.find(ch << 8 | note);
 
         if (it == lamps_.end()) {
             return;
         }
 
-        for (const std::string& id : it->second) {
-            set(states[id], layout->elements[size_t(controls_[id].index)]);
+        for (const Lamp& l : it->second) {
+            if (rgb ? !l.rgb : !l.note) {
+                continue;
+            }
+
+            ControlState& st = states[l.id];
+            const ImVec4 c = colour(layout->elements[size_t(controls_[l.id].index)]);
+            st.guest = true;
+
+            if (l.quad >= 0) {
+                st.quads[l.quad] = lit ? c : ImVec4();
+            } else {
+                st.lit = lit;
+                st.lamp = c;
+            }
         }
     };
 
@@ -360,23 +381,52 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
     if ((kind == 0x90 || kind == 0x80) && m.size() == 3) {
         const int velocity = kind == 0x80 ? 0 : m[2];
 
-        light(m[0] & 0x0F, m[1], [&](ControlState& st, const Element& e) {
-            st.lit = velocity > 0;
+        // A simple lamp is one colour, the layout's, full at 64 and over
+        // and dim below.
+        light(false, m[0] & 0x0F, m[1], velocity > 0, [&](const Element& e) {
             const ImVec4 c = layoutLamp(e.p);
-            st.lamp = velocity > 0 && velocity < 64 ? ImVec4(c.x * 0.35f, c.y * 0.35f, c.z * 0.35f, 1) : ImVec4();
+            return velocity >= 64 ? ImVec4() : ImVec4(c.x * 0.35f, c.y * 0.35f, c.z * 0.35f, 1);
         });
+        return;
+    }
+
+    // A VU meter: how many of its LEDs are lit, or which one holds the peak.
+    if (kind == 0xB0 && m.size() == 3) {
+        auto it = meters_.find((m[0] & 0x0F) << 8 | m[1]);
+
+        if (it == meters_.end()) {
+            return;
+        }
+
+        for (const std::string& id : it->second) {
+            ControlState& st = states[id];
+            st.guest = true;
+
+            // The LED the peak holds at, 20 for the first to 110 for the
+            // tenth, plus how many are lit, 0 to 10, as 97 is 7 lit with the
+            // peak on the eighth. The peak is never below the level, which
+            // settles 110: the tenth held with none lit, not the ninth with
+            // all ten.
+            const int v = m[2];
+            const int held = v < 20 ? 0 : std::min(110, v / 10 * 10);
+            st.value = float(std::min(v - held, 10)) / 10.0f;
+            st.peak = held ? float(held / 10 - 1) / 10.0f : -1.0f;
+        }
         return;
     }
 
     // inMusic's RGB lamp: F0 00 02 0B 7F <product> 03 00 05 <ch> <note> <r> <g> <b> F7
     if (m.size() == 15 && m[1] == 0x00 && m[2] == 0x02 && m[3] == 0x0B && m[6] == 0x03 && m[8] == 0x05) {
+        // Taking Engine's gamma back out gives the colour it meant, but makes
+        // a dim lamp look half lit: the unused pads' 6, 6, 6 comes out mid
+        // grey, where the LED barely glows. So the hue is Engine's and the
+        // brightness the LED's, its drive shown through the screen's gamma.
         const auto level = [](unsigned char v) { return std::pow(float(v) / 127.0f, 1.0f / kLampGamma); };
-        const ImVec4 c = {level(m[11]), level(m[12]), level(m[13]), 1};
+        const float drive = float(std::max({m[11], m[12], m[13]})) / 127.0f;
+        const float dim = drive > 0 ? std::pow(drive, 1.0f / 2.2f) / std::pow(drive, 1.0f / kLampGamma) : 0.0f;
+        const ImVec4 c = {level(m[11]) * dim, level(m[12]) * dim, level(m[13]) * dim, 1};
 
-        light(m[9], m[10], [&](ControlState& st, const Element&) {
-            st.lit = m[11] || m[12] || m[13];
-            st.lamp = st.lit ? c : ImVec4();
-        });
+        light(true, m[9], m[10], m[11] || m[12] || m[13], [&](const Element&) { return c; });
     }
 }
 
@@ -409,6 +459,7 @@ void GuestLink::bind(Surface& surface) {
     layout_ = layout;
     controls_.clear();
     lamps_.clear();
+    meters_.clear();
 
     if (!layout) {
         return;
@@ -432,8 +483,26 @@ void GuestLink::bind(Surface& surface) {
         c.lastValue = outputOf(e, c.prev);
         controls_[e.id] = c;
 
-        if (m.contains("note")) {
-            lamps_[c.ch << 8 | m["note"].get<int>()].push_back(e.id);
+        // A meter's CC is what it shows, not what it sends.
+        if (e.kind == "meter") {
+            if (m.contains("cc") && m["cc"].is_number()) {
+                meters_[c.ch << 8 | m["cc"].get<int>()].push_back(e.id);
+            }
+            continue;
+        }
+
+        const int lampCh = std::clamp(m.value("lamp_ch", c.ch), 0, 15);
+        const json lamp = m.value("lamp", m.value("note", json()));
+        const std::string type = m.value("lamp_type", "");
+        Lamp l{e.id, -1, type != "rgb", type != "note"};
+
+        if (lamp.is_array()) {
+            for (size_t q = 0; q < lamp.size() && q < 4; ++q) {
+                l.quad = int(q);
+                lamps_[lampCh << 8 | lamp[q].get<int>()].push_back(l);
+            }
+        } else if (lamp.is_number()) {
+            lamps_[lampCh << 8 | lamp.get<int>()].push_back(l);
         }
     }
 
@@ -519,12 +588,19 @@ void GuestLink::update(Surface& surface, double now) {
 
     // The guest drives every lamp it has a note for, starting from dark,
     // rather than leaving the layout's "lit" showing.
-    if (clearLamps_) {
+    if (clearLamps_ || restoreLamps_) {
         for (auto& [id, c] : controls_) {
-            states[id].lit = false;
-            states[id].lamp = ImVec4();
+            const Element& e = layout->elements[size_t(c.index)];
+            ControlState& st = states[id];
+            st.lit = restoreLamps_ && flag(e.p, "lit");
+            st.lamp = ImVec4();
+            std::fill(std::begin(st.quads), std::end(st.quads), ImVec4());
+            st.guest = clearLamps_ && (e.kind == "meter" || lamps(e));
+            st.peak = -1.0f;
         }
+
         clearLamps_ = false;
+        restoreLamps_ = false;
     }
 
     for (auto& [id, c] : controls_) {

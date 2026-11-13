@@ -63,6 +63,12 @@ struct ControlState {
     bool lit = false;
     // A colour the guest lit the lamp in, over the layout's; alpha 0 for none.
     ImVec4 lamp = {0, 0, 0, 0};
+    // Each quarter of a split pad, which the guest can light apart.
+    ImVec4 quads[4] = {};
+    // The guest drives this lamp or meter, so the layout's own state and
+    // the meter animation stand aside.
+    bool guest = false;
+    float peak = -1.0f;  // a meter's held peak, 0 to 1, or none
 };
 
 class Surface {

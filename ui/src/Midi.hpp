@@ -30,8 +30,19 @@
 //   "ch"                           its channel, else the placed template's
 //                                  midi_channel, else the layout's midi.channel
 //   "invert": true                 for a fader whose top is its low end
+//   "lamp": N                      the note its lamp is lit on, where that is
+//                                  not the note it sends, as a jog's ring is
+//   "lamp": [N, N, N, N]           a split pad's quarters, each lit apart
+//   "lamp_ch"                      the lamp's channel, if not the control's
+//   "lamp_type": "rgb" or "note"   only that kind of lamp message, where an
+//                                  RGB lamp and a simple one share a note, as
+//                                  a Prime 4 G2's load buttons and pitch LEDs do
 //
-// Lamps come back as Engine lights the product: a note on the control's channel
+// A meter's "midi" is {"cc": N}, the CC Engine sends its level on: how many
+// of ten LEDs are lit, plus 20 to 110 in tens for the one its peak holds at. A control
+// with only a "lamp" sends nothing, as an LED or an indicator does.
+//
+// Lamps come back as Engine lights the product: a note on the lamp's channel
 // and note, lit at 64 and over and dim below, or inMusic's RGB SysEx,
 // F0 00 02 0B 7F <product> 03 00 05 <ch> <note> <r> <g> <b> F7.
 
@@ -104,8 +115,18 @@ private:
     const Layout* layout_ = nullptr;
     std::filesystem::file_time_type mtime_;
     std::unordered_map<std::string, Control> controls_;
-    std::unordered_map<int, std::vector<std::string>> lamps_;  // ch << 8 | note
-    bool clearLamps_ = false;
+    // What a lamp message lights, by ch << 8 | note: a control, and which
+    // quarter of it, or -1 for all of it.
+    struct Lamp {
+        std::string id;
+        int quad = -1;
+        bool note = true;  // lit by a note
+        bool rgb = true;   // lit by the RGB SysEx
+    };
+    std::unordered_map<int, std::vector<Lamp>> lamps_;
+    std::unordered_map<int, std::vector<std::string>> meters_;  // ch << 8 | cc
+    bool clearLamps_ = false;    // dark, for the guest to light
+    bool restoreLamps_ = false;  // back to the layout's, once it is gone
 
     std::vector<unsigned char> pending_;  // a message not yet complete
     unsigned char status_ = 0;            // running status

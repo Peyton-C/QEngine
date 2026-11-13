@@ -83,6 +83,10 @@ driven like the CUE MIXER lamps. They were found on a real unit by lighting
 lamps one at a time; the Mixxx MC6000MK2 script lists `0x65` and `0x66`, which
 light neither.
 
+## Prime 4 (JC11)
+
+`JC11_Controller_Assignments.qml` is the JP24 mapping for the original Prime 4 on armv7 Engine 5.3.0, with the same `midisurface` options except `--led-map`, which points at `JC11_Controller_Leds.txt`. FILTER ON is not mapped, since the Prime 4 has no stems and no sweep FX on/off. Play, browse and load from USB, EQ, filter, faders and the crossfader were tried on a Pi 5.
+
 ## Not mapped
 
 | Control | Why |

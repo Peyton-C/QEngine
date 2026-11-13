@@ -122,8 +122,17 @@ else
     #   name    Qt ignores settings for an output it cannot match, and names
     #           connectors without punctuation (HDMI-A-2 is "HDMI2").
     #   mode    otherwise Qt takes the monitor's preferred mode.
+    #
+    # A product without a directory of its own gets Engine's Default one, which
+    # armv7 5.3.0 has for every product (JC11 among them): a copy is made under
+    # the product's name, since Engine looks there first.
     SCREEN_CFG="$R/usr/Engine/ScreenConfiguration/$PRODUCT/ScreenConfiguration.json"
-    [ -f "$SCREEN_CFG" ] || {
+    DEFAULT_CFG="$R/usr/Engine/ScreenConfiguration/Default/ScreenConfiguration.json"
+    if [ ! -f "$SCREEN_CFG.stock" ] && [ ! -f "$SCREEN_CFG" ] && [ -f "$DEFAULT_CFG" ]; then
+        mkdir -p "$(dirname "$SCREEN_CFG")"
+        cp -a "$DEFAULT_CFG" "$SCREEN_CFG.stock"
+    fi
+    [ -f "$SCREEN_CFG" ] || [ -f "$SCREEN_CFG.stock" ] || {
         echo "ERROR: this firmware has no screen configuration for $PRODUCT." >&2; exit 1; }
     [ -f "$SCREEN_CFG.stock" ] || cp -a "$SCREEN_CFG" "$SCREEN_CFG.stock"
     KMS_DEVICE="$(ls /dev/dri/by-path/*gpu-card 2>/dev/null | head -n 1)"
@@ -197,8 +206,13 @@ fi
 
 ### environment ###############################################################
 # Under a compositor the pointer is the compositor's to draw.
-SHIMS=/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
-[ "$PLATFORM" = eglfs ] && SHIMS=/root/cursorshim.so:$SHIMS
+# Those this rootfs has: armv7 has no teeshim, having no TEE gate to answer.
+SHIMS=""
+for s in /root/cursorshim.so /root/dtshim.so /root/alsashim.so /root/teeshim.so /root/quitshim.so; do
+    [ "$s" = /root/cursorshim.so ] && [ "$PLATFORM" != eglfs ] && continue
+    [ -e "$R$s" ] && SHIMS="${SHIMS:+$SHIMS:}$s"
+done
+SHIMS="$SHIMS${SHIMS_EXTRA:+:$SHIMS_EXTRA}"
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
 if [ "$PLATFORM" = wayland ]; then
     # Decorations are left to Qt: it asks the compositor to draw the frame
@@ -213,13 +227,21 @@ if [ "$PLATFORM" = wayland ]; then
     [ -n "${SCREEN:-}" ] && QPA+=("QT_WAYLAND_SCREEN_SIZE=${SCREEN/ /x}")
 else
     QPA=(QT_QPA_PLATFORM=eglfs EGL_PLATFORM=gbm)
+    # Named outright on armv7, as its builder's drop-in does: left to probe, Qt
+    # falls back to its base integration, which has no window for EGL.
+    [ -e "$R/lib/ld-linux-armhf.so.3" ] && QPA+=(QT_QPA_EGLFS_INTEGRATION=eglfs_kms)
 fi
+# The card name on a product's allowlist is its own product code on RMZ2 and
+# JP24. armv7 Prime 4 (JC11, 5.3.0) never opens a card by that name, and opens
+# one named as the unit's own card is.
+case "$PRODUCT" in
+    JC11) CARD_AS="PRIME 4 Audio" ;;
+    *)    CARD_AS="$PRODUCT" ;;
+esac
 ENVV=("${BASE[@]}"
       LD_PRELOAD=$SHIMS
       "${QPA[@]}"
-      # The card name on this product's allowlist is its own product code, on
-      # both products tried so far (RMZ2, JP24).
-      ALSASHIM_CARD=$CARD_INDEX "ALSASHIM_AS=${ALSASHIM_AS:-$PRODUCT}"
+      ALSASHIM_CARD=$CARD_INDEX "ALSASHIM_AS=${ALSASHIM_AS:-$CARD_AS}"
       # A USB device's inputs are not ones Engine can start, and an input that
       # fails to start takes playback down with it.
       "ALSASHIM_NO_CAPTURE=${ALSASHIM_NO_CAPTURE-1}"
@@ -262,7 +284,16 @@ fi
 # sees Engine OS's bus policy and not the host's. Asked of the process and not
 # the socket: stopping qengine.service kills the daemon and leaves its socket
 # and pid file in the chroot's /run, and it will not start over either.
-if ! pgrep -f '^/usr/bin/dbus-daemon --system --fork$' >/dev/null; then
+# By root directory and not by command line, which the host's daemon and any
+# other chroot's (an MPC one) share.
+in_root() {
+    local p
+    for p in $(pgrep -f "$1"); do
+        [ "$(readlink "/proc/$p/root" 2>/dev/null)" = "$R" ] && return 0
+    done
+    return 1
+}
+if ! in_root '^/usr/bin/dbus-daemon --system --fork$'; then
     mkdir -p "$R/run/dbus"
     rm -f "$R/run/dbus/system_bus_socket" "$R/run/dbus/pid"
     chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/bin/dbus-daemon --system --fork
@@ -272,7 +303,7 @@ fi
 # tells Engine about them. On the real system D-Bus starts it through systemd;
 # here it is started by hand, once, and left running across Engine restarts.
 # Engine only looks for it at start-up, so it has to come first.
-if ! pgrep -f '^/usr/libexec/edisksd' >/dev/null; then
+if ! in_root '^/usr/libexec/edisksd'; then
     setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/libexec/edisksd \
         > "$R/run/edisksd.log" 2>&1 < /dev/null &
     sleep 1

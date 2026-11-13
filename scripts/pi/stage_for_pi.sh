@@ -4,7 +4,8 @@
 #
 # Usage: stage_for_pi.sh --name <instance> [--out <dir>] [--wayland]
 #   <instance> is one made by scripts/build_scripts/new_instance.sh; it must be an
-#   arm64 Engine, or a Gen 1 or Gen 2 MPC, instance and must not be running. Writes
+#   Engine or MPC instance and must not be running. armv7 ones run as 32-bit
+#   programs on the Pi's arm64 kernel. Writes
 #   build/pi-stage/ by default. Requires Docker. An MPC instance goes into mpc/,
 #   beside chroot-mpc.sh, kmsshim.so and kmspresent.
 #
@@ -55,10 +56,9 @@ INSTANCE_DIR="$REPO_ROOT/build/instances/$NAME"
     echo "ERROR: no instance '$NAME' in build/instances." >&2; exit 1; }
 # shellcheck disable=SC1091
 . "$INSTANCE_DIR/instance.env"
-# Gen 1 MPC is armhf, and runs as 32-bit programs on the arm64 host.
-[ "${ARCH:-}" = arm64 ] || { [ "${DEVICE:-}" = mpc ] && [ "${ARCH:-}" = armhf ]; } || {
-    echo "ERROR: instance '$NAME' is ${ARCH:-unknown}; only arm64, and armhf MPC, have been run on a Pi." >&2
-    exit 1; }
+case "${ARCH:-}" in arm64|armhf) ;; *)
+    echo "ERROR: instance '$NAME' is ${ARCH:-unknown}, neither arm64 nor armhf." >&2; exit 1 ;;
+esac
 # A disk image copied while its guest has it mounted read-write is not a
 # consistent filesystem.
 if pgrep -f "qemu-system.*$INSTANCE_DIR/" >/dev/null 2>&1; then
@@ -139,22 +139,40 @@ mkdir -p "$OUT/stage"
 # shellcheck source=../build_scripts/detect_mesa.sh
 . "$REPO_ROOT/scripts/build_scripts/detect_mesa.sh"
 detect_mesa "$ROOTFS_IMG"
-[ "${MESA_LAYOUT:-}" = gallium ] || {
-    echo "ERROR: this rootfs's Mesa layout is '${MESA_LAYOUT:-unknown}'; only the" >&2
-    echo "       gallium layout can take the Pi's drivers (see build_virgl_mesa.sh)." >&2
-    exit 1; }
-# A stage refreshed without --wayland must not install an earlier one's files.
-rm -rf "$OUT/stage/libEGL.so.1.0.0" "$OUT/stage/wayland" "$OUT/stage/qtwayland"
+case "${MESA_LAYOUT:-}" in gallium|dri) ;; *)
+    echo "ERROR: this rootfs's Mesa layout is '${MESA_LAYOUT:-unknown}'; see build_virgl_mesa.sh." >&2
+    exit 1 ;;
+esac
+# A stage refreshed without --wayland must not install an earlier one's files,
+# nor one for the other layout.
+rm -rf "$OUT/stage/libEGL.so.1.0.0" "$OUT/stage/wayland" "$OUT/stage/qtwayland" \
+    "$OUT/stage/dri" "$OUT/stage"/libgallium-*.so
+# The gallium layout (arm64 5.x) replaces the vendor libgallium whole. The dri
+# layout (armv7 5.3.0) loads /usr/lib/dri/<kernel driver>_dri.so, so the one
+# megadriver is staged under the Pi's two names, v3d and vc4, beside the vendor's.
+if [ "$MESA_LAYOUT" = gallium ]; then
+    MESA_SO="libgallium-$MESA_VERSION-$ARCH+v3d+vc4"
+else
+    MESA_SO="virtio_gpu_dri-$MESA_VERSION-$ARCH+v3d+vc4"
+fi
+stage_mesa() {
+    if [ "$MESA_LAYOUT" = gallium ]; then
+        cp "$REPO_ROOT/build/$MESA_SO$1.so" "$OUT/stage/libgallium-$MESA_VERSION.so"
+    else
+        mkdir -p "$OUT/stage/dri"
+        cp "$REPO_ROOT/build/$MESA_SO$1.so" "$OUT/stage/dri/v3d_dri.so"
+        cp "$REPO_ROOT/build/$MESA_SO$1.so" "$OUT/stage/dri/vc4_dri.so"
+    fi
+}
 if [ "$WAYLAND" -eq 1 ]; then
-    # The libEGL and libgallium come from one build, so they go in together.
-    "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch arm64 \
-        --mesa-version "$MESA_VERSION" --layout gallium --extra-drivers v3d,vc4 \
+    # The libEGL and the driver come from one build, so they go in together.
+    "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch "$ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT" --extra-drivers v3d,vc4 \
         --platforms wayland
-    cp "$REPO_ROOT/build/libgallium-$MESA_VERSION-arm64+v3d+vc4+wayland.so" \
-       "$OUT/stage/libgallium-$MESA_VERSION.so"
-    cp "$REPO_ROOT/build/libEGL-$MESA_VERSION-arm64+v3d+vc4+wayland.so" \
+    stage_mesa +wayland
+    cp "$REPO_ROOT/build/libEGL-$MESA_VERSION-$ARCH+v3d+vc4+wayland.so" \
        "$OUT/stage/libEGL.so.1.0.0"
-    cp -R "$REPO_ROOT/build/wayland-arm64" "$OUT/stage/wayland"
+    cp -R "$REPO_ROOT/build/wayland-$ARCH" "$OUT/stage/wayland"
 
     # Qt's Wayland plugin, for the rootfs's own Qt, and checked against it.
     # Read out of the image the way detect_mesa.sh does it.
@@ -180,32 +198,38 @@ if [ "$WAYLAND" -eq 1 ]; then
     [ -n "$XKB" ] || {
         echo "ERROR: no libxkbcommon in this rootfs; the Wayland keyboard needs it." >&2; exit 1; }
     "$DEBUGFS" -R "dump /usr/lib/$XKB $QT_LIBS/$XKB" "$ROOTFS_IMG" 2>/dev/null
-    "$REPO_ROOT/scripts/build_scripts/build_qtwayland.sh" --qt-version "$QT_VERSION" \
+    "$REPO_ROOT/scripts/build_scripts/build_qtwayland.sh" --arch "$ARCH" --qt-version "$QT_VERSION" \
         --check-against "$QT_LIBS"
-    cp -R "$REPO_ROOT/build/qtwayland-$QT_VERSION-arm64" "$OUT/stage/qtwayland"
+    cp -R "$REPO_ROOT/build/qtwayland-$QT_VERSION-$ARCH" "$OUT/stage/qtwayland"
 else
-    "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch arm64 \
-        --mesa-version "$MESA_VERSION" --layout gallium --extra-drivers v3d,vc4
-    cp "$REPO_ROOT/build/libgallium-$MESA_VERSION-arm64+v3d+vc4.so" \
-       "$OUT/stage/libgallium-$MESA_VERSION.so"
+    "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch "$ARCH" \
+        --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT" --extra-drivers v3d,vc4
+    stage_mesa ""
 fi
 
 echo "--- building shims from source ---"
 # debian:bookworm for a glibc older than the rootfs's, as in the rootfs builders.
-docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
-docker run --rm --platform linux/arm64 \
+# armv7 Engine is RK3288's, and has no TEE gate for teeshim to answer.
+if [ "$ARCH" = armhf ]; then
+    SHIM_PLATFORM=linux/arm/v7; SHIM_MACHINE="armv7l|armv8l"; SOC=SOC_RK3288; TEESHIM=0
+else
+    SHIM_PLATFORM=linux/arm64; SHIM_MACHINE="aarch64|arm64"; SOC=SOC_RK3588; TEESHIM=1
+fi
+rm -f "$OUT/stage/teeshim.so"
+docker pull -q --platform "$SHIM_PLATFORM" debian:bookworm >/dev/null
+docker run --rm --platform "$SHIM_PLATFORM" \
+    -e SHIM_MACHINE="$SHIM_MACHINE" -e SOC="$SOC" -e TEESHIM="$TEESHIM" \
     -v "$REPO_ROOT/shims:/shims:ro" -v "$OUT/stage:/out" \
     debian:bookworm bash -c '
         set -e
-        case "$(uname -m)" in aarch64|arm64) ;; *)
-            echo "ERROR: shim container is $(uname -m), expected aarch64." >&2; exit 1 ;;
-        esac
+        uname -m | grep -qxE "$SHIM_MACHINE" || {
+            echo "ERROR: shim container is $(uname -m), expected $SHIM_MACHINE." >&2; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
-        gcc -shared -fPIC -O2 -Wall -o /out/dtshim.so /shims/dtshim/dtshim.c -DSOC_RK3588 -ldl -lpthread
+        gcc -shared -fPIC -O2 -Wall -o /out/dtshim.so /shims/dtshim/dtshim.c -D$SOC -ldl -lpthread
         gcc -shared -fPIC -O2 -Wall -o /out/alsashim.so /shims/alsashim/alsashim.c -ldl
-        gcc -shared -fPIC -O2 -Wall -o /out/teeshim.so /shims/teeshim/teeshim.c
+        [ "$TEESHIM" = 0 ] || gcc -shared -fPIC -O2 -Wall -o /out/teeshim.so /shims/teeshim/teeshim.c
         gcc -shared -fPIC -O2 -Wall -o /out/quitshim.so /shims/quitshim/quitshim.c -ldl -lpthread
         gcc -shared -fPIC -O2 -Wall -I/usr/include/libdrm \
             -o /out/cursorshim.so /shims/cursorshim/cursorshim.c -ldl -lpthread
@@ -214,9 +238,10 @@ docker run --rm --platform linux/arm64 \
         gcc -O2 -Wall -o /out/touchbridge /shims/touchbridge/touchbridge.c
         gcc -O2 -Wall -o /out/midisurface /shims/midisurface/midisurface.c -lasound
     ' 2>&1 | grep -v "Wnonnull-compare\|^ *[0-9]* |\|^ *|\|In function" || true
-for f in dtshim.so alsashim.so teeshim.so cursorshim.so quitshim.so drmatomic.so touchbridge midisurface; do
+for f in dtshim.so alsashim.so cursorshim.so quitshim.so drmatomic.so touchbridge midisurface; do
     [ -s "$OUT/stage/$f" ] || { echo "ERROR: $f was not built." >&2; exit 1; }
 done
+[ "$TEESHIM" = 0 ] || [ -s "$OUT/stage/teeshim.so" ] || { echo "ERROR: teeshim.so was not built." >&2; exit 1; }
 
 echo "--- staging controllermap and the Pi scripts ---"
 rm -rf "$OUT/stage/controllermap"

@@ -37,6 +37,17 @@ for so in "$STAGE"/libgallium-*.so; do
     echo "installed $name"
 done
 
+# Mesa in the dri layout (armv7 5.3.0): the Pi's drivers, under the names its
+# loader derives from the kernel's, beside the vendor megadriver, which stays.
+for so in "$STAGE"/dri/*_dri.so; do
+    [ -e "$so" ] || continue
+    [ -d "$R/usr/lib/dri" ] || {
+        echo "ERROR: this rootfs has no /usr/lib/dri; the staged Mesa is for a" >&2
+        echo "       different firmware." >&2; exit 1; }
+    install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/dri/$(basename "$so")"
+    echo "installed dri/$(basename "$so")"
+done
+
 # Wayland, from stage_for_pi.sh --wayland: a libEGL from the same Mesa build as
 # the libgallium above, with the Wayland platform the vendor one lacks; the
 # libwayland libraries no Engine OS rootfs has; and Qt's Wayland plugin, beside

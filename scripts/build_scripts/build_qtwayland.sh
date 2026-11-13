@@ -3,12 +3,15 @@
 # which ships Qt 6 with eglfs only, so that Engine can run as a window under a
 # Wayland compositor (sway, on a Raspberry Pi) instead of owning the display.
 #
-# Usage: build_qtwayland.sh --qt-version <ver> [--check-against <dir>] [--force]
-#   Writes build/qtwayland-<ver>-arm64/: libQt6WaylandClient and its EGL
+# Usage: build_qtwayland.sh [--arch arm64|armhf] --qt-version <ver>
+#                           [--check-against <dir>] [--force]
+#   Writes build/qtwayland-<ver>-<arch>/: libQt6WaylandClient and its EGL
 #   integration library, and the plugins they load (plugins/platforms,
 #   plugins/wayland-*), laid out as under the rootfs's /usr/lib. Cached like
-#   build_virgl_mesa.sh's output; --force rebuilds. Requires Docker, and runs an
-#   arm64 container: native on Apple silicon, emulated (slow) elsewhere.
+#   build_virgl_mesa.sh's output; --force rebuilds. Requires Docker, and runs a
+#   container of the target architecture: arm64 is native on Apple silicon, and
+#   armhf (armv7 Engine) is emulated everywhere but a host that runs 32-bit arm,
+#   so expect hours.
 #
 # --check-against names a directory holding the rootfs's own libQt6Core, Gui,
 # OpenGL and DBus (*.so.6.x.y), and libxkbcommon.so.0*. Every Qt and xkbcommon
@@ -37,10 +40,12 @@ OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
 QT_VER=""
+ARCH=arm64
 CHECK_DIR=""
 FORCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --arch) ARCH="$2"; shift 2 ;;
         --qt-version) QT_VER="$2"; shift 2 ;;
         --check-against) CHECK_DIR="$(cd "$2" && pwd)"; shift 2 ;;
         --force) FORCE=1; shift ;;
@@ -53,14 +58,19 @@ PATCH="$REPO_ROOT/scripts/build_scripts/patches/qtwayland-$QT_VER-engine.patch"
     echo "ERROR: no patches/qtwayland-$QT_VER-engine.patch; only Qt versions with" >&2
     echo "       one have been built." >&2; exit 1; }
 
-OUT="$OUT_DIR/qtwayland-$QT_VER-arm64"
+case "$ARCH" in
+    arm64) PLATFORM=linux/arm64; MACHINE="aarch64|arm64" ;;
+    armhf) PLATFORM=linux/arm/v7; MACHINE="armv7l|armv8l" ;;
+    *) echo "ERROR: --arch must be arm64 or armhf." >&2; exit 1 ;;
+esac
+OUT="$OUT_DIR/qtwayland-$QT_VER-$ARCH"
 if [ -s "$OUT/libQt6WaylandClient.so.$QT_VER" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
     exit 0
 fi
 
-echo "--- building QtWaylandClient $QT_VER for arm64 ---"
-docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
+echo "--- building QtWaylandClient $QT_VER for $ARCH ---"
+docker pull -q --platform "$PLATFORM" debian:bookworm >/dev/null
 
 STAGE="$(mktemp -d /tmp/build-qtwayland.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -68,12 +78,11 @@ cp "$PATCH" "$STAGE/engine.patch"
 
 # debian:bookworm for a glibc and libstdc++ older than the rootfs's, as for the
 # shims.
-docker run --rm --platform linux/arm64 -e QT_VER="$QT_VER" -v "$STAGE:/out" \
+docker run --rm --platform "$PLATFORM" -e QT_VER="$QT_VER" -e MACHINE="$MACHINE" -v "$STAGE:/out" \
     ${CHECK_DIR:+-v "$CHECK_DIR:/engine-qt:ro"} \
     debian:bookworm bash -euo pipefail -c '
-        case "$(uname -m)" in aarch64|arm64) ;; *)
-            echo "ERROR: builder is $(uname -m), expected aarch64." >&2; exit 1 ;;
-        esac
+        uname -m | grep -qxE "$MACHINE" || {
+            echo "ERROR: builder is $(uname -m), expected $MACHINE." >&2; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends \

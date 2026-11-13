@@ -35,6 +35,7 @@ case "$ARCH" in
         EXPECTED_UNAME="aarch64|arm64"
         EXPECTED_NAME="aarch64"
         EXTRA_MODULES=()
+        EXPECTED_ABSENT=""
         ;;
     armhf)
         KERNEL_PKG="linux-image-armmp"
@@ -56,7 +57,12 @@ case "$ARCH" in
             # through the usbhid above. Costs nothing and keeps the mmio input
             # devices usable from QEMU_EXTRA_ARGS.
             virtio_input
+            # The sound card armhf gets, since armmp builds no snd_hda_intel; see
+            # arch_audio_devices in scripts/qemu/arch_devices.sh.
+            virtio_snd
         )
+        # Not built for armmp, so the check below expects them missing.
+        EXPECTED_ABSENT="|snd_hda_intel|snd_intel_dspcfg"
         ;;
     *)
         echo "ERROR: --arch must be 'arm64' or 'armhf' (got '${ARCH:-}')." >&2
@@ -69,8 +75,8 @@ INITRD="initrd-generic-$ARCH"
 echo Getting Kernel...
 
 # Every module this project has needed and previously had to manually
-# decompress by hand at some point — see ENGINEOS.md's MIDI section and
-# BUILDING.md's Status section for where each group came from — plus the
+# decompress by hand at some point — see docs/engine/AUDIO_MIDI.md and
+# docs/BUILDING.md, Kernel, for the module setup — plus the
 # DRM/virtio-gpu stack, which mkinitramfs's own MODULES=most policy
 # excludes by category the same way it excludes sound/bluetooth.
 MODULES=(
@@ -87,15 +93,14 @@ MODULES=(
     # /data and losetups it to /dev/loop1 before Evil starts; without the module
     # there is no /dev/loop1, and runevil retries losetup forever.
     loop
-    # USB-audio/MIDI class stack (ENGINEOS.md's documented load order)
+    # USB-audio/MIDI class stack, in dependency order
     snd_hwdep mc snd_seq_device snd_seq snd_rawmidi snd_seq_midi_event
     snd_ump snd_usbmidi_lib snd_seq_midi snd_usb_audio
-    # Onboard HDA
+    # Onboard HDA, arm64 only in practice (EXPECTED_ABSENT above)
     snd snd_timer snd_pcm snd_hda_core snd_hda_codec snd_hda_codec_generic
     snd_intel_dspcfg snd_hda_intel
     # A software card with a name of our choosing, for an app that insists on
-    # its own card: HeadRush Prime's Evil opens hw:HV01 at startup. The loopback
-    # card, since Debian's armmp kernel does not build snd-dummy.
+    # its own card: HeadRush Prime's Evil opens hw:HV01 at startup.
     snd_aloop
     # Bluetooth stack
     ecc ecdh_generic bluetooth btintel btrtl btmtk btbcm btusb
@@ -103,6 +108,11 @@ MODULES=(
     virtio_gpu drm drm_kms_helper
 )
 MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
+# In the initrd, and so on every guest, but loaded only by whichever guest asks
+# for one. snd-dummy is a card MPC's rootfs loads for itself; loaded everywhere
+# it would also be a card to Engine, whose alsashim renames every card it sees.
+# The container below builds it, since Debian builds it for neither architecture.
+ON_DEMAND_MODULES=(snd_dummy)
 
 INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
@@ -125,6 +135,47 @@ apt-get install -y -qq initramfs-tools $KERNEL_PKG >/dev/null 2>&1
 
 KVER=\$(ls /lib/modules/)
 echo "Kernel version: \$KVER"
+
+# snd-dummy, built out of tree from the stable release Debian's kernel is cut
+# from. MPC runs its card at 128-frame periods, 2.9 ms at 44.1 kHz, and
+# snd-aloop moves in whole jiffies, 4 ms at HZ=250: MPC 3.10.0's streams on it
+# overrun or stall within a tick or two. QEMU's hda only moves samples every
+# 10 ms. MPC will not run on any other period size, and snd-dummy's hrtimer
+# mode is the one card here that keeps that time.
+echo "--- building snd-dummy ---"
+apt-get install -y -qq gcc make curl linux-headers-"\$KVER" >/dev/null 2>&1
+mkdir -p /tmp/snd-dummy
+curl -fsSL -o /tmp/snd-dummy/dummy.c \
+    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/drivers/dummy.c?h=v\${KVER%%+*}"
+# Plus one model of our own. snd-dummy's own card is U8/S16 stereo, which Gen 2
+# MPC runs on, but MPC Sample 1.3.0 opens its card as four channels of S32_LE at
+# 44.1 kHz (AK4558's two pairs) and gets nothing it can use from that. Loading
+# with model=qengine-ac50 gives it that card, and leaves Gen 2's untouched.
+cat > /tmp/snd-dummy/qengine_models.c <<'EOF'
+static const struct dummy_model model_qengine_ac50 = {
+	.name = "qengine-ac50",
+	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
+	.channels_min = 1,
+	.channels_max = 4,
+	.rates = SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000,
+	.rate_min = 44100,
+	.rate_max = 48000,
+};
+
+EOF
+awk -v models=/tmp/snd-dummy/qengine_models.c '
+    index(\$0, "static const struct dummy_model *dummy_models[] = {") == 1 {
+        while ((getline line < models) > 0) print line
+        print; print "\t&model_qengine_ac50,"; next
+    }
+    { print }' /tmp/snd-dummy/dummy.c > /tmp/snd-dummy/dummy.c.new
+mv /tmp/snd-dummy/dummy.c.new /tmp/snd-dummy/dummy.c
+grep -q '&model_qengine_ac50,' /tmp/snd-dummy/dummy.c || {
+    echo "ERROR: could not add the qengine-ac50 model to this dummy.c." >&2; exit 1; }
+printf 'obj-m := snd-dummy.o\nsnd-dummy-y := dummy.o\n' > /tmp/snd-dummy/Kbuild
+make -s -C /usr/src/linux-headers-"\$KVER" M=/tmp/snd-dummy modules
+install -D -m 644 /tmp/snd-dummy/snd-dummy.ko /lib/modules/"\$KVER"/updates/snd-dummy.ko
+depmod "\$KVER"
 
 # copymods relocates the initrd's own /lib/modules/<kver> into a tmpfs on
 # the real root at boot — Ubuntu-cloud-specific (Scott Moser/Canonical),
@@ -184,6 +235,13 @@ sed -i 's/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf
 # every module that wasn't already pulled in some other way, since
 # initramfs-tools then read the whole line as one bogus module name).
 printf '%s\n' ${MODULES[@]} >> /etc/initramfs-tools/modules
+cat > /etc/initramfs-tools/hooks/qengine-on-demand <<'EOF'
+#!/bin/sh
+[ "\$1" != prereqs ] || exit 0
+. /usr/share/initramfs-tools/hook-functions
+manual_add_modules ${ON_DEMAND_MODULES[@]}
+EOF
+chmod +x /etc/initramfs-tools/hooks/qengine-on-demand
 
 echo "--- building initrd ---"
 mkinitramfs -o /tmp/$INITRD "\$KVER"
@@ -192,7 +250,7 @@ echo "--- verifying target modules made it in ---"
 mkdir -p /tmp/verify
 unmkinitramfs /tmp/$INITRD /tmp/verify >/dev/null 2>&1
 MISSING=""
-for name in ${MODULES[@]}; do
+for name in ${MODULES[@]} ${ON_DEMAND_MODULES[@]}; do
     # ecc: compiled directly into this kernel (modules.builtin), not a
     #   loadable .ko at all — already active, expected to "fail" here.
     # snd_ump: genuinely absent from this kernel build. Universal MIDI
@@ -200,7 +258,7 @@ for name in ${MODULES[@]}; do
     #   USB MIDI 1.0 class-compliant interface (snd_seq_midi/
     #   snd_usbmidi_lib handle that fine without it) — expected too.
     case "\$name" in
-        ecc|snd_ump) continue ;;
+        ecc|snd_ump$EXPECTED_ABSENT) continue ;;
     esac
     pattern=\$(echo "\$name" | sed 's/[_-]/[-_]/g')
     if ! find /tmp/verify -regextype posix-extended -regex ".*/\${pattern}\.ko(\.xz)?" | grep -q .; then

@@ -4,8 +4,7 @@
  * INPUT_PROP_DIRECT so udev tags it ID_INPUT_TOUCHSCREEN). Reuses the
  * uinput setup pattern from shims/vnctouchbridge/vnctouchbridge.c, but with
  * a plain evdev source instead of parsing Engine's own VNC server protocol
- * — this Qt6/eglfs build has no VNC QPA plugin at all (see BUILDING.md's
- * arm64/RK3588 section), so there's no "Engine's own VNC server" to proxy;
+ * — this Qt6/eglfs build has no VNC QPA plugin at all (see docs/engine/DISPLAY.md), so there's no "Engine's own VNC server" to proxy;
  * QEMU's own -vnc server already injects clicks into the real USB tablet,
  * which the guest kernel sees as normal evdev events. What's missing is
  * only the mouse-vs-touch translation this file provides.

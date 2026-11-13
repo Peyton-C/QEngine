@@ -28,6 +28,10 @@
  *   CURSORSHIM_DEBUG  non-empty to log progress to stderr
  */
 #define _GNU_SOURCE
+/* A 64-bit kernel places DRM map offsets above 4 GiB, which a 32-bit off_t
+ * truncates: armv7 Engine (5.3.0, JC11) on a Pi 5 got EINVAL mapping the
+ * cursor buffer and drew no pointer. This makes mmap take the whole offset. */
+#define _FILE_OFFSET_BITS 64
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>

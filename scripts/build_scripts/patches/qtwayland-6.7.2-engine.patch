@@ -29,7 +29,8 @@ Engine usable in it:
   * QT_WAYLAND_MOUSE_AS_TOUCH=1: QWaylandWindow delivers the left mouse button
     as a single touch point. Engine ignores mouse clicks, and under eglfs
     touchbridge does the same conversion; under a compositor the compositor
-    owns the mouse.
+    owns the mouse. Both ways Qt delivers the mouse: plain, and through the
+    frame it draws itself where the compositor draws none (GNOME).
 
   * QT_WAYLAND_SCREEN_SIZE=WxH: QWaylandScreen reports that size. Engine lays
     itself out for the screen and not its window, so in a window smaller than
@@ -205,14 +206,17 @@ Engine usable in it:
  
  #include <QtCore/QDebug>
  #include <QtCore/QThread>
-@@ -1163,6 +1164,55 @@
+@@ -1163,6 +1164,58 @@
      return nullptr;
  }
  
 +// QT_WAYLAND_MOUSE_AS_TOUCH=1 delivers the left mouse button as a single touch
 +// point, for an interface that only acts on touch (Engine) driven with a mouse
-+// under a compositor. Hover and the other buttons stay mouse events.
-+static bool deliverMouseAsTouch(QWindow *window, const QWaylandPointerEvent &e)
++// under a compositor. Hover and the other buttons stay mouse events. local and
++// global are the window's own: with Qt drawing the frame (bradient, where the
++// compositor will not, as on GNOME) they are the surface's less its margins.
++static bool deliverMouseAsTouch(QWindow *window, const QWaylandPointerEvent &e,
++                                const QPointF &local, const QPointF &global)
 +{
 +    static const bool enabled = qEnvironmentVariableIntValue("QT_WAYLAND_MOUSE_AS_TOUCH");
 +    if (!enabled || !window->handle())
@@ -251,9 +255,9 @@ Engine usable in it:
 +    point.id = 0;
 +    point.state = state;
 +    point.pressure = state == QEventPoint::State::Released ? 0 : 1;
-+    point.area = QRectF(e.global - QPointF(4, 4), QSizeF(8, 8));
-+    point.normalPosition = QPointF(e.local.x() / qMax(1, geometry.width()),
-+                                   e.local.y() / qMax(1, geometry.height()));
++    point.area = QRectF(global - QPointF(4, 4), QSizeF(8, 8));
++    point.normalPosition = QPointF(local.x() / qMax(1, geometry.width()),
++                                   local.y() / qMax(1, geometry.height()));
 +    QWindowSystemInterface::handleTouchEvent(window, e.timestamp, device, { point }, e.modifiers);
 +    return true;
 +}
@@ -261,15 +265,24 @@ Engine usable in it:
  void QWaylandWindow::handleMouse(QWaylandInputDevice *inputDevice, const QWaylandPointerEvent &e)
  {
      if (e.type == QEvent::Leave) {
-@@ -1188,6 +1238,8 @@
+@@ -1188,6 +1241,8 @@
              case QEvent::MouseButtonPress:
              case QEvent::MouseButtonRelease:
              case QEvent::MouseMove:
-+                if (deliverMouseAsTouch(window(), e))
++                if (deliverMouseAsTouch(window(), e, e.local, e.global))
 +                    break;
                  QWindowSystemInterface::handleMouseEvent(window(), e.timestamp, e.local, e.global, e.buttons, e.button, e.type, e.modifiers);
                  break;
              case QEvent::Wheel:
+@@ -1378,6 +1433,8 @@
+             case QEvent::MouseButtonPress:
+             case QEvent::MouseButtonRelease:
+             case QEvent::MouseMove:
++                if (deliverMouseAsTouch(window(), e, localTranslated, globalTranslated))
++                    break;
+                 QWindowSystemInterface::handleMouseEvent(window(), e.timestamp, localTranslated, globalTranslated, e.buttons, e.button, e.type, e.modifiers);
+                 break;
+             case QEvent::Wheel: {
 --- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
 +++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
 @@ -11,7 +11,9 @@

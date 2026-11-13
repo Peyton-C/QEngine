@@ -1,29 +1,42 @@
-# Setup everything required to emulate arm64 Engine OS
+# arm64 Engine OS
+QEngine runs RK3588 Engine firmware in QEMU, including RANE SYSTEM ONE and Prime 4 G2. Install Docker, QEMU, Python 3, e2fsprogs and `file`; [Build](../../docs/BUILDING.md) covers host setup and [macOS virgl](../../docs/MACOS_VIRGL.md) covers GPU rendering on macOS.
 
-`PRODUCT_CODE=` selects which device identity the rootfs spoofs, the same way it does
-in the armv7 builder; the default is `RMZ2`. `JP22` and `JP24` ride the same rootfs
-and neither has been booted.
-`MONTERO=1` (`--montero` on `new_instance.sh`) also builds the MONTERO mod loader and
-every mod in `shims/montero/mods`, and preloads it into Engine.
-Requires docker, qemu, python3, e2fsprogs.
-
-The short way is one command, which does all of the below and keeps each device in its
-own directory — see [INSTANCES.md](INSTANCES.md):
+## Build
+Run from the repository root with Docker running:
 
 ```sh
-scripts/build_scripts/new_instance.sh --name rmz2-4.6.0 --firmware PATH_TO_SYSTEMONE_UPDATE.img
-scripts/qemu/run_instance.sh --name rmz2-4.6.0
+scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 \
+    --product-code RMZ2 --firmware /path/to/SYSTEMONE-5.0.4-Update.img
+scripts/qemu/run_instance.sh --name rmz2-5.0.4
 ```
 
-The steps individually, if you want them:
+Point `--firmware` at the device's update image or desktop updater. QEngine builds the rootfs, data/factory disk and shared arm64 kernel. The default product code is `RMZ2`; choose another supported identity with `--product-code`. The [device table](../../README.md#emulated-controllers) lists booted firmware versions.
 
-1. [Download Engine from InMusic](https://enginedj.com/downloads) for the RANE SYSTEM ONE.
-2. Build the rootfs with `build_arm64_rootfs.sh --firmware PATH_TO_SYSTEMONE_UPDATE.img`.
-3. Get the kernel and initrd with `get_kernel.sh --arch arm64`.
-4. Make a data disk for Engine with `make_disk.sh --family engine`.
-5. Boot with `scripts/qemu/run_qemu.sh`, whose defaults match what those steps wrote.
-   `DISPLAY_MODE` picks the display backend (`sdl`, `cocoa`, `vnc`, `sdl-gl`, `egl-vnc`),
-   defaulting to the GL one where the platform has it. `VIRGL=off` forces the non-GL
-   member of the pair and `VIRGL=on` the GL one; `run_instance.sh` spells those
-   `--no-gl` and `--gl`. A GL mode this QEMU cannot serve is demoted with a warning
-   rather than refused.
+| Option | Effect |
+| --- | --- |
+| `--product-code CODE` | Selects the product identity |
+| `--montero` / `--no-montero` | Enables or removes MONTERO and the mods in `shims/montero/mods` |
+| `--force` | Rebuilds the rootfs, preserving the data/factory disk |
+| `--size BYTES` | Changes rootfs capacity from 4 GiB |
+
+Product-code and MONTERO choices survive `--force`. Creation rewrites `instance.env`, so save and reapply custom launch settings. See [Instances](INSTANCES.md) for ports, configuration and rebuilds.
+
+## Display and controls
+Engine uses EGLFS/KMS and Mesa. QEMU supplies the window or VNC server; the firmware's Qt 6 has no VNC platform plugin. Select `--display egl-vnc` for VNC with virgl, or `--no-gl` for guest software rendering.
+
+For JP22, add `GPU_MAX_OUTPUTS=3` to `instance.env` before booting. Engine requires three separate screens; the builder supplies their matching display and touch configuration. Leave this setting out for single-screen products.
+
+`touchbridge` converts QEMU tablet input into touch. `midisurface` supplies the selected product's MIDI panel and transport controls. On RMZ2, it also turns motorized mode off so playback does not wait for physical platter timecode. See [Audio and MIDI](../../docs/engine/AUDIO_MIDI.md) for commands and controller mappings.
+
+## Runtime
+| Component | QEngine handling |
+| --- | --- |
+| Identity | `dtshim` supplies product, serial, rotation and hardware stand-ins |
+| Graphics | Matching virgl Mesa and `drmatomic` adapt Qt to virtio-gpu |
+| Audio | `alsashim` adapts card discovery, formats and buffering |
+| TEE | `teeshim` answers the check in Engine 5.1.0 and later |
+| Shutdown | `quitshim` gives Engine its clean exit on service stop |
+
+These shims leave the application binary unmodified. [Modern Engine OS](../../docs/engine/MODERN.md) covers the platform and its limits. The [support matrix](../../README.md#engine-os-support-matrix) separates boot, input, playback and other features; playback was heard on RMZ2 5.0.4; other identities and releases need their own checks.
+
+To run an arm64 instance without QEMU on a Pi, follow the [Pi guide](../pi/README.md). SoundSwitch does not work in that chroot.

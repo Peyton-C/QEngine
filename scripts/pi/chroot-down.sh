@@ -84,7 +84,8 @@ if mountpoint -q "$R"; then
     # the two copies by default: unmounting the chroot's /sys/fs/cgroup would
     # unmount the machine's. Cutting the chroot's side loose first prevents it.
     mount --make-rslave "$R"
-    if umount -R "$R"; then
+    # Twice: the rootfs, then the private bind chroot-up.sh puts under it.
+    if umount -R "$R" && { ! mountpoint -q "$R" || umount "$R"; }; then
         echo "chroot at $R unmounted"
     else
         echo "WARNING: could not unmount $R; still mounted:" >&2
@@ -95,8 +96,11 @@ fi
 
 # chroot-up.sh took the login prompt off the display. Not while the machine is
 # going down, when asking for a unit to start only gets in the way, and not
-# while qengine-sway.service has the display, which the prompt would stop.
+# while qengine-sway.service has the display, which the prompt would stop. Nor
+# under a display manager: GDM's unit conflicts with getty@tty1, so starting the
+# prompt would stop GDM and end every desktop session.
 if [ "$(systemctl is-system-running 2>/dev/null)" != stopping ] &&
-   ! systemctl -q is-active qengine-sway.service; then
+   ! systemctl -q is-active qengine-sway.service &&
+   ! systemctl -q is-active display-manager.service; then
     systemctl start --no-block getty@tty1.service 2>/dev/null || true
 fi

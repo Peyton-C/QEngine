@@ -86,8 +86,8 @@
  * Separately, Engine's MIDI device enumerator rejects any ALSA sequencer
  * client that isn't backed by a sound card: for a userspace client it logs
  * `client id: N - card number unavailable` followed by `The port isn't'
- * opened for Midi::Out::<name>` (the same warning ENGINEOS.md has recorded
- * as unresolved), and never opens the device. snd_seq_client_info_get_card()
+ * opened for Midi::Out::<name>`, and never opens the device. The port warning
+ * comes from cleanup, not a failed open. snd_seq_client_info_get_card()
  * returns -1 for any client created with snd_seq_open() rather than by a
  * card driver, which is what a virtual control surface
  * (shims/midisurface/) necessarily is.
@@ -182,10 +182,22 @@
  * glitch in the headphones every several minutes. The second output runs
  * about 30-80ms behind the first.
  *
+ * 6. AN INPUT FROM A FILE (optional)
+ *
+ * QEMU on macOS can play but not record: its coreaudio backend has no input,
+ * and it is built without SDL audio. An app that processes what it hears, as
+ * HeadRush VX5 does, then has nothing to work on. With ALSASHIM_INPUT_WAV set,
+ * every snd_pcm_readi() from the app's capture device still reads the card,
+ * which keeps the app's clock, and then has its frames replaced with the next
+ * ones from that WAV file, looped and resampled to the stream's rate. Missing
+ * or unreadable, the file gives silence. It is loaded once, by a thread of its
+ * own, so the audio thread never waits on the disk; restart the app to take a
+ * new one.
+ *
  * Env vars:
  *   ALSASHIM_AS     card name to report (default "RMZ2", System One's real
  *                   simple-audio-card name, which is what its allowlist
- *                   contains)
+ *                   contains), or "off" to report every card's own name
  *   ALSASHIM_CARD   only spoof this card index; default -1 = every card
  *   ALSASHIM_NOPLUG non-empty to leave PCM device names alone (skip the
  *                   plughw rewrite), e.g. against a card that already
@@ -208,6 +220,9 @@
  *                   unset for none
  *   ALSASHIM_CUE_CHANNEL  first channel of that pair in Engine's frame, counting
  *                   from 1 (default 3)
+ *   ALSASHIM_INPUT_WAV  WAV file to replace what the app records with: PCM of
+ *                   16, 24 or 32 bits or 32-bit float, any rate, mono or more
+ *                   channels; unset to leave capture alone
  *   ALSASHIM_METER  non-empty to log each output channel's peak level every few
  *                   seconds, which is how to find out which pair is which
  *   ALSASHIM_DEBUG  non-empty to log each substitution to stderr
@@ -215,6 +230,7 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -223,6 +239,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Opaque to us — we only ever hand it back to the real libasound getters,
  * so there's no need to pull in <alsa/asoundlib.h> (and no need to link
@@ -334,6 +351,7 @@ const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
     if (!real_get_name) return spoof_name();
 
     const char *real = real_get_name(obj);
+    if (strcmp(spoof_name(), "off") == 0) return real;
 
     int want = spoof_card();
     if (want >= 0) {
@@ -397,6 +415,8 @@ int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
 static unsigned int g_real_ch_max[2];
 /* The playback device Engine has open, as last opened through the rewrite below. */
 static _Atomic(snd_pcm_t *) g_main_pcm;
+/* And the capture device, for ALSASHIM_INPUT_WAV. */
+static _Atomic(snd_pcm_t *) g_capture_pcm;
 static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
 
 #define ALSASHIM_PCM_NONBLOCK 1
@@ -486,12 +506,19 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
             if (stream == ALSASHIM_STREAM_PLAYBACK || stream == ALSASHIM_STREAM_CAPTURE)
                 g_last_stream = stream;
             int ret = real_pcm_open(pcmp, plugged, stream, mode);
-            if (ret >= 0 && stream == ALSASHIM_STREAM_PLAYBACK && pcmp)
-                atomic_store(&g_main_pcm, *pcmp);
+            if (ret >= 0 && pcmp)
+                atomic_store(stream == ALSASHIM_STREAM_PLAYBACK ? &g_main_pcm
+                                                                : &g_capture_pcm, *pcmp);
             return ret;
         }
     }
-    return real_pcm_open(pcmp, name, stream, mode);
+    int ret = real_pcm_open(pcmp, name, stream, mode);
+    /* Left on hw: by ALSASHIM_NOPLUG, as MPC is, it is still the device the
+     * second output copies from, and the input replaces. */
+    if (ret >= 0 && name && strncmp(name, "hw:", 3) == 0 && pcmp)
+        atomic_store(stream == ALSASHIM_STREAM_PLAYBACK ? &g_main_pcm : &g_capture_pcm,
+                     *pcmp);
+    return ret;
 }
 
 /* --- second output ---------------------------------------------------- */
@@ -558,6 +585,62 @@ static int32_t sample_at(const void *buf, int format, unsigned long i) {
     }
 }
 
+/* The second card's playback controls are switched on, and a volume left at
+ * its minimum is raised to full. QEMU's hda codec starts muted at zero, and an
+ * app that never sets a mixer, as VX5 does not, would otherwise play into
+ * silence; MPC sets every card's itself. A volume someone has set is left
+ * alone, since on the Pi the second card is a real pair of headphones. Only
+ * hw: and plughw: names say which card to open. */
+static void cue_unmute(const char *pcm_name) {
+    typedef struct _snd_mixer snd_mixer_t;
+    typedef struct _snd_mixer_elem snd_mixer_elem_t;
+    char card[64];
+    const char *rest = !strncmp(pcm_name, "plughw:", 7) ? pcm_name + 7
+                       : !strncmp(pcm_name, "hw:", 3)   ? pcm_name + 3
+                                                        : NULL;
+    if (!rest) return;
+    snprintf(card, sizeof(card), "hw:%.*s", (int)strcspn(rest, ","), rest);
+
+    int (*open_)(snd_mixer_t **, int) = dlsym(RTLD_NEXT, "snd_mixer_open");
+    int (*attach)(snd_mixer_t *, const char *) = dlsym(RTLD_NEXT, "snd_mixer_attach");
+    int (*reg)(snd_mixer_t *, void *, void *) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_register");
+    int (*load)(snd_mixer_t *) = dlsym(RTLD_NEXT, "snd_mixer_load");
+    int (*close_)(snd_mixer_t *) = dlsym(RTLD_NEXT, "snd_mixer_close");
+    snd_mixer_elem_t *(*first)(snd_mixer_t *) = dlsym(RTLD_NEXT, "snd_mixer_first_elem");
+    snd_mixer_elem_t *(*next)(snd_mixer_elem_t *) = dlsym(RTLD_NEXT, "snd_mixer_elem_next");
+    int (*has_sw)(snd_mixer_elem_t *) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_has_playback_switch");
+    int (*set_sw)(snd_mixer_elem_t *, int) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_set_playback_switch_all");
+    int (*has_vol)(snd_mixer_elem_t *) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_has_playback_volume");
+    int (*range)(snd_mixer_elem_t *, long *, long *) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_get_playback_volume_range");
+    int (*set_vol)(snd_mixer_elem_t *, long) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_set_playback_volume_all");
+    /* Channel 0 is SND_MIXER_SCHN_FRONT_LEFT. */
+    int (*get_vol)(snd_mixer_elem_t *, int, long *) =
+        dlsym(RTLD_NEXT, "snd_mixer_selem_get_playback_volume");
+    if (!open_ || !attach || !reg || !load || !close_ || !first || !next || !has_sw ||
+        !set_sw || !has_vol || !range || !set_vol || !get_vol)
+        return;
+
+    snd_mixer_t *m = NULL;
+    if (open_(&m, 0) < 0 || !m) return;
+    if (attach(m, card) == 0 && reg(m, NULL, NULL) == 0 && load(m) == 0) {
+        for (snd_mixer_elem_t *e = first(m); e; e = next(e)) {
+            long lo, hi, now;
+            if (has_sw(e)) set_sw(e, 1);
+            if (has_vol(e) && range(e, &lo, &hi) == 0 && get_vol(e, 0, &now) == 0 &&
+                now <= lo)
+                set_vol(e, hi);
+        }
+        if (debug_on()) fprintf(stderr, "[alsashim] unmuted %s\n", card);
+    }
+    close_(m);
+}
+
 static void *cue_worker(void *arg) {
     (void)arg;
     typedef int (*set_params_t)(snd_pcm_t *, int, int, unsigned int, unsigned int,
@@ -590,6 +673,7 @@ static void *cue_worker(void *arg) {
                 continue;
             }
             rate = want;
+            cue_unmute(cue_pcm_name());
             atomic_store(&g_cue.r, atomic_load(&g_cue.w));
             if (debug_on())
                 fprintf(stderr, "[alsashim] second output on \"%s\" at %uHz\n",
@@ -683,6 +767,191 @@ long snd_pcm_writei(snd_pcm_t *pcm, const void *buf, snd_pcm_uframes_t frames) {
     return done;
 }
 
+/* --- input from a file ------------------------------------------------ */
+
+static struct {
+    unsigned char *data;    /* the data chunk, as stored */
+    unsigned long frames;
+    unsigned int channels, bytes, rate;  /* bytes per sample */
+    int is_float;
+    atomic_int state;       /* 0 not asked for, 1 loading, 2 loaded, 3 none */
+} g_wav;
+
+/* The capture stream the file is played into, and where in the file it is.
+ * pos is only touched by the thread the app reads on. */
+static struct {
+    atomic_uint channels, rate;
+    atomic_int format;
+    double pos;
+} g_in;
+
+static const char *input_wav_path(void) {
+    static const char *v;
+    static int looked;
+    if (!looked) { v = getenv("ALSASHIM_INPUT_WAV"); looked = 1; }
+    return (v && *v) ? v : NULL;
+}
+
+static unsigned int le16(const unsigned char *p) { return p[0] | (p[1] << 8); }
+static unsigned long le32(const unsigned char *p) {
+    return p[0] | (p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+/* Reads the whole file with plain read(), not stat() or mmap, so the shim
+ * still links against the old glibc of the legacy Engine builds. */
+static unsigned char *slurp(const char *path, unsigned long *len) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    unsigned long cap = 1 << 20, n = 0;
+    unsigned char *buf = malloc(cap);
+    for (;;) {
+        if (!buf) break;
+        if (n == cap) {
+            unsigned char *more = realloc(buf, cap * 2);
+            if (!more) { free(buf); buf = NULL; break; }
+            buf = more;
+            cap *= 2;
+        }
+        ssize_t got = read(fd, buf + n, cap - n);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        n += (unsigned long)got;
+    }
+    close(fd);
+    *len = n;
+    return buf;
+}
+
+static void *input_loader(void *arg) {
+    (void)arg;
+    const char *path = input_wav_path();
+    unsigned long len = 0;
+    unsigned char *f = slurp(path, &len);
+    const unsigned char *fmt = NULL, *data = NULL;
+    unsigned long data_len = 0;
+    if (f && len >= 12 && !memcmp(f, "RIFF", 4) && !memcmp(f + 8, "WAVE", 4)) {
+        for (unsigned long at = 12; at + 8 <= len;) {
+            unsigned long size = le32(f + at + 4);
+            if (size > len - at - 8) size = len - at - 8;
+            if (!memcmp(f + at, "fmt ", 4) && size >= 16) fmt = f + at + 8;
+            if (!memcmp(f + at, "data", 4)) { data = f + at + 8; data_len = size; }
+            at += 8 + size + (size & 1);
+        }
+    }
+    unsigned int tag = 0, channels = 0, bits = 0;
+    if (fmt) {
+        tag = le16(fmt);
+        channels = le16(fmt + 2);
+        bits = le16(fmt + 14);
+        /* WAVE_FORMAT_EXTENSIBLE carries the real tag at the head of its GUID. */
+        if (tag == 0xFFFE && le16(fmt + 16) >= 22) tag = le16(fmt + 24);
+    }
+    int ok = data && channels > 0 &&
+             ((tag == 1 && (bits == 16 || bits == 24 || bits == 32)) ||
+              (tag == 3 && bits == 32));
+    if (ok) {
+        g_wav.channels = channels;
+        g_wav.bytes = bits / 8;
+        g_wav.rate = (unsigned int)le32(fmt + 4);
+        g_wav.is_float = tag == 3;
+        g_wav.frames = data_len / (g_wav.channels * g_wav.bytes);
+        ok = g_wav.frames > 1 && g_wav.rate > 0;
+    }
+    if (ok) {
+        /* Keep only the samples. */
+        unsigned char *copy = malloc(data_len);
+        if (copy) memcpy(copy, data, data_len);
+        g_wav.data = copy;
+        ok = copy != NULL;
+    }
+    free(f);
+    if (ok)
+        fprintf(stderr, "[alsashim] input from \"%s\": %lu frames of %u channels at %uHz\n",
+                path, g_wav.frames, g_wav.channels, g_wav.rate);
+    else
+        fprintf(stderr, "[alsashim] no usable WAV at \"%s\"; input is silence\n", path);
+    atomic_store(&g_wav.state, ok ? 2 : 3);
+    return NULL;
+}
+
+static void input_start(void) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_wav.state, &expected, 1)) return;
+    pthread_t t;
+    if (pthread_create(&t, NULL, input_loader, NULL) == 0) pthread_detach(t);
+    else atomic_store(&g_wav.state, 3);
+}
+
+static float wav_sample(unsigned long frame, unsigned int ch) {
+    const unsigned char *p =
+        g_wav.data + (frame * g_wav.channels + ch % g_wav.channels) * g_wav.bytes;
+    switch (g_wav.bytes) {
+    case 2: return (int16_t)le16(p) / 32768.0f;
+    case 3: return (int32_t)((uint32_t)le32((const unsigned char[]){0, p[0], p[1], p[2]})) /
+                   2147483648.0f;
+    default:
+        if (g_wav.is_float) {
+            float v;
+            memcpy(&v, p, sizeof(v));
+            return v;
+        }
+        return (int32_t)(uint32_t)le32(p) / 2147483648.0f;
+    }
+}
+
+static void put_sample(void *buf, int format, unsigned long i, float v) {
+    if (v > 1.0f) v = 1.0f;
+    if (v < -1.0f) v = -1.0f;
+    switch (format) {
+    case ALSASHIM_FORMAT_S16_LE: ((int16_t *)buf)[i] = (int16_t)(v * 32767.0f); break;
+    case ALSASHIM_FORMAT_S32_LE: ((int32_t *)buf)[i] = (int32_t)(v * 2147483520.0f); break;
+    case ALSASHIM_FORMAT_FLOAT_LE: ((float *)buf)[i] = v; break;
+    }
+}
+
+/* Linear interpolation is enough here: the file is a test signal for the app
+ * to process, not a reference. */
+static void input_fill(void *buf, long frames) {
+    unsigned int channels = atomic_load(&g_in.channels);
+    unsigned int rate = atomic_load(&g_in.rate);
+    int format = atomic_load(&g_in.format);
+    if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
+        format != ALSASHIM_FORMAT_FLOAT_LE)
+        return;
+    int have = atomic_load(&g_wav.state) == 2 && rate > 0;
+    double step = have ? (double)g_wav.rate / rate : 0;
+    for (long f = 0; f < frames; f++) {
+        unsigned long at = have ? (unsigned long)g_in.pos : 0;
+        unsigned long next = at + 1 < g_wav.frames ? at + 1 : 0;
+        float frac = (float)(g_in.pos - (double)at);
+        for (unsigned int c = 0; c < channels; c++) {
+            float v = 0.0f;
+            if (have) {
+                float a = wav_sample(at, c), b = wav_sample(next, c);
+                v = a + (b - a) * frac;
+            }
+            put_sample(buf, format, (unsigned long)f * channels + c, v);
+        }
+        if (have) {
+            g_in.pos += step;
+            if (g_in.pos >= (double)g_wav.frames) g_in.pos -= (double)g_wav.frames;
+        }
+    }
+}
+
+typedef long (*readi_t)(snd_pcm_t *, void *, snd_pcm_uframes_t);
+
+/* The card still does the read, so the app keeps its clock. */
+long snd_pcm_readi(snd_pcm_t *pcm, void *buf, snd_pcm_uframes_t frames) {
+    static readi_t real_readi;
+    RESOLVE(real_readi, "snd_pcm_readi");
+    if (!real_readi) return -ENOSYS;
+    long done = real_readi(pcm, buf, frames);
+    if (done > 0 && pcm == atomic_load(&g_capture_pcm) && input_wav_path())
+        input_fill(buf, done);
+    return done;
+}
+
 int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
     typedef int (*get_format_t)(const snd_pcm_hw_params_t *, int *);
     typedef int (*get_rate_t)(const snd_pcm_hw_params_t *, unsigned int *, int *);
@@ -697,11 +966,19 @@ int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
     if (!real_hw_params) return -ENOSYS;
 
     int ret = real_hw_params(pcm, params);
-    if (ret < 0 || pcm != atomic_load(&g_main_pcm) || !get_channels || !get_format ||
-        !get_rate)
-        return ret;
+    if (ret < 0 || !get_channels || !get_format || !get_rate) return ret;
     unsigned int channels = 0, rate = 0;
     int format = -1;
+    if (pcm == atomic_load(&g_capture_pcm) && input_wav_path() &&
+        get_channels(params, &channels) == 0 && get_format(params, &format) == 0 &&
+        get_rate(params, &rate, NULL) == 0) {
+        atomic_store(&g_in.channels, channels);
+        atomic_store(&g_in.format, format);
+        atomic_store(&g_in.rate, rate);
+        input_start();
+        return ret;
+    }
+    if (pcm != atomic_load(&g_main_pcm)) return ret;
     if (get_channels(params, &channels) == 0 && get_format(params, &format) == 0 &&
         get_rate(params, &rate, NULL) == 0) {
         atomic_store(&g_fmt_channels, channels);

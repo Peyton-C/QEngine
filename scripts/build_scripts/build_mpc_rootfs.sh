@@ -10,16 +10,18 @@
 # rather than acvs.service. Which app this is gets read off the rootfs. MPC needs far less doing to it than Engine
 # does, because it drives KMS directly and links no Mali/EGL, and that holds on
 # both: /usr/bin/MPC in 3.10.0 Gen 2 links libdrm and nothing GL, and no libteec,
-# so none of the arm64 Engine stack (drmatomic, teeshim, alsashim) applies.
+# so neither drmatomic nor teeshim applies. alsashim does, for sound only.
 #
 # Steps:
 #   1. Extract the rootfs partition out of the firmware image (extract_rootfs.sh).
 #   2. Grow the image and its filesystem to a runtime-usable size.
 #   3. Block telemetry (docs/BLOCKING_TELEMETRY.md).
-#   4. Build touchbridge and dtshim for $ARCH (the shared sources under shims/
-#      are architecture-independent — see the build step below).
+#   4. Build touchbridge, dtshim, mpcsurface, alsashim and vx5surface for $ARCH (the shared sources
+#      under shims/ are architecture-independent — see the build step below).
 #   5. Copy them into /root, wire touchbridge_mpc.service ahead of the app's
 #      unit, and preload dtshim into that unit so the app can read a product code.
+#      MPC and MPC Sample also get mpcsurface, a virtual control surface, and VX5
+#      gets vx5surface, its panel and MIDI port.
 #   6. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
 #      shell behind the fullscreen display.
@@ -139,9 +141,9 @@ if "$DEBUGFS" -R 'stat /usr/bin/launch-ac50' "$OUT_PATH" 2>/dev/null | grep -q '
     [ "$ARCH" = arm64 ] || { echo "ERROR: AZ07 applications require ARCH=arm64." >&2; exit 1; }
     DT_SOC="SOC_RK3566"
 fi
-BUILD_PCMHOLD=0
+BUILD_VX5SURFACE=0
 if "$DEBUGFS" -R 'stat /usr/bin/HV03' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
-    BUILD_PCMHOLD=1
+    BUILD_VX5SURFACE=1
 fi
 
 ### 2. Grow the image and filesystem #########################################
@@ -158,9 +160,8 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # means an edited .c can never be shadowed by a stale .so.
 #
 # debian:bookworm for glibc 2.36, comfortably older than the guest's
-# — see docs/BUILDING.md's "Toolchain for
-# cross-compiling shims". One container for all of them, since the apt-get
-# dominates the cost.
+# — see docs/BUILDING.md, "Toolchain". One container for all
+# of them, since the apt-get dominates the cost.
 
 echo "--- building shims from source ---"
 # `docker run --platform` does not re-pull: if the tag is already cached for a
@@ -171,7 +172,7 @@ docker run --rm --platform "$SHIM_PLATFORM" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e SHIM_MACHINE="$SHIM_MACHINE" \
     -e DT_SOC="$DT_SOC" \
-    -e BUILD_PCMHOLD="$BUILD_PCMHOLD" \
+    -e BUILD_VX5SURFACE="$BUILD_VX5SURFACE" \
     -v "$SHIMS_DIR:/shims" \
     debian:bookworm bash -c '
         set -e
@@ -187,16 +188,29 @@ docker run --rm --platform "$SHIM_PLATFORM" \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
         gcc -O2 -Wall \
             -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
-        if [ "$BUILD_PCMHOLD" = 1 ]; then
+        # Built for every app this script handles and installed only for MPC.
+        # It needs the kernel sound headers, which libc6-dev brings, and no
+        # alsa-lib: it answers below it. (No apostrophes in here, this is all
+        # one single-quoted string.)
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /shims/mpcsurface/mpcsurface.c -ldl -lpthread
+        # For MPC and VX5, which it gives sound through a second card. It
+        # resolves alsa-lib out of the app it is preloaded into.
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/alsashim/alsashim_$SHIM_ARCH.so /shims/alsashim/alsashim.c -ldl -lpthread
+        if [ "$BUILD_VX5SURFACE" = 1 ]; then
             apt-get install -y -qq libasound2-dev >/dev/null 2>&1
-            gcc -O2 -Wall -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
+            gcc -O2 -Wall -o /shims/vx5surface/vx5surface_$SHIM_ARCH \
+                /shims/vx5surface/vx5surface.c -lasound
         fi
     '
 
 # The shared shims are checked separately: they live outside SHIMS_DIR, and each
 # one is named for the architecture it was built for rather than for a device.
 for artifact in touchbridge/touchbridge_$SHIM_ARCH \
-                dtshim/dtshim_$SHIM_ARCH.so; do
+                dtshim/dtshim_$SHIM_ARCH.so \
+                mpcsurface/mpcsurface_$SHIM_ARCH.so \
+                alsashim/alsashim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
 done
@@ -352,43 +366,153 @@ for _unit in /mnt/rootfs/etc/systemd/system/$APP_UNIT \
         exit 1
     fi
 done
+# MPC and Force also get their control surface. It is a preload because MPC looks
+# for its panel among the sound cards, as a USB card with Akai's ids, and opens it
+# as rawmidi, where Engine's midisurface only has to be a sequencer client. It picks
+# the panel from the product code written above and does nothing for a code it does
+# not know. MPC Sample looks the same way for a serial card named "Control Surface",
+# which mpcsurface is too, as AC50. VX5 reads its panel as input devices, which
+# vx5surface supplies as a service below. The drum module reaches its panel some
+# other way, not looked at yet.
+PRELOAD=/root/dtshim.so
+if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
+    cp -a /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /mnt/rootfs/root/mpcsurface.so
+    chmod 755 /mnt/rootfs/root/mpcsurface.so
+    PRELOAD="$PRELOAD:/root/mpcsurface.so"
+fi
+if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ] ||
+   [ "$APP_UNIT" = HV03.service ]; then
+    # alsashim carries the app's sound out to QEMU's card, see below.
+    cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
+    chmod 755 /mnt/rootfs/root/alsashim.so
+    PRELOAD="$PRELOAD:/root/alsashim.so"
+fi
 mkdir -p "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d"
-cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<'EOF'
+cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 [Service]
-Environment=LD_PRELOAD=/root/dtshim.so
+Environment=LD_PRELOAD=$PRELOAD
 EOF
 
+if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
+    echo "--- giving MPC a sound card, and its output to QEMU's ---"
+    # MPC opens its internal card by udev path, /dev/snd/by-path/platform-sound, as
+    # VX5 does. With nothing there 3.10.0 puts "No internal audio device could be
+    # found!" over the UI, and only a touch closes it. It needs a duplex card that
+    # keeps time at 128-frame periods, its only size: it crashes within a second
+    # on 256 or 512. QEMU's hda cannot be that card, since it moves samples every
+    # 10 ms and the coreaudio backend has no capture at all, and snd-aloop moves in
+    # 4 ms jiffies, on which MPC's streams stall a tick after starting. snd-dummy
+    # keeps time on hrtimers, so MPC gets that, built by get_kernel.sh, and
+    # alsashim copies the first output pair of everything MPC plays onto the hda
+    # card, which run_qemu.sh gives the mpc family. Capture is silent.
+    #
+    # MPC Sample 1.3.0 opens the same path at the same period, but as four
+    # channels of S32_LE at 44.1 kHz, which snd-dummy's own card does not offer.
+    # get_kernel.sh adds a qengine-ac50 model that does, chosen here only for the
+    # Sample, so Gen 2 keeps the card it was heard on. Its first pair is the
+    # speaker and line out and follows MAIN VOLUME, which mpcsurface reports.
+    DUMMY_ARGS=""
+    [ "$APP_UNIT" = ac50.service ] && DUMMY_ARGS=" model=qengine-ac50"
+    mkdir -p /mnt/rootfs/etc/udev/rules.d
+    cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-mpc-audio.rules <<'EOF'
+SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Dummy", SYMLINK+="snd/by-path/platform-sound"
+EOF
+    cat > /mnt/rootfs/etc/systemd/system/qengine-mpc-audio.service <<EOF
+[Unit]
+Description=Supply MPC with a dummy card as its internal audio
+After=systemd-udevd.service
+Before=$APP_UNIT
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe snd-dummy$DUMMY_ARGS
+ExecStart=/usr/bin/udevadm settle --timeout=10
+EOF
+    # alsashim does only the second output here: MPC's card keeps its own name
+    # and its hw: device, and its ring and period stay as MPC asks. QEMU's card
+    # is hda, id Intel, on arm64, and virtio-sound, id SoundCard, on armhf, whose
+    # kernel has no hda driver (arch_audio_devices in scripts/qemu/arch_devices.sh).
+    QEMU_CARD=Intel
+    [ "$ARCH" = armhf ] && QEMU_CARD=SoundCard
+    cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
+Environment=ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
+Environment=ALSASHIM_CUE_PCM=plughw:$QEMU_CARD ALSASHIM_CUE_CHANNEL=1
+
+[Unit]
+Wants=qengine-mpc-audio.service
+After=qengine-mpc-audio.service
+EOF
+fi
+
 if [ "$APP_UNIT" = HV03.service ]; then
-    # VX5 1.2.2 crashes without onboard audio. The same loopback/pcmhold pairing
-    # Prime uses supplies its declared stereo 48 kHz card, with capture fed silence
-    # and playback discarded. VX5 finds this card by udev path, not Prime's HV01 id.
-    cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
-    chmod 755 /mnt/rootfs/root/pcmhold
+    echo "--- giving VX5 a sound card, its output to QEMU's, and its panel ---"
+    # VX5 1.2.2 crashes without onboard audio. It opens the card by the same udev
+    # path as MPC, as stereo S32_LE at 48 kHz in 128-frame periods, 2.7 ms, which
+    # is MPC's problem again: on snd-aloop's jiffies timer VX5 logs XRUNs both
+    # ways. snd-dummy's qengine-ac50 model offers that shape too, and keeps time.
+    # alsashim plays VX5's output pair on QEMU's card and, because QEMU on macOS
+    # cannot record, replaces what VX5 hears with /data/input.wav, or silence
+    # while there is none.
     mkdir -p /mnt/rootfs/etc/udev/rules.d
     cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-vx5-audio.rules <<'EOF'
-SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Loopback", SYMLINK+="snd/by-path/platform-sound"
+SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Dummy", SYMLINK+="snd/by-path/platform-sound"
 EOF
     cat > /mnt/rootfs/etc/systemd/system/qengine-vx5-audio.service <<'EOF'
 [Unit]
-Description=Supply VX5 with stereo loopback audio
+Description=Supply VX5 with a dummy card as its onboard audio
+After=systemd-udevd.service
+Before=HV03.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe snd-dummy model=qengine-ac50
+ExecStart=/usr/bin/udevadm settle --timeout=10
+EOF
+
+    # The panel, phantom-power key and volume knob as uinput devices,
+    # linked to the paths HV03 opens, and the f_midi port it binds by name.
+    # QEMU's own gpio-keys device already has the phantom key's path, so ours
+    # outranks it.
+    cp -a /shims/vx5surface/vx5surface_$SHIM_ARCH /mnt/rootfs/root/vx5surface
+    chmod 755 /mnt/rootfs/root/vx5surface
+    cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-vx5-panel.rules <<'EOF'
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="QEngine VX5 panel", SYMLINK+="input/by-path/platform-fe620000.spi-cs-0-event"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="QEngine VX5 volume", SYMLINK+="input/by-path/platform-adc-joystick-event"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="QEngine VX5 phantom power", SYMLINK+="input/by-path/platform-gpio-keys-event", OPTIONS+="link_priority=10"
+EOF
+    cat > /mnt/rootfs/etc/systemd/system/vx5surface.service <<'EOF'
+[Unit]
+Description=Virtual VX5 panel and USB MIDI port
 After=systemd-udevd.service
 Before=HV03.service
 
 [Service]
 Type=simple
-ExecStartPre=/sbin/modprobe snd-aloop
-# The initrd loads snd-aloop before the rootfs rules are available.
-ExecStartPre=/usr/bin/udevadm trigger --subsystem-match=sound --action=add
-ExecStartPre=/usr/bin/udevadm settle --timeout=10
-ExecStart=/root/pcmhold Loopback 2 2 48000
-ExecStartPost=/bin/sleep 1
+# Driven by hand with: echo 'press autotune' > /run/vx5surface.fifo
+# Held open read-write so a writer closing it is not the end of input.
+ExecStartPre=/bin/sh -c 'rm -f /run/vx5surface.fifo && mkfifo /run/vx5surface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/vx5surface.fifo; exec /root/vx5surface < /run/vx5surface.fifo'
 Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
 EOF
+    ln -sf ../vx5surface.service \
+        /mnt/rootfs/etc/systemd/system/multi-user.target.wants/vx5surface.service
+
     cat >> /mnt/rootfs/etc/systemd/system/HV03.service.d/override.conf <<'EOF'
+Environment=ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
+Environment=ALSASHIM_CUE_PCM=plughw:Intel ALSASHIM_CUE_CHANNEL=1
+Environment=ALSASHIM_INPUT_WAV=/data/input.wav
 
 [Unit]
 Requires=qengine-vx5-audio.service
 After=qengine-vx5-audio.service
+Wants=vx5surface.service
+After=vx5surface.service
 
 [Service]
 # VX5 1.2.2's DSP worker can start with a garbage sample count. Zero fresh

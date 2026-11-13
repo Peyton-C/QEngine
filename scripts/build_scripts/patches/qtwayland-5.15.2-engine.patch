@@ -1,0 +1,132 @@
+Subject: [PATCH] client: take a mouse as touch, and report a fixed screen size
+Applies-to: qtwayland-everywhere-src-5.15.2 (download.qt.io release tarball)
+Modified-files: src/client/qwaylandscreen.cpp, src/client/qwaylandwindow.cpp
+                (LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, per their headers)
+Modified-by: Peyton Cashin <66343323+Peyton-C@users.noreply.github.com>, 2026-11-13
+License: offered under the license of each file it modifies. This patch is NOT
+         covered by the MIT LICENSE at the root of this repository. See
+         ./README.md.
+
+The two changes from qtwayland-6.7.2-engine.patch that make Engine usable as a
+window, for Engine OS 4.3.4 and earlier, which ships Qt 5.15.2. The other two
+are not needed here: Qt 5's client builds without QtGui's cursor feature as it
+is, and has no native interfaces to define.
+
+  * QT_WAYLAND_MOUSE_AS_TOUCH=1: QWaylandWindow delivers the left mouse button
+    as a single touch point. Engine ignores mouse clicks, and under eglfs
+    touchbridge does the same conversion; under a compositor the compositor
+    owns the mouse. Both ways Qt delivers the mouse: plain, and through the
+    frame it draws itself where the compositor draws none (GNOME).
+
+  * QT_WAYLAND_SCREEN_SIZE=WxH: QWaylandScreen reports that size. Engine lays
+    itself out for the screen and not its window, so in a window smaller than
+    the output it was cropped; under eglfs the two are always the same.
+--- a/src/client/qwaylandscreen.cpp	2026-11-13 05:01:55.909692376 +0000
++++ b/src/client/qwaylandscreen.cpp	2026-11-13 05:01:55.910800417 +0000
+@@ -127,6 +127,19 @@
+ 
+ QRect QWaylandScreen::geometry() const
+ {
++    // QT_WAYLAND_SCREEN_SIZE=WxH reports the screen as that size, at the
++    // output's position, for an application that lays itself out for the
++    // screen and not its window (Engine) in a window smaller than the output.
++    static const QSize sizeOverride = [] {
++        const QList<QByteArray> wh = qgetenv("QT_WAYLAND_SCREEN_SIZE").split('x');
++        return wh.size() == 2 ? QSize(wh[0].toInt(), wh[1].toInt()) : QSize();
++    }();
++    if (sizeOverride.isValid() && !sizeOverride.isEmpty()) {
++        const QPoint origin = zxdg_output_v1::isInitialized() ? mXdgGeometry.topLeft()
++                                                               : mGeometry.topLeft();
++        return QRect(origin, sizeOverride);
++    }
++
+     if (zxdg_output_v1::isInitialized()) {
+         return mXdgGeometry;
+     } else {
+--- a/src/client/qwaylandwindow.cpp	2026-11-13 05:01:55.910230209 +0000
++++ b/src/client/qwaylandwindow.cpp	2026-11-13 05:01:55.910853209 +0000
+@@ -61,6 +61,7 @@
+ #include <QGuiApplication>
+ #include <qpa/qwindowsysteminterface.h>
+ #include <QtGui/private/qwindow_p.h>
++#include <QtGui/QTouchDevice>
+ 
+ #include <QtCore/QDebug>
+ #include <QtCore/QThread>
+@@ -879,6 +880,58 @@
+     return nullptr;
+ }
+ 
++// QT_WAYLAND_MOUSE_AS_TOUCH=1 delivers the left mouse button as a single touch
++// point, for an interface that only acts on touch (Engine) driven with a mouse
++// under a compositor. Hover and the other buttons stay mouse events. local and
++// global are the window's own: with Qt drawing the frame (bradient, where the
++// compositor will not, as on GNOME) they are the surface's less its margins.
++static bool deliverMouseAsTouch(QWindow *window, const QWaylandPointerEvent &e,
++                                const QPointF &local, const QPointF &global)
++{
++    static const bool enabled = qEnvironmentVariableIntValue("QT_WAYLAND_MOUSE_AS_TOUCH");
++    if (!enabled || !window->handle())
++        return false;
++    static QTouchDevice *device = [] {
++        auto *d = new QTouchDevice;
++        d->setName(QStringLiteral("mouse as touch"));
++        d->setType(QTouchDevice::TouchScreen);
++        d->setCapabilities(QTouchDevice::Position | QTouchDevice::Area
++                           | QTouchDevice::NormalizedPosition);
++        d->setMaximumTouchPoints(1);
++        QWindowSystemInterface::registerTouchDevice(d);
++        return d;
++    }();
++    static bool down = false;
++
++    Qt::TouchPointState state;
++    if (e.type == QEvent::MouseButtonPress && e.button == Qt::LeftButton) {
++        if (down)
++            return true;
++        down = true;
++        state = Qt::TouchPointPressed;
++    } else if (e.type == QEvent::MouseButtonRelease && e.button == Qt::LeftButton) {
++        if (!down)
++            return true;
++        down = false;
++        state = Qt::TouchPointReleased;
++    } else if (e.type == QEvent::MouseMove && down) {
++        state = Qt::TouchPointMoved;
++    } else {
++        return false;
++    }
++
++    const QRect geometry = window->handle()->geometry();
++    QWindowSystemInterface::TouchPoint point;
++    point.id = 0;
++    point.state = state;
++    point.pressure = state == Qt::TouchPointReleased ? 0 : 1;
++    point.area = QRectF(global - QPointF(4, 4), QSizeF(8, 8));
++    point.normalPosition = QPointF(local.x() / qMax(1, geometry.width()),
++                                   local.y() / qMax(1, geometry.height()));
++    QWindowSystemInterface::handleTouchEvent(window, e.timestamp, device, { point }, e.modifiers);
++    return true;
++}
++
+ void QWaylandWindow::handleMouse(QWaylandInputDevice *inputDevice, const QWaylandPointerEvent &e)
+ {
+     if (e.type == QEvent::Leave) {
+@@ -904,6 +957,8 @@
+             case QEvent::MouseButtonPress:
+             case QEvent::MouseButtonRelease:
+             case QEvent::MouseMove:
++                if (deliverMouseAsTouch(window(), e, e.local, e.global))
++                    break;
+                 QWindowSystemInterface::handleMouseEvent(window(), e.timestamp, e.local, e.global, e.buttons, e.button, e.type, e.modifiers);
+                 break;
+             case QEvent::Wheel:
+@@ -967,6 +1022,8 @@
+             case QEvent::MouseButtonPress:
+             case QEvent::MouseButtonRelease:
+             case QEvent::MouseMove:
++                if (deliverMouseAsTouch(window(), e, localTranslated, globalTranslated))
++                    break;
+                 QWindowSystemInterface::handleMouseEvent(window(), e.timestamp, localTranslated, globalTranslated, e.buttons, e.button, e.type, e.modifiers);
+                 break;
+             case QEvent::Wheel: {

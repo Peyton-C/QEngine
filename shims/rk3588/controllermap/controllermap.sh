@@ -6,7 +6,7 @@
 #
 # Engine only binds a control surface that answers its MIDI device-inquiry
 # handshake with inMusic's manufacturer id and this product's id (0x27) — see
-# docs/ENGINEOS.md. A third-party controller cannot answer that, so it can
+# docs/engine/AUDIO_MIDI.md. A third-party controller cannot answer that, so it can
 # never be bound directly, and this rootfs's KnownDevices table has exactly one
 # entry that maps to Engine's decks. That leaves one usable arrangement:
 #
@@ -182,6 +182,15 @@ if [ -z "$MATCH_NAME" ]; then
 fi
 
 SRC_DIR="$MAP_DIR/mappings/$MATCH_NAME"
+# Engine 4.x (Qt 5) has an older set of control-surface components, and a file
+# written for 5.x does not load there at all. Its vendor mapping tells the two
+# apart, by the pad-mode component 4.x has and 5.x renamed. A mapping with an
+# engine4/ directory carries its 4.x files there.
+if [ -d "$SRC_DIR/engine4" ] &&
+        grep -q 'PerformanceModes' "$TARGET_DIR/${PRODUCT_CODE}_Controller_Assignments.qml.vendor" 2>/dev/null; then
+    SRC_DIR="$SRC_DIR/engine4"
+    log "this is Engine 4.x; using $MATCH_NAME/engine4"
+fi
 if [ ! -f "$SRC_DIR/${PRODUCT_CODE}_Controller_Assignments.qml" ]; then
     # Not an error: a mapping only exists for the products someone has written
     # one for. Make sure no other controller's mapping is left installed.

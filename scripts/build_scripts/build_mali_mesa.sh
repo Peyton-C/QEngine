@@ -3,12 +3,21 @@
 # armv7 Engine OS 4.3.4 and earlier (and HeadRush), so that a guest renders through
 # virgl instead of having no working GL at all.
 #
-# Usage: build_mali_mesa.sh [--force]
+# Usage: build_mali_mesa.sh [--extra-drivers <list>] [--platforms wayland] [--force]
 #   Writes build/mesa-<ver>-armhf-mali/, laid out as the rootfs's /usr/lib:
 #   libEGL, libGLESv1_CM, libGLESv2, libgbm and libglapi, dri/ with virtio_gpu,
 #   kms_swrast and swrast, and a libmali.so.14.0 that stands in for the blob.
 #   The version is MALI_MESA_VERSION from detect_mesa.sh. Cached like
 #   build_virgl_mesa.sh's output; --force rebuilds. Requires Docker.
+#
+#   --extra-drivers adds gallium drivers for real hardware, `v3d,vc4` for a
+#   Raspberry Pi, cached as mesa-<ver>-armhf-mali+v3d+vc4/. The whole set goes in
+#   together on the Pi, since a DRI driver has to come from the same build as the
+#   libglapi beside it.
+#
+#   --platforms wayland builds libEGL with the Wayland platform, for Engine as a
+#   window (build_qt5_qtwayland.sh), cached with a +wayland suffix. It also
+#   copies out the libwayland and libffi the rootfs lacks, into wayland/.
 #
 # Why a whole Mesa rather than a driver, as build_virgl_mesa.sh builds: these
 # rootfs images have no Mesa to plug a driver into. libmali.so.14.0 provides EGL
@@ -36,8 +45,12 @@ OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
 FORCE=0
+EXTRA_DRIVERS=""
+PLATFORMS=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --extra-drivers) EXTRA_DRIVERS="$2"; shift 2 ;;
+        --platforms) PLATFORMS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -48,6 +61,16 @@ done
 . "$REPO_ROOT/scripts/build_scripts/detect_mesa.sh"
 MESA_VER="$MALI_MESA_VERSION"
 OUT="$OUT_DIR/mesa-$MESA_VER-armhf-mali"
+GALLIUM_DRIVERS=virgl,swrast
+if [ -n "$EXTRA_DRIVERS" ]; then
+    GALLIUM_DRIVERS="$GALLIUM_DRIVERS,$EXTRA_DRIVERS"
+    OUT="$OUT+${EXTRA_DRIVERS//,/+}"
+fi
+case "$PLATFORMS" in
+    "") ;;
+    wayland) OUT="$OUT+wayland" ;;
+    *) echo "ERROR: --platforms takes only wayland." >&2; exit 1 ;;
+esac
 
 if [ -s "$OUT/libmali.so.14.0" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
@@ -67,7 +90,7 @@ docker pull -q --platform "$PLATFORM" debian:bookworm >/dev/null
 STAGE="$(mktemp -d /tmp/build-mali-mesa.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 
-docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -v "$STAGE:/out" \
+docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -e PLATFORMS="$PLATFORMS" -v "$STAGE:/out" \
     debian:bookworm bash -euo pipefail -c '
         export DEBIAN_FRONTEND=noninteractive
         dpkg --add-architecture armhf
@@ -79,6 +102,10 @@ docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -v "$STAGE:/out" 
             meson ninja-build pkg-config python3 python3-mako python3-yaml \
             flex bison xz-utils ca-certificates curl \
             libdrm-dev:armhf libexpat1-dev:armhf zlib1g-dev:armhf >/dev/null
+        # wayland-scanner runs on the builder, the library on the target.
+        [ -z "$PLATFORMS" ] || apt-get install -y -qq --no-install-recommends \
+            libwayland-bin wayland-protocols libwayland-dev:armhf \
+            libwayland-egl-backend-dev:armhf >/dev/null
 
         curl -fsSL "https://archive.mesa3d.org/mesa-$MESA_VER.tar.xz" -o /mesa.tar.xz
         mkdir /src && tar xf /mesa.tar.xz -C /src --strip-components=1
@@ -105,8 +132,9 @@ EOF
         export PKG_CONFIG_SYSROOT_DIR=/
 
         # --prefix /usr --libdir lib, because the paths are compiled in: libgbm
-        # and libEGL look for drivers in /usr/lib/dri. No platforms: drm (gbm),
-        # surfaceless and device are always built, and eglfs_kms needs only gbm.
+        # and libEGL look for drivers in /usr/lib/dri. No platforms unless asked:
+        # drm (gbm), surfaceless and device are always built, and eglfs_kms needs
+        # only gbm.
         # gles1 because the blob provided it, though nothing in the rootfs links it.
         #
         # libstdc++ is linked in statically. The GCC 12 headers on bookworm make the
@@ -118,9 +146,9 @@ EOF
         meson setup build --cross-file /cross.txt --prefix=/usr --libdir=lib \
             -Dcpp_link_args=-static-libstdc++ \
             -Dbuildtype=release \
-            -Dgallium-drivers=virgl,swrast \
+            -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
-            -Dplatforms= \
+            -Dplatforms="$PLATFORMS" \
             -Dglx=disabled \
             -Dglvnd=false \
             -Degl=enabled \
@@ -156,6 +184,14 @@ EOF
         cp -a "$L"/lib*.so.* /out/mali/
         mkdir /out/mali/dri
         cp -a "$L"/dri/*_dri.so /out/mali/dri/
+        # The rootfs has neither libwayland nor, before 4.3, libffi; these are the
+        # ones this libEGL was built against.
+        if [ -n "$PLATFORMS" ]; then
+            mkdir /out/mali/wayland
+            T=/usr/lib/arm-linux-gnueabihf
+            cp -L $T/libwayland-client.so.0 $T/libwayland-server.so.0 $T/libwayland-cursor.so.0 \
+                $T/libwayland-egl.so.1 $T/libffi.so.8 /out/mali/wayland/
+        fi
     '
 
 M="$STAGE/mali"

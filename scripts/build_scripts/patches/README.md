@@ -3,6 +3,7 @@
 |---|---|---|---|
 | `qemu-egl-headless-macos.patch` | `utmapp/qemu` @ `7311c3651` (`utm-edition`, QEMU 10.0.12) | `ui/egl-helpers.c`, `ui/meson.build` | LGPL-2.1-or-later; GPL-2.0-or-later |
 | `angle-standalone-dylib-fallback.patch` | `utmapp/WebKit` @ `ed78ab6e` | `Source/ThirdParty/ANGLE/src/common/system_utils.cpp` | BSD-3-Clause |
+| `qtwayland-5.15.2-engine.patch` | `qtwayland-everywhere-src-5.15.2` (release tarball) | `src/client/qwaylandscreen.cpp`, `src/client/qwaylandwindow.cpp` | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
 | `qtwayland-6.7.2-engine.patch` | `qtwayland-everywhere-src-6.7.2` (release tarball) | `src/client/*`, `src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp` | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only; `CMakeLists.txt` BSD-3-Clause |
 | `qt55-softwarecontext.patch` | `qtdeclarative-render2d-opensource-src-5.7.1` (release tarball) | `src/plugins/scenegraph/softwarecontext/*` | GPL-3.0-or-later |
 

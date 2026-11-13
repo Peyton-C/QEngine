@@ -22,6 +22,8 @@ scripts/pi/stage_for_pi.sh --name jp24-5.1.1
 rsync -a --sparse build/pi-stage/ <user>@<pi>:qengine/
 ```
 
+An armv7 instance stages the same way and runs as 32-bit programs on the Pi's kernel. Prime 4 5.3.0 as `JC11` ran on the display and as a window in sway, with v3d and HDMI audio. Its qtwayland builds in an emulated armv7 container, which takes about 45 minutes on an M-series Mac. Stage it into a directory of its own on the Pi and point `QENGINE_DIR` at it, with `ENGINE_ROOT` set in its `pi.env`, so that it sits beside an arm64 one. Prime GO 4.3.0 as `JC11`, the Qt 5 Engine of 4.3.4 and earlier, runs the same ways, on the display and as a window, with v3d and HDMI audio. Its stage carries the Mesa that replaces the Mali driver, rebuilt with the Pi's drivers, and with `--wayland` Qt 5's Wayland plugin from [build_qt5_qtwayland.sh](../build_scripts/build_qt5_qtwayland.sh), which cross-compiles in a few minutes. An armv7 instance built before its eFuse fixtures were added to `write_fake_dt.sh` aborts at start-up; rebuild it with `new_instance.sh --force`.
+
 ## On the Pi
 
 ```sh
@@ -138,6 +140,51 @@ sudo systemctl daemon-reload && sudo systemctl enable qengine-sway rx3
 
 - sway takes tty1, so there is no login prompt on the display; `chroot-down.sh` leaves tty1 alone while `qengine-sway` is running.
 - To boot Engine alone again: `sudo rm -r /etc/systemd/system/qengine.service.d && sudo systemctl disable qengine-sway rx3`.
+
+## MPC
+[chroot-mpc.sh](chroot-mpc.sh) runs a Gen 1 or Gen 2 MPC, MPC Sample or HeadRush VX5 instance the same way, on any arm64 Linux machine with a 4K-page kernel, telling them apart by the rootfs. Gen 1 is armv7, and needs a kernel and CPU that run 32-bit programs, as a Pi 5's do. MPC 3.10.0 ran as `ACVA3` in an Ubuntu 26.04 VM under UTM, and as `ACVA3` and Gen 1 `ACVA` side by side as windows in sway on a Pi 5.
+
+```sh
+scripts/pi/stage_for_pi.sh --name mpc-gen2-3.10.0   # its two disks to build/pi-stage/mpc/, and kmsshim
+rsync -a --sparse build/pi-stage/ <user>@<host>:qengine/
+sudo qengine/chroot-mpc.sh          # mounts on first use, then starts or restarts MPC
+sudo qengine/chroot-mpc.sh down     # stops MPC and unmounts everything
+```
+
+MPC needs nothing staged beyond its rootfs and data disk to run on the display. It draws without a GPU, and the instance already carries its shims. The host kernel has to have `snd-dummy`, which becomes MPC's internal card, as in a guest; Ubuntu's does, and the Pi's has not been checked. MPC's main output is copied to `AUDIO_CARD`.
+
+- MPC is restarted whenever it quits, as on the device, because it quits to switch between controller mode and standalone. Shutting down from MPC's own dialog stops it until the next `chroot-mpc.sh`; the machine stays up.
+- While MPC runs, the power button opens its shutdown dialog instead of turning the machine off.
+- In a VM, the QEMU tablet is the touchscreen. Elsewhere `touchbridge --mouse` turns a USB mouse into one, and no pointer is drawn.
+- Logs are `mpc.log`, `touchbridge.log` and `mpcsurface.log` in `/srv/mpc/run/`. The panel takes commands on `/srv/mpc/run/mpcsurface.fifo`, as in a guest.
+- Engine and MPC both take over the display, so run one at a time.
+- A Pi has two DRM devices, and which one MPC opens has not been tried.
+- MPC Sample and VX5 need `snd-dummy` with the `qengine-ac50` model, which no distribution kernel has: build it against the host kernel as [get_kernel.sh](../build_scripts/get_kernel.sh) does for guests and install it under `updates/`. Its default model is the stock card, so MPC keeps working. Sample 1.3.0 ran as a window in GNOME, with sound, in the UTM VM; set `MPC_DIR` to its disks. It has no touchscreen, and its panel is `mpcsurface` as in a guest.
+- Several can run at once as windows, each with its own `MPC_ROOT` and `MPC_DIR`, and Engine beside them. `DUMMY_MODEL=qengine-ac50` puts all three on one card, which MPC also accepts; each app gets a seat of its own, so one window's input is not another's. Only one app at a time gets `AUDIO_CARD`, the first to open it. Tried in the UTM VM with MPC, Sample, VX5 and Engine 5.3.0 as JP24, Engine playing into `Loopback`.
+- VX5 1.2.2 ran the same way, hearing the WAV file in its `/data` as its input. `chroot-mpc.sh` starts `vx5surface` as its panel, driven through `/srv/mpc/run/vx5surface.fifo`, and writes the udev rule that links its devices to the paths the VX5 opens.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `MPC_DIR` | `~/qengine/mpc` | where `rootfs.img` and `data_disk.img` are |
+| `MPC_ROOT` | `/srv/mpc` | where the rootfs is mounted |
+| `AUDIO_CARD` | first USB audio card, else the first real card | as for Engine |
+| `MPC_TB_ARGS` | none with a QEMU tablet, `--mouse` without | touchbridge options |
+| `PLATFORM` | the display | `wayland` to run MPC as a window, as below |
+
+### MPC under Wayland
+MPC draws its own frames and page-flips them through KMS, so a compositor holding the display would leave it nowhere to draw. With `PLATFORM=wayland`, [kmsshim](../../shims/kmsshim/kmsshim.c) is preloaded into MPC as its display: a fake KMS device whose frames [kmspresent](../../shims/kmsshim/kmspresent.c), on the host, shows as an ordinary window. kmspresent is also MPC's touchscreen, from the window's clicks and touches. Log in to a desktop, or start sway as for Engine, then:
+
+```sh
+sudo PLATFORM=wayland qengine/chroot-mpc.sh
+```
+
+- The window can be any size. The app keeps its aspect ratio inside it, and clicks are scaled back. A small screen opens at a whole multiple of itself, the Sample's 320x240 at 960x720.
+- kmspresent draws its frame with libdecor, since GNOME leaves that to each window. Install `libdecor-0-plugin-1-gtk` on the host, or the window has none. A desktop shows it under the app's name: `chroot-mpc.sh` writes a hidden `.desktop` file for each, in `/usr/local/share/applications`.
+- MPC sees no input but the window's. The host's keyboard and mice stay with the compositor, and its power button is not MPC's.
+- kmspresent's touchscreen is on a udev seat of its own, `seat-qengine`, which the compositor ignores and kmsshim shows MPC as its seat0. `chroot-mpc.sh` writes the rule.
+- A desktop's PipeWire would open MPC's internal card too. `chroot-mpc.sh up` writes a WirePlumber rule that leaves it alone; restart WirePlumber in a session that was already running. MPC still opens `AUDIO_CARD` directly, and gets it only while PipeWire has it suspended.
+- Run as a window, `chroot-mpc.sh` leaves tty1 alone. A display manager conflicts with the login prompt there, so starting it would end every desktop session.
+- Tried in GNOME 50 on Ubuntu 26.04 in UTM, with sound. sway in the same VM showed a black screen on UTM's display while drawing correctly, so it was not tried further; it needs the user in the `video` group for seatd. Not tried on a Pi.
 
 ## Settings
 

@@ -128,9 +128,8 @@ qemu-img resize -f raw "$OUT_PATH" "$SIZE"
 # means an edited .c can never be shadowed by a stale .so.
 #
 # debian:bookworm for glibc 2.36, comfortably older than the guest's 2.39
-# (older is the safe direction) — see docs/BUILDING.md's "Toolchain for
-# cross-compiling shims". One container for all of them, since the apt-get
-# dominates the cost.
+# (older is the safe direction) — see docs/BUILDING.md, "Toolchain". One container for all
+# of them, since the apt-get dominates the cost.
 STAGE_DIR="$(mktemp -d /tmp/build-arm64-rootfs-stage.XXXXXX)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
@@ -443,7 +442,7 @@ Environment=EGL_PLATFORM=gbm
 # allowlist and routes its PCM opens through ALSA's format-converting plug
 # layer. Card 0 is QEMU's emulated HDA controller; attach it playback-only
 # (-device hda-output, not hda-duplex) or Engine picks the capture device as
-# its default and never drives playback at all. See docs/ENGINEOS.md.
+# its default and never drives playback at all. See docs/engine/AUDIO_MIDI.md.
 Environment=ALSASHIM_CARD=0
 # It also deepens the PCM ring, which is what makes playback clean rather than
 # merely present: Engine asks for 256 frames (5.8ms) at 44100Hz, shorter than
@@ -510,4 +509,4 @@ echo ""
 file "$OUT_PATH"
 echo ""
 echo "Still needed to boot: kernel+initrd (get_kernel.sh --arch arm64) and a"
-echo "/data+/factory disk (make_disk.sh --family engine) — see docs/BUILDING.md's"
+echo "/data+/factory disk (make_disk.sh --family engine) — see docs/BUILDING.md, Disks."

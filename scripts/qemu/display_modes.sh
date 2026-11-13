@@ -187,7 +187,13 @@ fi
 # at all rather than falling back ("Unknown audio driver `pipewire'"). Set
 # AUDIODEV_BACKEND=none to run without a host sink -- Engine still gets its card,
 # so the guest side is unchanged.
+#
+# CoreAudio is run at 48 kHz. QEMU's coreaudio backend does not resample: it asks
+# the output device to switch to its own rate, 44.1 kHz unless told otherwise, and
+# a device that stays at 48 kHz, as AirPods Pro 3 did, takes no error and plays
+# the stream too fast with gaps. MPC Sample 1.3.0 clicked through them that way.
+# At 48 kHz QEMU converts from the guest's rate itself.
 case "$(uname -s)" in
-    Darwin) AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-coreaudio}"; AUDIODEV_ID="mac" ;;
+    Darwin) AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-coreaudio,out.frequency=48000}"; AUDIODEV_ID="mac" ;;
     *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire}";  AUDIODEV_ID="host" ;;
 esac

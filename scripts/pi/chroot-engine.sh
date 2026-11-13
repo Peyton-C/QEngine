@@ -90,7 +90,9 @@ if [ "$PLATFORM" = wayland ]; then
     [ -S "${WAYLAND_PATH:-}" ] || {
         echo "ERROR: no Wayland compositor socket${WAYLAND_PATH:+ at $WAYLAND_PATH}; start one or set WAYLAND_PATH." >&2
         exit 1; }
-    [ -e "$R/usr/lib/plugins/platforms/libqwayland-egl.so" ] || {
+    # Qt 6's prefix is /usr, Qt 5's (4.3.4 and earlier) /usr/qt.
+    [ -e "$R/usr/lib/plugins/platforms/libqwayland-egl.so" ] ||
+        [ -e "$R/usr/qt/plugins/platforms/libqwayland-egl.so" ] || {
         echo "ERROR: this rootfs has no Wayland Qt; stage with --wayland and reinstall." >&2; exit 1; }
     mkdir -p "$R/run/qengine-wayland"
     mountpoint -q "$R/run/qengine-wayland" && umount "$R/run/qengine-wayland"
@@ -122,8 +124,17 @@ else
     #   name    Qt ignores settings for an output it cannot match, and names
     #           connectors without punctuation (HDMI-A-2 is "HDMI2").
     #   mode    otherwise Qt takes the monitor's preferred mode.
+    #
+    # A product without a directory of its own gets Engine's Default one, which
+    # armv7 5.3.0 has for every product (JC11 among them): a copy is made under
+    # the product's name, since Engine looks there first.
     SCREEN_CFG="$R/usr/Engine/ScreenConfiguration/$PRODUCT/ScreenConfiguration.json"
-    [ -f "$SCREEN_CFG" ] || {
+    DEFAULT_CFG="$R/usr/Engine/ScreenConfiguration/Default/ScreenConfiguration.json"
+    if [ ! -f "$SCREEN_CFG.stock" ] && [ ! -f "$SCREEN_CFG" ] && [ -f "$DEFAULT_CFG" ]; then
+        mkdir -p "$(dirname "$SCREEN_CFG")"
+        cp -a "$DEFAULT_CFG" "$SCREEN_CFG.stock"
+    fi
+    [ -f "$SCREEN_CFG" ] || [ -f "$SCREEN_CFG.stock" ] || {
         echo "ERROR: this firmware has no screen configuration for $PRODUCT." >&2; exit 1; }
     [ -f "$SCREEN_CFG.stock" ] || cp -a "$SCREEN_CFG" "$SCREEN_CFG.stock"
     KMS_DEVICE="$(ls /dev/dri/by-path/*gpu-card 2>/dev/null | head -n 1)"
@@ -197,28 +208,42 @@ fi
 
 ### environment ###############################################################
 # Under a compositor the pointer is the compositor's to draw.
-SHIMS=/root/dtshim.so:/root/alsashim.so:/root/teeshim.so:/root/quitshim.so${SHIMS_EXTRA:+:$SHIMS_EXTRA}
-[ "$PLATFORM" = eglfs ] && SHIMS=/root/cursorshim.so:$SHIMS
+# Those this rootfs has: armv7 has no teeshim, having no TEE gate to answer.
+SHIMS=""
+for s in /root/cursorshim.so /root/dtshim.so /root/alsashim.so /root/teeshim.so /root/quitshim.so; do
+    [ "$s" = /root/cursorshim.so ] && [ "$PLATFORM" != eglfs ] && continue
+    [ -e "$R$s" ] && SHIMS="${SHIMS:+$SHIMS:}$s"
+done
+SHIMS="$SHIMS${SHIMS_EXTRA:+:$SHIMS_EXTRA}"
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
 if [ "$PLATFORM" = wayland ]; then
-    # No decorations: the window is the whole interface, and the compositor
-    # can draw a frame if it wants one. Engine ignores mouse clicks, so the
+    # Decorations are left to Qt: it asks the compositor to draw the frame
+    # (xdg-decoration, which sway and KDE do) and draws its own, bradient, where
+    # the compositor will not (GNOME). Engine ignores mouse clicks, so the
     # Wayland plugin hands the left button over as touch (what touchbridge does
     # under eglfs) -- an option of this build of it, see build_qtwayland.sh.
     QPA=(QT_QPA_PLATFORM=wayland-egl XDG_RUNTIME_DIR=/run/user/0
          "WAYLAND_DISPLAY=/run/qengine-wayland/$(basename "$WAYLAND_PATH")"
-         QT_WAYLAND_DISABLE_WINDOWDECORATION=1 QT_WAYLAND_MOUSE_AS_TOUCH=1)
+         QT_WAYLAND_MOUSE_AS_TOUCH=1)
     # Also this build's: the screen reported as the window's size.
     [ -n "${SCREEN:-}" ] && QPA+=("QT_WAYLAND_SCREEN_SIZE=${SCREEN/ /x}")
 else
     QPA=(QT_QPA_PLATFORM=eglfs EGL_PLATFORM=gbm)
+    # Named outright on armv7, as its builder's drop-in does: left to probe, Qt
+    # falls back to its base integration, which has no window for EGL.
+    [ -e "$R/lib/ld-linux-armhf.so.3" ] && QPA+=(QT_QPA_EGLFS_INTEGRATION=eglfs_kms)
 fi
+# The card name on a product's allowlist is its own product code on RMZ2 and
+# JP24. armv7 Prime 4 (JC11, 5.3.0) never opens a card by that name, and opens
+# one named as the unit's own card is.
+case "$PRODUCT" in
+    JC11) CARD_AS="PRIME 4 Audio" ;;
+    *)    CARD_AS="$PRODUCT" ;;
+esac
 ENVV=("${BASE[@]}"
       LD_PRELOAD=$SHIMS
       "${QPA[@]}"
-      # The card name on this product's allowlist is its own product code, on
-      # both products tried so far (RMZ2, JP24).
-      ALSASHIM_CARD=$CARD_INDEX "ALSASHIM_AS=${ALSASHIM_AS:-$PRODUCT}"
+      ALSASHIM_CARD=$CARD_INDEX "ALSASHIM_AS=${ALSASHIM_AS:-$CARD_AS}"
       # A USB device's inputs are not ones Engine can start, and an input that
       # fails to start takes playback down with it.
       "ALSASHIM_NO_CAPTURE=${ALSASHIM_NO_CAPTURE-1}"
@@ -237,15 +262,30 @@ ENVV=("${BASE[@]}"
 
 ### launch ####################################################################
 # Anchored patterns: an unanchored one also matches the shell that invoked us,
-# which over ssh is the session itself.
-# powerkey.py first: it acts on how Engine exits.
-pkill -f '/powerkey\.py '
-pkill -f '^/bin/sh /usr/Engine/Scripts/'
+# which over ssh is the session itself. And this chroot's processes only, by
+# root directory, so that another Engine in another ENGINE_ROOT keeps running.
+in_root_pids() {
+    local p
+    for p in $(pgrep -f "$1"); do
+        [ "$(readlink "/proc/$p/root" 2>/dev/null)" = "$R" ] && echo "$p"
+    done
+}
+in_root() { [ -n "$(in_root_pids "$1")" ]; }
+stop_in_root() {
+    local pids
+    pids="$(in_root_pids "$2")"
+    # shellcheck disable=SC2086  # a list of pids
+    [ -z "$pids" ] || kill "$1" $pids 2>/dev/null
+}
+# powerkey.py first: it acts on how Engine exits. It runs on the host, and is
+# told which chroot is its own.
+pkill -f "/powerkey\\.py $R\$"
+stop_in_root -TERM '^/bin/sh /usr/Engine/Scripts/'
 # With quitshim preloaded SIGTERM asks Engine to quit, which takes it a moment.
-pkill -f '^/usr/Engine/Engine'
-for _ in $(seq 1 200); do pgrep -f '^/usr/Engine/Engine' >/dev/null || break; sleep 0.1; done
-pkill -9 -f '^/usr/Engine/Engine'
-pkill -f '^/root/touchbridge'; pkill -f '^/root/midisurface'
+stop_in_root -TERM '^/usr/Engine/Engine'
+for _ in $(seq 1 200); do in_root '^/usr/Engine/Engine' || break; sleep 0.1; done
+stop_in_root -KILL '^/usr/Engine/Engine'
+stop_in_root -TERM '^/root/touchbridge'; stop_in_root -TERM '^/root/midisurface'
 sleep 1
 
 # Engine copies every track it loads, and that track's stems, into this directory
@@ -261,7 +301,9 @@ fi
 # sees Engine OS's bus policy and not the host's. Asked of the process and not
 # the socket: stopping qengine.service kills the daemon and leaves its socket
 # and pid file in the chroot's /run, and it will not start over either.
-if ! pgrep -f '^/usr/bin/dbus-daemon --system --fork$' >/dev/null; then
+# By root directory and not by command line, which the host's daemon and any
+# other chroot's (an MPC one) share.
+if ! in_root '^/usr/bin/dbus-daemon --system --fork$'; then
     mkdir -p "$R/run/dbus"
     rm -f "$R/run/dbus/system_bus_socket" "$R/run/dbus/pid"
     chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/bin/dbus-daemon --system --fork
@@ -271,7 +313,7 @@ fi
 # tells Engine about them. On the real system D-Bus starts it through systemd;
 # here it is started by hand, once, and left running across Engine restarts.
 # Engine only looks for it at start-up, so it has to come first.
-if ! pgrep -f '^/usr/libexec/edisksd' >/dev/null; then
+if ! in_root '^/usr/libexec/edisksd'; then
     setsid chroot "$R" /usr/bin/env -i "${BASE[@]}" /usr/libexec/edisksd \
         > "$R/run/edisksd.log" 2>&1 < /dev/null &
     sleep 1

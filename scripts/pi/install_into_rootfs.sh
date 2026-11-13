@@ -19,7 +19,8 @@ eval "$_caller_env"
 R="${ENGINE_ROOT:-/srv/engine}"
 STAGE="$QENGINE_DIR/stage"
 
-mountpoint -q "$R" || { echo "ERROR: run chroot-up.sh first." >&2; exit 1; }
+# Not "$R" itself, which chroot-up.sh binds before the rootfs goes on it.
+mountpoint -q "$R/proc" || { echo "ERROR: run chroot-up.sh first." >&2; exit 1; }
 [ -d "$STAGE" ] || { echo "ERROR: no stage directory at $STAGE." >&2; exit 1; }
 
 # Mesa. The library is replaced whole and has to match the version the rootfs's
@@ -34,6 +35,51 @@ for so in "$STAGE"/libgallium-*.so; do
     [ -e "$R/usr/lib/$name.vendor" ] || cp -a "$R/usr/lib/$name" "$R/usr/lib/$name.vendor"
     install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/$name"
     echo "installed $name"
+done
+
+# Mesa in place of the Mali blob (armv7 4.3.4 and earlier), which the rootfs
+# builder already installed for virgl: the same build with the Pi's drivers.
+if [ -d "$STAGE/mali" ]; then
+    [ -e "$R/usr/lib/libmali.so.14.0.vendor" ] || {
+        echo "ERROR: this rootfs's Mali blob was never replaced; rebuild the instance." >&2; exit 1; }
+    cp -af "$STAGE"/mali/lib*.so.* "$R/usr/lib/"
+    cp -af "$STAGE"/mali/dri/*_dri.so "$R/usr/lib/dri/"
+    chown -h 0:0 "$R"/usr/lib/libmali.so.14.0 "$R"/usr/lib/libEGL.so* "$R"/usr/lib/libGLES* \
+        "$R"/usr/lib/libgbm.so* "$R"/usr/lib/libglapi.so* "$R"/usr/lib/dri/*_dri.so
+    echo "installed Mesa in place of libmali, with $(cd "$STAGE/mali/dri" && echo *_dri.so | wc -w) drivers"
+    # With --wayland: the libwayland its libEGL needs, and libffi where the
+    # rootfs has none of its own.
+    for so in "$STAGE"/mali/wayland/*.so.*; do
+        [ -e "$so" ] || continue
+        case "$(basename "$so")" in
+            libffi.*) [ -e "$R/usr/lib/$(basename "$so")" ] && continue ;;
+        esac
+        install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/$(basename "$so")"
+    done
+    [ ! -d "$STAGE/mali/wayland" ] || echo "installed libwayland"
+fi
+
+# Qt 5's Wayland plugin (4.3.4 and earlier), under Qt's prefix, /usr/qt.
+if [ -d "$STAGE/qt5wayland" ]; then
+    cp -a "$STAGE"/qt5wayland/lib/libQt5WaylandClient.so.5* "$R/usr/qt/lib/"
+    chown -h 0:0 "$R"/usr/qt/lib/libQt5WaylandClient.so.5*
+    for d in "$STAGE"/qt5wayland/plugins/*/; do
+        d="$(basename "$d")"
+        mkdir -p "$R/usr/qt/plugins/$d"
+        install -o 0 -g 0 -m 755 "$STAGE/qt5wayland/plugins/$d"/*.so "$R/usr/qt/plugins/$d/"
+    done
+    echo "installed qt5wayland"
+fi
+
+# Mesa in the dri layout (armv7 5.3.0): the Pi's drivers, under the names its
+# loader derives from the kernel's, beside the vendor megadriver, which stays.
+for so in "$STAGE"/dri/*_dri.so; do
+    [ -e "$so" ] || continue
+    [ -d "$R/usr/lib/dri" ] || {
+        echo "ERROR: this rootfs has no /usr/lib/dri; the staged Mesa is for a" >&2
+        echo "       different firmware." >&2; exit 1; }
+    install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/dri/$(basename "$so")"
+    echo "installed dri/$(basename "$so")"
 done
 
 # Wayland, from stage_for_pi.sh --wayland: a libEGL from the same Mesa build as

@@ -1,23 +1,31 @@
-# Blocking Telemetry
-By defailt Engine OS ships with crash reporting and anonymous analytics enabled by default on every version of Engine OS tested so far. To avoid flooding InMusic with bad data we block analytics.
+# Telemetry
+QEngine blocks configured inMusic crash-reporting and analytics hosts in every rootfs it builds. The application can still create local crash reports; blocking prevents hostname-based connections to the listed services.
 
-## What to block
-[rootfs_steps/block_telemetry.sh](../scripts/build_scripts/rootfs_steps/block_telemetry.sh) holds the list, and is the one place to add to — one hostname per line, and both rootfs builders pick it up on the next build. It is deliberately the list rather than this document, so that what gets blocked cannot drift from what is documented as blocked. Read it for the current set; as of writing it covers Sentry crash reporting, two PostHog product-analytics endpoints, an InMusic analytics host, and Google Analytics.
+## Hosts
+[block_telemetry.sh](../scripts/build_scripts/rootfs_steps/block_telemetry.sh) owns the hostname list. Add new endpoints there, one hostname per line, with a comment describing their purpose. Keep the list out of other scripts and documentation.
 
-Because these become `/etc/hosts` entries they can only be hostnames — `/etc/hosts` has no way to express a wildcard, a port or a URL path, so blocking everything under a domain means listing each subdomain Engine actually resolves. A hostname that Engine reaches by IP address rather than by name cannot be blocked this way at all.
+The shared `block_telemetry` step writes each host as `127.0.0.1 HOST` in the rootfs's `/etc/hosts`. It skips entries already present, so builders can apply it again without duplicating those lines.
 
-Point each hostname at localhost so the connection fails to send. Engine already handles telemetry failures, so this doesn't affect anything else:
+Hosts entries cannot express wildcards, URL paths or ports. List each resolved subdomain separately. This mechanism does not block connections made directly to an external IP address.
+
+## Existing guests
+Stop the instance and rebuild with `new_instance.sh --force` to apply an updated list to its rootfs. Writable `/etc` overlays can hide the rebuilt file, so update the running guest as well when it retains an older hosts file.
+
+Transfer the repository's `scripts/build_scripts/rootfs_steps/block_telemetry.sh` to `/data/block_telemetry.sh` in the guest, using [Remote access](REMOTE_ACCESS.md). As root, source the helper and apply the same list:
 
 ```sh
+# If / is read-only, remount it before updating /etc/hosts.
 mount -o remount,rw /
-for host in o230257.ingest.sentry.io analytics.inmusicbrands.com; do
-    echo "127.0.0.1 $host" >> /etc/hosts
-done
+. /data/block_telemetry.sh
+block_telemetry /
 ```
 
-The rootfs builders do this for you at build time — `block_telemetry` in the shared [rootfs_steps/](../scripts/build_scripts/rootfs_steps/) appends every host in that list to the image's `/etc/hosts`, skipping any already present, so it is safe to re-run over an image that has been built before. The commands above are for a running guest, or a device you are not rebuilding.
+The helper is sourced, not run as a standalone script. It reports each host as blocked or already blocked. Remove the transferred helper when finished; future list changes still belong in the repository's shared file.
 
-Whether this persists across reboots depends on the device's filesystem layout:
+## Persistence
+| Layout | Where a live edit persists |
+| --- | --- |
+| RK3288, with `/etc` overlaid | Writable layer on `emmc.img`; survives rootfs rebuilds while that disk is kept |
+| RK3588, without that overlay | Instance `rootfs.img`; replaced on a rootfs rebuild |
 
-- **armv7/RK3288** — `/etc` is overlaid onto the `emmc.img` overlay partition (see [BUILDING.md](BUILDING.md)'s eMMC overlay section); the edit lands in that overlay's writable layer and persists as long as the same `emmc.img` is reused.
-- **arm64/RANE SYSTEM ONE** — no overlay at all; `/etc` lives directly on the base rootfs image, so the edit persists in `rootfs_out.img` itself once written (see [BUILDING.md](BUILDING.md)'s arm64 section).
+`--force` keeps writable disks. Rebuilding therefore updates the base rootfs but does not reset an existing overlay. See [Storage](engine/STORAGE.md) and [Instances](../scripts/build_scripts/INSTANCES.md) for disk handling.

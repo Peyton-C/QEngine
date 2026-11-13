@@ -1,72 +1,78 @@
-# Remote Development Workflow for Agents
+# Remote access
+Run QEngine on a build host and reach its serial console through SSH and tmux. Use the instance launcher so disks, ports and display settings come from the instance. [Build](BUILDING.md) covers preparation; [Instances](../scripts/build_scripts/INSTANCES.md) lists launch settings.
 
-A suggested workflow for reaching and driving a QEMU VM running on a remote
-build host, separate from [BUILDING.md](/docs/BUILDING.md), which covers
-building/booting the image itself.
-
-A suggested workflow for reaching and driving a QEMU VM with an agent. 
-
-## Driving the VM's console via tmux
-Run QEMU as a tmux pane's foreground process (not inside a login shell), with
-`-serial stdio` wiring the guest's serial console directly to that pane:
+## Console
+From your workstation, connect to the build host and open a persistent tmux session:
 
 ```sh
-ssh <remote-host> 'tmux send-keys -t <session> "some command" Enter'
-ssh <remote-host> 'tmux capture-pane -t <session> -p -S -30'   # last 30 lines of scrollback
+ssh -t user@build-host 'tmux new-session -A -s qengine'
 ```
 
-Wait for a boot milestone with a poll loop rather than a fixed sleep:
+In that session, change to the repository and launch the guest:
+
 ```sh
-until ssh <remote-host> 'tmux capture-pane -t <session> -p' | grep -q "login"; do sleep 3; done
+cd /path/to/QEngine
+scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display egl-vnc
 ```
 
-**Gotchas:**
-- **Never send Ctrl-C into this pane.** `-serial stdio` maps the host's
-  stdin/stdout directly onto QEMU's own process, so Ctrl-C delivers SIGINT to
-  QEMU itself — killing the whole VM, not whatever's hung in the guest. To
-  stop the VM deliberately, kill QEMU from a separate SSH command instead:
-  ```sh
-  ssh <remote-host> 'pgrep -fa qemu-system-arm'
-  ssh <remote-host> 'kill -TERM <pid>'
-  ```
-- **If QEMU exits or is killed, the tmux pane goes fully dead** (its
-  foreground process is gone) — recreate the session and relaunch:
-  ```sh
-  ssh <remote-host> 'tmux kill-session -t <session> 2>/dev/null; tmux new-session -d -s <session> -c <repo_path>'
-  ssh <remote-host> 'tmux send-keys -t <session> "<qemu-system-arm ... command>" Enter'
-  ```
-- Back-to-back `send-keys` calls with too-short sleeps between them can
-  interleave command echoes in the scrollback — leave ~1-1.5s between sends
-  when chaining several commands.
+The terminal becomes the guest's serial console. Log in as `root` without a password. Detach with tmux's `Ctrl+B`, then `D`; reconnect with the same SSH command. The session's shell remains available after QEMU exits.
 
-## Getting files into the guest
-Run a plain HTTP file server on the remote host:
+Use `--display vnc` if the host lacks a virgl-capable QEMU. Software rendering is slower. Legacy Engine prints a separate `Engine VNC` address for its interface; QEMU VNC shows the console.
+
+## VNC and SSH
+The launcher prints the ports. From your workstation, forward the applicable VNC port through SSH, replacing both occurrences of `5991` with the printed TCP port:
+
 ```sh
-python3 -m http.server 8080
+ssh -N -L 5991:127.0.0.1:5991 user@build-host
 ```
-`scp` a file to the remote host, then from inside the guest:
+
+Connect your VNC viewer to `127.0.0.1:5991`. For legacy firmware, forward the printed Engine VNC port instead. Keep the tunnel open while using the viewer.
+
+If the guest runs an SSH server, the launcher's printed `ssh -p PORT root@localhost` command works on the build host. From your workstation, forward that port through the build host in the same way. A port forward does not install or start a guest SSH server.
+
+## Files
+Create a transfer directory on the build host and copy your file there:
+
 ```sh
-wget -q http://10.0.2.2:8080/<filename> -O /root/<filename>
+ssh user@build-host 'mkdir -p /tmp/qengine-transfer'
+scp diagnostic.bin user@build-host:/tmp/qengine-transfer/
 ```
-`10.0.2.2` is QEMU user-mode networking's default gateway, routing to the
-host — this works regardless of any `hostfwd=` port mappings.
 
-The guest's root filesystem mounts read-only by default; remount read-write
-before writing anything:
+Start the server from your workstation, leaving this SSH connection open:
+
 ```sh
-mount -o remount,rw /
+ssh user@build-host 'python3 -m http.server 8080 --directory /tmp/qengine-transfer'
 ```
 
-## USB passthrough device permissions
-Real USB hardware passed through via QEMU's `usb-host` device needs its host-side `/dev/bus/usb/BBB/DDD` node readable/writable by the user running QEMU. Scope a udev rule to only the vendor IDs actually in use:
+In the guest, QEMU user-mode networking exposes the build host at `10.0.2.2`:
 
-```
-# /etc/udev/rules.d/99-qengine-usb.rules
-SUBSYSTEM=="usb", ATTR{idVendor}=="154e", MODE="0666"   # Denon/Marantz
-SUBSYSTEM=="usb", ATTR{idVendor}=="2b73", MODE="0666"   # AlphaTheta/Pioneer DJ
-```
-
-Add a line per vendor ID (`lsusb` to find it), then:
 ```sh
-sudo udevadm control --reload-rules && sudo udevadm trigger
+wget -q http://10.0.2.2:8080/diagnostic.bin -O /data/diagnostic.bin
 ```
+
+For a destination on the read-only rootfs, run `mount -o remount,rw /` first. Use the guest filesystem for live transfers; do not write an image with `debugfs` while QEMU has it open. Stop the HTTP server when finished. If guest SSH is available, you can use `scp` through its forwarded port instead.
+
+## USB
+On a Linux build host, QEMU needs read/write access to the USB device node. Find its vendor and product IDs with `lsusb`, then add a rule under `/etc/udev/rules.d/`. Replace `VVVV`, `PPPP` and `YOUR_GROUP` with the device IDs and an existing group your build-host account belongs to:
+
+```text
+SUBSYSTEM=="usb", ATTR{idVendor}=="VVVV", ATTR{idProduct}=="PPPP", GROUP="YOUR_GROUP", MODE="0660"
+```
+
+Reload the rules and reconnect the device:
+
+```sh
+sudo udevadm control --reload-rules
+```
+
+Pass it to an instance with the same IDs:
+
+```sh
+QEMU_EXTRA_ARGS='-device usb-host,vendorid=0xVVVV,productid=0xPPPP' \
+    scripts/qemu/run_instance.sh --name rmz2-5.0.4 --display egl-vnc
+```
+
+Permissions and passthrough make the device available to the guest; the application still needs its own supported protocol or controller mapping. See [Audio and MIDI](engine/AUDIO_MIDI.md) for Engine controllers.
+
+## Stopping
+Run `poweroff` in the guest and wait for QEMU to exit. Stopping QEMU from the host skips normal guest shutdown, so do not use `Ctrl+C` as the routine stop command. Before rebuilding or copying disks, check the build host with `pgrep -fl qemu-system` and stop any temporary transfer servers or tunnels you started.

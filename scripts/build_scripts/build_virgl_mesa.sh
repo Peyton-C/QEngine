@@ -8,11 +8,13 @@
 #   Caches its output in the repo's build/, keyed by version and architecture, and
 #   reuses it on later runs the way get_kernel.sh caches a kernel. Requires Docker.
 #
-# --extra-drivers adds gallium drivers to a gallium-layout build, for running the
-# same rootfs on real hardware instead of under QEMU -- `--extra-drivers v3d,vc4`
-# for a Raspberry Pi. virgl and softpipe stay in, so the result still works in a
-# guest; it is cached under its own name (libgallium-<ver>-<arch>+v3d+vc4.so) and
-# the plain build is left alone.
+# --extra-drivers adds gallium drivers, for running the same rootfs on real
+# hardware instead of under QEMU -- `--extra-drivers v3d,vc4` for a Raspberry Pi.
+# virgl stays in, so the result still works in a guest; it is cached under its own
+# name (libgallium-<ver>-<arch>+v3d+vc4.so, or virtio_gpu_dri-...) and the plain
+# build is left alone. In the dri layout the result is one megadriver holding
+# every driver, which goes into /usr/lib/dri under each driver's name, as the
+# vendor's does (armv7 5.3.0).
 #
 # --platforms wayland, also for real hardware, builds the libEGL from the same tree
 # as well and installs it beside the libgallium (libEGL-<ver>-<arch>+...+wayland.so):
@@ -127,10 +129,6 @@ case "$LAYOUT" in
 esac
 
 if [ -n "$EXTRA_DRIVERS" ]; then
-    # Only the whole-library layout can take more drivers in one artifact; in the
-    # DRI layout each driver is its own file under its own name.
-    [ "$LAYOUT" = gallium ] || {
-        echo "ERROR: --extra-drivers needs --layout gallium." >&2; exit 1; }
     GALLIUM_DRIVERS="$GALLIUM_DRIVERS,$EXTRA_DRIVERS"
     OUT="${OUT%.so}+${EXTRA_DRIVERS//,/+}.so"
 fi
@@ -138,10 +136,8 @@ fi
 case "$PLATFORMS" in
     "") ;;
     wayland)
-        [ "$LAYOUT" = gallium ] || {
-            echo "ERROR: --platforms needs --layout gallium." >&2; exit 1; }
         OUT="${OUT%.so}+wayland.so"
-        EGL_OUT="${OUT/libgallium-/libEGL-}"
+        EGL_OUT="$OUT_DIR/libEGL-$MESA_VER-$ARCH${EXTRA_DRIVERS:++${EXTRA_DRIVERS//,/+}}+wayland.so"
         ;;
     *) echo "ERROR: --platforms takes only wayland." >&2; exit 1 ;;
 esac
@@ -219,8 +215,11 @@ EOF
         # 24 the gallium DRI target is only built when a DRI-based API asks for it,
         # so disabling them to keep the build small produces a tree with no
         # *_dri.so in it at all. Their other outputs are simply not copied out.
+        # /usr and lib, as the vendor builds are. The libEGL bakes in where it
+        # looks for drivers, and with the meson default of /usr/local a dri-layout libEGL
+        # (armv7 5.3.0 under Wayland) found none and failed EGL_NOT_INITIALIZED.
         meson setup build --cross-file /cross.txt \
-            -Dbuildtype=release \
+            -Dbuildtype=release -Dprefix=/usr -Dlibdir=lib \
             -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
             -Dplatforms="$PLATFORMS" \

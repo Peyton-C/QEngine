@@ -182,6 +182,15 @@ if [ -z "$MATCH_NAME" ]; then
 fi
 
 SRC_DIR="$MAP_DIR/mappings/$MATCH_NAME"
+# Engine 4.x (Qt 5) has an older set of control-surface components, and a file
+# written for 5.x does not load there at all. Its vendor mapping tells the two
+# apart, by the pad-mode component 4.x has and 5.x renamed. A mapping with an
+# engine4/ directory carries its 4.x files there.
+if [ -d "$SRC_DIR/engine4" ] &&
+        grep -q 'PerformanceModes' "$TARGET_DIR/${PRODUCT_CODE}_Controller_Assignments.qml.vendor" 2>/dev/null; then
+    SRC_DIR="$SRC_DIR/engine4"
+    log "this is Engine 4.x; using $MATCH_NAME/engine4"
+fi
 if [ ! -f "$SRC_DIR/${PRODUCT_CODE}_Controller_Assignments.qml" ]; then
     # Not an error: a mapping only exists for the products someone has written
     # one for. Make sure no other controller's mapping is left installed.

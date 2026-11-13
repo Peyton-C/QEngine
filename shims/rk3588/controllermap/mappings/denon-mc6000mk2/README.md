@@ -87,6 +87,8 @@ light neither.
 
 `JC11_Controller_Assignments.qml` is the JP24 mapping for the original Prime 4 on armv7 Engine 5.3.0, with the same `midisurface` options except `--led-map`, which points at `JC11_Controller_Leds.txt`. FILTER ON is not mapped, since the Prime 4 has no stems and no sweep FX on/off. Play, browse and load from USB, EQ, filter, faders and the crossfader were tried on a Pi 5.
 
+Engine 4.x has an older set of components, and `engine4/JC11_Controller_Assignments.qml` is the same mapping written in them: BCK and FWD are Back and Forward, LIST is View (held, the control centre) and AREA is Source, and LOOP CUT −/+ are unmapped, since 4.x's auto loop is an encoder. `controllermap.sh` installs it when the vendor mapping is a 4.x one. It loads on 4.3.0 (Prime GO firmware as JC11); the controls themselves were not tried.
+
 ## Not mapped
 
 | Control | Why |

@@ -77,7 +77,9 @@ copy_image() {
 # PLATFORM=wayland: the first is loaded into MPC, so it is built against the
 # same old glibc as the other shims, and the second runs on the host, built
 # there on bookworm so that any newer distribution can run it.
-if [ "${DEVICE:-}" = mpc ]; then
+# Everything build_mpc_rootfs.sh builds: MPC, MPC Sample and arm64 HeadRush (VX5).
+case "${DEVICE:-}:${ARCH:-}" in mpc:*|mpc-sample:*|headrush:arm64) MPC_FAMILY=1 ;; *) MPC_FAMILY=0 ;; esac
+if [ "$MPC_FAMILY" = 1 ]; then
     [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ] || {
         echo "ERROR: instance '$NAME' has no data disk." >&2; exit 1; }
     mkdir -p "$OUT/mpc"

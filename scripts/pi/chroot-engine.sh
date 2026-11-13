@@ -262,15 +262,30 @@ ENVV=("${BASE[@]}"
 
 ### launch ####################################################################
 # Anchored patterns: an unanchored one also matches the shell that invoked us,
-# which over ssh is the session itself.
-# powerkey.py first: it acts on how Engine exits.
-pkill -f '/powerkey\.py '
-pkill -f '^/bin/sh /usr/Engine/Scripts/'
+# which over ssh is the session itself. And this chroot's processes only, by
+# root directory, so that another Engine in another ENGINE_ROOT keeps running.
+in_root_pids() {
+    local p
+    for p in $(pgrep -f "$1"); do
+        [ "$(readlink "/proc/$p/root" 2>/dev/null)" = "$R" ] && echo "$p"
+    done
+}
+in_root() { [ -n "$(in_root_pids "$1")" ]; }
+stop_in_root() {
+    local pids
+    pids="$(in_root_pids "$2")"
+    # shellcheck disable=SC2086  # a list of pids
+    [ -z "$pids" ] || kill "$1" $pids 2>/dev/null
+}
+# powerkey.py first: it acts on how Engine exits. It runs on the host, and is
+# told which chroot is its own.
+pkill -f "/powerkey\\.py $R\$"
+stop_in_root -TERM '^/bin/sh /usr/Engine/Scripts/'
 # With quitshim preloaded SIGTERM asks Engine to quit, which takes it a moment.
-pkill -f '^/usr/Engine/Engine'
-for _ in $(seq 1 200); do pgrep -f '^/usr/Engine/Engine' >/dev/null || break; sleep 0.1; done
-pkill -9 -f '^/usr/Engine/Engine'
-pkill -f '^/root/touchbridge'; pkill -f '^/root/midisurface'
+stop_in_root -TERM '^/usr/Engine/Engine'
+for _ in $(seq 1 200); do in_root '^/usr/Engine/Engine' || break; sleep 0.1; done
+stop_in_root -KILL '^/usr/Engine/Engine'
+stop_in_root -TERM '^/root/touchbridge'; stop_in_root -TERM '^/root/midisurface'
 sleep 1
 
 # Engine copies every track it loads, and that track's stems, into this directory
@@ -288,13 +303,6 @@ fi
 # and pid file in the chroot's /run, and it will not start over either.
 # By root directory and not by command line, which the host's daemon and any
 # other chroot's (an MPC one) share.
-in_root() {
-    local p
-    for p in $(pgrep -f "$1"); do
-        [ "$(readlink "/proc/$p/root" 2>/dev/null)" = "$R" ] && return 0
-    done
-    return 1
-}
 if ! in_root '^/usr/bin/dbus-daemon --system --fork$'; then
     mkdir -p "$R/run/dbus"
     rm -f "$R/run/dbus/system_bus_socket" "$R/run/dbus/pid"

@@ -58,3 +58,12 @@ The mode is not persisted, so it must be disabled at each launch. Automatic moto
 
 ## Controller mappings
 `controllermap` selects assignments for a connected USB controller and installs them where Engine loads the selected product's QML map. `midisurface --forward` relays its MIDI while answering Engine's identity inquiry. One mapping is active at a time, and the controller's LEDs and displays need their own protocol support. The [FLX10 guide](../../scripts/pi/flx10/README.md) covers that controller and its jog-screen bridge.
+
+## Host MIDI
+QEMU gives an Engine guest one virtio-serial port, `org.qengine.midi`, served on the host at `localhost:$MIDI_PORT` over TCP. `run_instance.sh` prints the port, and `new_instance.sh` records it in `instance.env` as 6200 plus the instance's offset. In the guest, `midibridge` presents the port as the sequencer client `QEngine MIDI`, and `midisurface` forwards from it, as it forwards a USB controller on the Pi. Engine sees the bridge too, the same way it sees a controller on the Pi.
+
+The stream is plain MIDI 1.0 bytes in both directions, with no framing. The guest never sends running status, so each message stands on its own. Connect anything that reads and writes MIDI bytes over TCP; QEMU boots without a client, and the bridge notices a client connecting or leaving at any time. Messages from the guest are dropped while nothing is connected.
+
+A host controller that needs its own mapping does not get one yet. `controllermap` picks mappings from USB devices in the guest, and `midisurface.service` passes none of the forwarding options the Pi takes from `MIDI_FORWARD_ARGS`. Messages Engine's assignment file already understands work as they are.
+
+Images built before `midibridge` boot as before: an older instance still gets the port, and nothing in its guest opens it.

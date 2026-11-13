@@ -16,6 +16,9 @@ Fakes various parts of the device tree expected by Engine and other InMusic OSes
 ## kmsshim
 A fake KMS device for apps that drive the display themselves, preloaded into MPC so it can run as a window under a Wayland compositor. `kmspresent`, beside it, runs on the host: it shows the app's frames as a window and gives the app a touchscreen from the window's input. Used by `chroot-mpc.sh` with `PLATFORM=wayland`.
 
+## midibridge
+Carries MIDI between a QEMU guest and its host over a virtio-serial port, as a sequencer client named `QEngine MIDI` that `midisurface` forwards from. See [Audio and MIDI](../docs/engine/AUDIO_MIDI.md#host-midi).
+
 ## midisurface
 An emulated midi surface to control Engine.
 

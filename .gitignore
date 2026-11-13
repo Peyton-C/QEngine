@@ -63,6 +63,7 @@ build/
 shims/touchbridge/touchbridge_*
 !shims/touchbridge/touchbridge_*.service
 shims/midisurface/midisurface_*
+shims/midibridge/midibridge_*
 shims/pcmhold/pcmhold_*
 shims/vx5surface/vx5surface_*
 shims/rk3288/vnctouchbridge/vnctouchbridge_*

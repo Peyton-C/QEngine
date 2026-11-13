@@ -1,0 +1,22 @@
+[Unit]
+Description=MIDI to and from the host over virtio-serial
+# Before midisurface, which forwards from it, and so before Engine, whose MIDI
+# enumerator only scans during its own startup. midisurface also picks the
+# bridge up when it appears later, so this ordering is not load-bearing for it.
+Before=midisurface.service engine.service
+# The same early ordering midisurface.service has, for the armv7 build.
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+# Exits 0 when the instance has no org.qengine.midi port, so an instance
+# launched without one boots as it did before rather than restart-looping.
+ExecStart=/root/midibridge
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

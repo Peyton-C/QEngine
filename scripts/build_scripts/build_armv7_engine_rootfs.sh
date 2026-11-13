@@ -11,7 +11,7 @@
 #      unmodified.
 #   5. Copy those shims + fake-dt files into /root.
 #   6. Wire touchbridge.service, midisurface.service (virtual control
-#      surface) and an engine.service.d override so
+#      surface), midibridge.service (MIDI to the host) and an engine.service.d override so
 #      engine.service actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
 #      disable the tty1 getty so stray keystrokes can't reach a hidden root
@@ -215,6 +215,8 @@ docker run --rm --platform linux/arm/v7 \
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
         gcc -O2 -Wall \
+            -o /shims/midibridge/midibridge_$SHIM_ARCH /shims/midibridge/midibridge.c -lasound
+        gcc -O2 -Wall \
             -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
         # -lpthread for its upstream relay thread. Only this builder compiles it:
         # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
@@ -316,6 +318,7 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
                 rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
+                midibridge/midibridge_$SHIM_ARCH \
                 pcmhold/pcmhold_$SHIM_ARCH \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
@@ -434,6 +437,8 @@ cp -a /shims/quitshim/quitshim_$SHIM_ARCH.so /mnt/rootfs/root/quitshim.so
 # decide which device to answer Engine's inquiry as, so one binary and one unit
 # serve every product this image can be built as.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+# MIDI to and from the host, which midisurface forwards from. See midibridge.c.
+cp -a /shims/midibridge/midibridge_$SHIM_ARCH /mnt/rootfs/root/midibridge
 # Not wired to a unit: it is started by hand from the prime4/primego launcher
 # scripts in scripts/vm, which invoke /root/vnctouchbridge by that name. Installed
 # unconditionally because it is 14KB and those scripts cannot work without it --
@@ -445,6 +450,7 @@ chmod 755 /mnt/rootfs/root/dtshim.so \
           /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/quitshim.so \
           /mnt/rootfs/root/midisurface \
+          /mnt/rootfs/root/midibridge \
           /mnt/rootfs/root/vnctouchbridge
 
 # The devicetree properties dtshim.c remaps. These are the real RK3288 paths;
@@ -468,6 +474,8 @@ ln -sf ../touchbridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.w
 if [ "$APP_UNIT" = engine.service ]; then
     cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
     ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
+    cp -a /shims/midibridge/midibridge.service /mnt/rootfs/etc/systemd/system/midibridge.service
+    ln -sf ../midibridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midibridge.service
 fi
 
 echo "--- disabling the tty1 getty (Application's display) ---"

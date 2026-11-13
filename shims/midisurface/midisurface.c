@@ -836,7 +836,13 @@ static void handle_incoming(void) {
  * Kernel clients -- real hardware -- come first, and with kernel_only nothing
  * else will do. Engine opens ports of its own on every MIDI device, named
  * after it ("Midi::Out::DDJ-FLX10 MIDI 1"), and after a replug Engine's was
- * announced before the controller's and was taken in its place. */
+ * announced before the controller's and was taken in its place.
+ *
+ * The one userspace client that also passes with kernel_only is one named
+ * exactly `match`: midibridge, "QEngine MIDI", which stands in for hardware in
+ * a QEMU guest. Engine's clients carry a prefix and never match exactly, and
+ * without this a bridge that started after us, or restarted, was never found
+ * again, since the retry on each new port is kernel_only. */
 static int connect_forward_source(const char *match, int kernel_only) {
     if (!kernel_only && connect_forward_source(match, 1) == 0) return 0;
     snd_seq_client_info_t *cinfo;
@@ -851,7 +857,8 @@ static int connect_forward_source(const char *match, int kernel_only) {
         const char *cname = snd_seq_client_info_get_name(cinfo);
         if (client == me || client == SND_SEQ_CLIENT_SYSTEM) continue;
         if (!cname || !strstr(cname, match)) continue;
-        if (kernel_only && snd_seq_client_info_get_type(cinfo) != SND_SEQ_KERNEL_CLIENT) continue;
+        if (kernel_only && snd_seq_client_info_get_type(cinfo) != SND_SEQ_KERNEL_CLIENT &&
+            strcmp(cname, match) != 0) continue;
 
         snd_seq_port_info_set_client(pinfo, client);
         snd_seq_port_info_set_port(pinfo, -1);

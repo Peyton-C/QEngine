@@ -108,6 +108,12 @@ echo "=== rootfs   : $ROOTFS_IMG (${ARCH:-arch unrecorded})"
 echo "=== kernel   : ${KERNEL_IMG:-<launcher default>}"
 echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
+# An instance created before MIDI_PORT was recorded gets the port new_instance.sh
+# would have given it, which sits a fixed distance above its SSH port.
+if [ "${DEVICE:-}" = engine ]; then
+    MIDI_PORT="${MIDI_PORT:-$(( ${SSH_PORT:-2225} + 4000 ))}"
+    echo "=== midi     : localhost:$MIDI_PORT (raw MIDI over TCP)"
+fi
 
 # 5900 + N
 _vnc_display="${VNC_DISPLAY:-1}"
@@ -133,6 +139,7 @@ echo ""
 export ROOTFS_IMG DATA_IMG SD_IMG SSH_PORT VNC_DISPLAY KERNEL_IMG INITRD_IMG ARCH
 export DEVICE DISPLAY_MODE
 if [ -n "${ENGINE_VNC_PORT:-}" ]; then export ENGINE_VNC_PORT; fi
+if [ -n "${MIDI_PORT:-}" ]; then export MIDI_PORT; fi
 if [ -n "${SMP:-}" ]; then export SMP; fi
 # Optional, and absent from most instance.envs. Exported only when the file set
 # it, so arch_devices.sh's own default applies otherwise. An `if` rather than a

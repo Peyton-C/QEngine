@@ -11,7 +11,7 @@
 #   5. Copy the dtshim/drmatomic/alsashim/teeshim/quitshim/touchbridge shims +
 #      fake-dt files into /root.
 #   6. Wire touchbridge.service, midisurface.service (virtual control
-#      surface), controllermap.service (USB controller ->
+#      surface), midibridge.service (MIDI to the host), controllermap.service (USB controller ->
 #      assignment mapping), and an engine.service.d override so engine.service
 #      actually loads the shims and starts eglfs.
 #   7. Blank the root password for passwordless serial-console login, and
@@ -170,6 +170,8 @@ docker run --rm --platform linux/arm64 \
             -o /shims/teeshim/teeshim_$SHIM_ARCH.so /shims/teeshim/teeshim.c
         gcc -O2 -Wall \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+        gcc -O2 -Wall \
+            -o /shims/midibridge/midibridge_$SHIM_ARCH /shims/midibridge/midibridge.c -lasound
     '
 
 # MONTERO, the QML mod loader, only when asked for: see build_montero.sh.
@@ -210,6 +212,7 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 drmatomic/drmatomic_$SHIM_ARCH.so \
                 touchbridge/touchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
+                midibridge/midibridge_$SHIM_ARCH \
                 teeshim/teeshim_$SHIM_ARCH.so \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
@@ -289,12 +292,15 @@ cp -a /shims/quitshim/quitshim_$SHIM_ARCH.so /mnt/rootfs/root/quitshim.so
 # Started as a service (below) rather than preloaded into engine.service: it
 # is a MIDI device Engine binds, not a library Engine loads.
 cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+# MIDI to and from the host, which midisurface forwards from. See midibridge.c.
+cp -a /shims/midibridge/midibridge_$SHIM_ARCH /mnt/rootfs/root/midibridge
 chmod 755 /mnt/rootfs/root/dtshim.so \
           /mnt/rootfs/root/drmatomic.so \
           /mnt/rootfs/root/touchbridge \
           /mnt/rootfs/root/alsashim.so \
           /mnt/rootfs/root/quitshim.so \
-          /mnt/rootfs/root/midisurface
+          /mnt/rootfs/root/midisurface \
+          /mnt/rootfs/root/midibridge
 
 # PRODUCT_CODE selects which device this pretends to be.
 write_fake_dt /mnt/rootfs "${PRODUCT_CODE:-RMZ2}"
@@ -395,6 +401,8 @@ fi
 cp -a /shims/midisurface/midisurface.service /mnt/rootfs/etc/systemd/system/midisurface.service
 cp -a /shims/rk3588/controllermap/controllermap.service /mnt/rootfs/etc/systemd/system/controllermap.service
 ln -sf ../midisurface.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midisurface.service
+cp -a /shims/midibridge/midibridge.service /mnt/rootfs/etc/systemd/system/midibridge.service
+ln -sf ../midibridge.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/midibridge.service
 ln -sf ../controllermap.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/controllermap.service
 
 echo "--- disabling the tty1 getty (Application's display) ---"

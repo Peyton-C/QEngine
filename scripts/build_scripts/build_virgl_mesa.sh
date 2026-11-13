@@ -215,8 +215,11 @@ EOF
         # 24 the gallium DRI target is only built when a DRI-based API asks for it,
         # so disabling them to keep the build small produces a tree with no
         # *_dri.so in it at all. Their other outputs are simply not copied out.
+        # /usr and lib, as the vendor builds are. The libEGL bakes in where it
+        # looks for drivers, and with the meson default of /usr/local a dri-layout libEGL
+        # (armv7 5.3.0 under Wayland) found none and failed EGL_NOT_INITIALIZED.
         meson setup build --cross-file /cross.txt \
-            -Dbuildtype=release \
+            -Dbuildtype=release -Dprefix=/usr -Dlibdir=lib \
             -Dgallium-drivers="$GALLIUM_DRIVERS" \
             -Dvulkan-drivers= \
             -Dplatforms="$PLATFORMS" \

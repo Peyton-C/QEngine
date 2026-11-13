@@ -50,6 +50,8 @@ struct ControlState {
     int quadrant = -1;   // the quarter of a split pad last hit, 0 to 3
     bool pressed = false;
     bool lit = false;
+    // A colour the guest lit the lamp in, over the layout's; alpha 0 for none.
+    ImVec4 lamp = {0, 0, 0, 0};
 };
 
 class Surface {
@@ -63,6 +65,11 @@ public:
 
     // The control under the mouse, or null.
     const Element* hovered() const;
+
+    // What every control is doing, by id, for the guest link to read and to
+    // light lamps in.
+    std::unordered_map<std::string, ControlState>& states() { return state_; }
+    const Layout* layout() const { return layout_; }
 
     // A scroll, as the finger moved it, in screen pixels with y down. macOS
     // turns a finger dragged on a touchscreen or on Sidecar into a scroll

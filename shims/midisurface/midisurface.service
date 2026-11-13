@@ -31,7 +31,9 @@ ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.
 # --forward takes whatever the host sends through midibridge, the way the Pi
 # forwards a USB controller. With no bridge, or nothing on the host end, there
 # is nothing to forward and the surface behaves as it did without it.
-ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface --motor-off --forward "QEngine MIDI" < /run/midisurface.fifo'
+# --echo-all sends Engine's lamps back the same way, SysEx included, for the
+# front panel UI (ui/), which speaks the product's own protocol.
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface --motor-off --forward "QEngine MIDI" --echo-all < /run/midisurface.fifo'
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal

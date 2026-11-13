@@ -477,6 +477,13 @@ static void send_to_controller(int ch, int param, int val);
  * still take precedence for the notes they name. */
 static int echo_lamps = 0;
 
+/* --echo-all: everything Engine sends, SysEx included, goes back to the
+ * forwarded source. For a source that speaks the guest product's own
+ * protocol, which only QEngine's front panel UI on the far side of midibridge
+ * does: the JP24 lights its RGB buttons with SysEx, which --echo-lamps leaves
+ * out because a third-party controller would only be confused by it. */
+static int echo_all = 0;
+
 static int load_led_map(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -785,7 +792,11 @@ static void handle_incoming(void) {
             if (snd_seq_event_input_pending(seq, 0) <= 0) break;
             continue;
         }
-        if (forward_client >= 0 && (led_map_count > 0 || echo_lamps)) {
+        if (forward_client >= 0 && echo_all &&
+            (ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF ||
+             ev->type == SND_SEQ_EVENT_CONTROLLER || ev->type == SND_SEQ_EVENT_SYSEX))
+            echo_to_controller(ev);
+        else if (forward_client >= 0 && (led_map_count > 0 || echo_lamps)) {
             int is_note = ev->type == SND_SEQ_EVENT_NOTEON || ev->type == SND_SEQ_EVENT_NOTEOFF;
             if (is_note && has_led_map(ev->data.note.channel, ev->data.note.note))
                 light_lamp(ev->data.note.channel, ev->data.note.note,
@@ -878,7 +889,7 @@ static int connect_forward_source(const char *match, int kernel_only) {
                 /* The way back, for --led-map. No capabilities: nothing else
                  * has any business with this port, and one that advertised
                  * some would be a second device for Engine to enumerate. */
-                if (led_map_count > 0 || led_send_count > 0 || echo_lamps) {
+                if (led_map_count > 0 || led_send_count > 0 || echo_lamps || echo_all) {
                     /* Made once and reconnected after a replug. */
                     if (lamp_port < 0)
                         lamp_port = snd_seq_create_simple_port(
@@ -890,8 +901,9 @@ static int connect_forward_source(const char *match, int kernel_only) {
                     } else {
                         if (led_map_count > 0)
                             printf("lighting %d lamps on it\n", led_map_count);
-                        if (echo_lamps)
-                            printf("echoing Engine's lamps to it\n");
+                        if (echo_lamps || echo_all)
+                            printf("echoing Engine's %s to it\n",
+                                   echo_all ? "messages" : "lamps");
                         for (int n = 0; n < led_send_count; n++)
                             send_to_controller(led_sends[n].ch, led_sends[n].cc,
                                                led_sends[n].value);
@@ -941,6 +953,8 @@ int main(int argc, char **argv) {
             relative_cc_count++;
         } else if (strcmp(argv[i], "--echo-lamps") == 0) {
             echo_lamps = 1;
+        } else if (strcmp(argv[i], "--echo-all") == 0) {
+            echo_all = 1;
         } else if (strcmp(argv[i], "--note-map") == 0 && i + 1 < argc) {
             int ch, from, to_ch, to;
             const char *spec = argv[++i];
@@ -974,7 +988,7 @@ int main(int argc, char **argv) {
                     "[--pitchbend-cc <upper>,<lower>] "
                     "[--relative-cc <cc>=<upper>,<lower>]... "
                     "[--note-map <ch>:<from>=[<ch>:]<to>]... "
-                    "[--led-map <file>] [--echo-lamps]\n", argv[0]);
+                    "[--led-map <file>] [--echo-lamps] [--echo-all]\n", argv[0]);
             return 1;
         }
     }

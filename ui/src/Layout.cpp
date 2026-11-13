@@ -69,8 +69,15 @@ bool addFace(Layout& out, const json& doc, const std::string& name, ImVec2 at, c
     out.faces.push_back(face);
     const std::string facePrefix = name == "top" ? "" : name + ".";
 
-    auto place = [&](json e, const std::string& prefix, ImVec2 offset) {
+    // A placed template's "midi_channel" goes to each of its controls that
+    // does not name one, as deck 1 and deck 2 send the same notes on their
+    // own channels.
+    auto place = [&](json e, const std::string& prefix, ImVec2 offset, int channel = -1) {
         offsetElement(e, offset + at);
+
+        if (channel >= 0 && e.contains("midi") && e["midi"].is_object() && !e["midi"].contains("ch")) {
+            e["midi"]["ch"] = channel;
+        }
 
         if (e.contains("id")) {
             e["id"] = facePrefix + (prefix.empty() ? "" : prefix + ".") + e["id"].get<std::string>();
@@ -101,7 +108,7 @@ bool addFace(Layout& out, const json& doc, const std::string& name, ImVec2 at, c
                 copy.merge_patch(patch[copy["id"].get<std::string>()]);
             }
 
-            place(std::move(copy), e.value("prefix", ""), vec2(e, "offset"));
+            place(std::move(copy), e.value("prefix", ""), vec2(e, "offset"), e.value("midi_channel", -1));
         }
     }
 
@@ -214,6 +221,10 @@ bool loadLayout(const fs::path& path, Layout& out, std::string& error, const std
             layout.products = {variant};
         } else if (doc.contains("products")) {
             layout.products = doc["products"].get<std::vector<std::string>>();
+        }
+
+        if (doc.contains("midi")) {
+            layout.midiChannel = doc["midi"].value("channel", layout.midiChannel);
         }
 
         if (doc.contains("fonts")) {

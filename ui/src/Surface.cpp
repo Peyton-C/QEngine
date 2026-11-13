@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 using nlohmann::json;
@@ -1204,6 +1205,22 @@ void drawPressedOverlay(const Painter& g, const Element& e, const ControlState& 
     }
 }
 
+// The element's own fields, with its lamp in the colour the guest lit it.
+json guestLamp(const json& p, ImVec4 c) {
+    char hex[8];
+    std::snprintf(hex, sizeof hex, "#%02x%02x%02x", int(c.x * 255.0f), int(c.y * 255.0f), int(c.z * 255.0f));
+    json q = p;
+    q["lamp"] = hex;
+
+    for (const char* key : {"ring", "strip"}) {
+        if (q.contains(key)) {
+            q[key] = hex;
+        }
+    }
+
+    return q;
+}
+
 bool interactive(const std::string& kind) {
     return kind == "button" || kind == "pad" || kind == "knob" || kind == "encoder" ||
            kind == "fader" || kind == "jog" || kind == "footswitch" || kind == "switch";
@@ -1618,8 +1635,8 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         else if (e.kind == "meter") drawMeter(g, p, st.value);
         else if (e.kind == "lcd") drawLcd(g, p);
         else if (e.kind == "hatch") drawHatch(g, p);
-        else if (e.kind == "button") drawButton(g, p, st, options.layoutLamps);
-        else if (e.kind == "pad") drawPad(g, p, st, options.layoutLamps);
+        else if (e.kind == "button") drawButton(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);
+        else if (e.kind == "pad") drawPad(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);
         else if (e.kind == "knob") drawKnob(g, p, st, false);
         else if (e.kind == "encoder") drawKnob(g, p, st, true);
         else if (e.kind == "fader") drawFader(g, p, st);

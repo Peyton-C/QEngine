@@ -1,5 +1,5 @@
 # QEngine UI concept
-A concept for a front panel UI, drawn with Dear ImGui on SDL3 GPU. It draws a device from a layout file and lets you press, turn and drag its controls. Nothing reaches a guest yet.
+A concept for a front panel UI, drawn with Dear ImGui on SDL3 GPU. It draws a device from a layout file and lets you press, turn and drag its controls, and can play a running Engine instance over MIDI.
 
 ## Build
 ```
@@ -31,10 +31,17 @@ A product that differs only in finish or printing is a `variants` entry in its s
 
 Text sizes are cap heights, as measured off a photo, and `fonts.scale` widens a maker whose printing runs wider than ours.
 
+## Guest
+The sidebar's Guest section lists the Engine instances under `build/instances` and connects to one's MIDI port, the one `run_instance.sh` prints. `--instance NAME` connects at start. The panel then speaks the product's own protocol through `midibridge` and `midisurface` in the guest, and Engine lights its lamps back, so Engine takes it for the real control surface. See [Audio and MIDI](../docs/engine/AUDIO_MIDI.md#host-midi).
+
+A control sends what its `midi` field says, in the numbers from the product's assignment file: a `note` for a button or pad, a `cc` or a 14-bit `[upper, lower]` pair for a knob or fader, a `relative` CC for an encoder, and a touch note with a position pair for a jog. A placed template's `midi_channel` gives its controls their channel, and the layout's `midi.channel` the rest. Only the Prime 4 G2 (`JP24`) is mapped so far, and it needs an instance built as `JP24`. A panel for another product sends that product's numbers, which the guest reads as its own product's.
+
+Engine only binds the surface when it starts, so connect before starting it or restart it. Knobs and faders are sent when they move, not when connecting, so Engine keeps its own positions until then. The guest display is not shown in the panel yet.
+
 ## Photos
 Product photos are inMusic's and are never committed. Put them in `build/product_photos`, or point `--photos` elsewhere, and a layout's `photo.rect` maps its faceplate. The Photo view shows the photo with the screen and pressed controls drawn over it. Trace lays the drawing over the photo, which is how a new layout is checked.
 
-`--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it.
+`--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it. With `--instance` it waits for the guest's lamps first, four seconds or `--wait`, and prints what it sent and received.
 
 ## Touch
 Each finger holds its own control, so two jogs or a fader and a knob can move at once. SDL reports touchscreens itself on Linux and Windows. On macOS 27 AppKit gives a touchscreen's or Sidecar's fingers only to gesture recognizers, and sends the window nothing for a drag, so the UI attaches a recognizer of its own and ignores the clicks macOS makes up from taps. A touch outside the device drives the sidebar as a mouse. Scrolls turn knobs, faders and platters too, for a trackpad. `--log-input` prints the clicks, scrolls and touches that arrive.

@@ -59,6 +59,32 @@ static int host_up;
 static snd_midi_event_t *enc, *dec;
 static unsigned long dropped;
 
+/* The last of each lamp the guest has sent, replayed to a host that connects.
+ * Engine lights a surface's lamps once, when it binds it, and after that only
+ * sends what changes, so a host that connected later would see every lamp dark
+ * until it next changed. Kept per channel and number for notes and CCs, and for
+ * inMusic's RGB lamp SysEx, F0 00 02 0B 7F <product> 03 00 05 <ch> <note> <r>
+ * <g> <b> F7, which is how the JP24 lights its buttons. Anything else is not
+ * kept: there is no telling which other SysEx a later one replaces. */
+static unsigned char last_note[16][128], last_cc[16][128];
+static unsigned char note_seen[16][128], cc_seen[16][128];
+static unsigned char last_rgb[16][128][15], rgb_seen[16][128];
+
+static void remember(const unsigned char *m, long n) {
+    unsigned char kind = m[0] & 0xF0, ch = m[0] & 0x0F;
+    if ((kind == 0x90 || kind == 0x80) && n == 3) {
+        last_note[ch][m[1]] = kind == 0x80 ? 0 : m[2];
+        note_seen[ch][m[1]] = 1;
+    } else if (kind == 0xB0 && n == 3) {
+        last_cc[ch][m[1]] = m[2];
+        cc_seen[ch][m[1]] = 1;
+    } else if (n == 15 && m[0] == 0xF0 && m[1] == 0x00 && m[2] == 0x02 && m[3] == 0x0B &&
+               m[6] == 0x03 && m[8] == 0x05 && m[9] < 16 && m[10] < 128) {
+        memcpy(last_rgb[m[9]][m[10]], m, 15);
+        rgb_seen[m[9]][m[10]] = 1;
+    }
+}
+
 static int find_vport(char *path, size_t n) {
     DIR *d = opendir("/sys/class/virtio-ports");
     if (!d) return -1;
@@ -92,6 +118,23 @@ static int host_connected(void) {
     return !(p.revents & POLLHUP);
 }
 
+static void to_host(const unsigned char *b, long n);
+
+static void replay(void) {
+    for (int ch = 0; ch < 16; ch++)
+        for (int i = 0; i < 128; i++) {
+            if (note_seen[ch][i]) {
+                unsigned char m[3] = {(unsigned char)(0x90 | ch), (unsigned char)i, last_note[ch][i]};
+                to_host(m, 3);
+            }
+            if (cc_seen[ch][i]) {
+                unsigned char m[3] = {(unsigned char)(0xB0 | ch), (unsigned char)i, last_cc[ch][i]};
+                to_host(m, 3);
+            }
+            if (rgb_seen[ch][i]) to_host(last_rgb[ch][i], 15);
+        }
+}
+
 static void set_host_up(int up) {
     if (up == host_up) return;
     host_up = up;
@@ -100,6 +143,7 @@ static void set_host_up(int up) {
     snd_midi_event_reset_encode(enc);
     printf("host %s\n", up ? "connected" : "disconnected");
     fflush(stdout);
+    if (up) replay();
 }
 
 /* Bytes from the host, out to whoever subscribes to our port. */
@@ -162,6 +206,7 @@ static void from_guest(void) {
         long n = snd_midi_event_decode(dec, buf, sizeof buf, ev);
         if (n <= 0) continue;
         if (verbose) fprintf(stderr, "[bridge] guest -> host %ld bytes\n", n);
+        remember(buf, n);
         to_host(buf, n);
     }
 }

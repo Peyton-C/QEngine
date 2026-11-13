@@ -1,16 +1,20 @@
 // QEngine's surface concept: a device's front panel drawn from its layout
-// file, to try out how a UI for every emulated device could look. Nothing
-// here talks to a guest yet.
+// file, to try out how a UI for every emulated device could look. It can play
+// a running Engine instance over MIDI, see Midi.hpp.
 //
-//   qengine-ui [layout name] [--layouts DIR] [--photos DIR]
+//   qengine-ui [layout name] [--layouts DIR] [--photos DIR] [--instance NAME]
 //              [--view drawn|photo|trace] [--screenshot out.png] [--log-input]
 //
+// --instance connects to that Engine instance's MIDI at start; the sidebar
+// does the same for any instance under build/instances.
 // --screenshot renders one frame offscreen into a PNG and quits, without
-// showing a window, so a layout change can be checked from a script.
+// showing a window, so a layout change can be checked from a script. With
+// --instance it waits first for the guest's lamps, four seconds or --wait.
 // --log-input prints the pointer, touch and scroll events SDL delivers, to
 // see what a touchscreen or a pen actually sends.
 
 #include "Layout.hpp"
+#include "Midi.hpp"
 #include "Surface.hpp"
 #include "Texture.hpp"
 #include "Touch.hpp"
@@ -22,6 +26,7 @@
 #include "imgui.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <filesystem>
 #include <memory>
@@ -38,8 +43,11 @@ struct Args {
     std::string device;
     fs::path layouts = QENGINE_UI_LAYOUTS;
     fs::path photos = QENGINE_UI_PHOTOS;
+    fs::path instances = QENGINE_UI_INSTANCES;
+    std::string instance;
     View view = View::Drawn;
     std::string screenshot;
+    double wait = 4.0;  // before a screenshot with a guest connected
     bool logInput = false;
 };
 
@@ -52,8 +60,12 @@ bool parseArgs(int argc, char** argv, Args& args) {
             args.layouts = argv[++i];
         } else if (a == "--photos" && more) {
             args.photos = argv[++i];
+        } else if (a == "--instance" && more) {
+            args.instance = argv[++i];
         } else if (a == "--screenshot" && more) {
             args.screenshot = argv[++i];
+        } else if (a == "--wait" && more) {
+            args.wait = std::atof(argv[++i]);
         } else if (a == "--view" && more) {
             const std::string v = argv[++i];
             args.view = v == "photo" ? View::Photo : v == "trace" ? View::Trace : View::Drawn;
@@ -63,8 +75,8 @@ bool parseArgs(int argc, char** argv, Args& args) {
             args.device = a;
         } else {
             std::fprintf(stderr,
-                         "usage: %s [layout] [--layouts DIR] [--photos DIR] "
-                         "[--view drawn|photo|trace] [--screenshot out.png] [--log-input]\n",
+                         "usage: %s [layout] [--layouts DIR] [--photos DIR] [--instance NAME] "
+                         "[--view drawn|photo|trace] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
                          argv[0]);
             return false;
         }
@@ -226,7 +238,128 @@ struct App {
     std::unordered_set<uint64_t> surfaceTouches;
     uint64_t uiTouch = 0;
     bool swallowedClick = false;
+
+    // The Engine instance the panel plays, over MIDI.
+    GuestLink link;
+    std::vector<Instance> instances;
+    int instance = -1;
+    double lastInstanceScan = -10;
 };
+
+// The instance to offer first: the one named on the command line, else one
+// built as this device's product.
+int pickInstance(const App& app) {
+    const Layout& layout = app.devices[size_t(app.current)].layout;
+
+    for (int i = 0; i < int(app.instances.size()); ++i) {
+        if (app.instances[size_t(i)].name == app.args.instance) return i;
+    }
+
+    for (int i = 0; i < int(app.instances.size()); ++i) {
+        const auto& codes = layout.products;
+        if (std::find(codes.begin(), codes.end(), app.instances[size_t(i)].product) != codes.end()) return i;
+    }
+
+    return app.instances.empty() ? -1 : 0;
+}
+
+void guestPanel(App& app) {
+    ImGui::TextDisabled("GUEST");
+
+    // Instances come and go as they are built, so the list is read again
+    // every few seconds.
+    if (ImGui::GetTime() - app.lastInstanceScan > 3.0) {
+        const std::string chosen = app.instance >= 0 ? app.instances[size_t(app.instance)].name : "";
+        app.instances = findInstances(app.args.instances);
+        app.lastInstanceScan = ImGui::GetTime();
+        app.instance = -1;
+
+        for (int i = 0; i < int(app.instances.size()); ++i) {
+            if (app.instances[size_t(i)].name == chosen) app.instance = i;
+        }
+
+        if (app.instance < 0 && !app.devices.empty()) {
+            app.instance = pickInstance(app);
+        }
+    }
+
+    if (app.instances.empty()) {
+        ImGui::TextWrapped("No Engine instances in %s.", app.args.instances.string().c_str());
+        return;
+    }
+
+    auto label = [](const Instance& i) { return i.name + "  " + i.product; };
+    ImGui::SetNextItemWidth(-1);
+
+    if (ImGui::BeginCombo("##instance", app.instance >= 0 ? label(app.instances[size_t(app.instance)]).c_str() : "")) {
+        for (int i = 0; i < int(app.instances.size()); ++i) {
+            if (ImGui::Selectable(label(app.instances[size_t(i)]).c_str(), app.instance == i)) {
+                app.instance = i;
+
+                if (app.link.wanted()) {
+                    app.link.connect(app.instances[size_t(i)].port);
+                }
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    const Instance& inst = app.instances[size_t(std::max(app.instance, 0))];
+
+    if (!app.link.wanted()) {
+        if (ImGui::Button("Connect", {-1, 0})) {
+            app.link.connect(inst.port);
+        }
+        ImGui::TextDisabled("MIDI on localhost:%d", inst.port);
+    } else {
+        if (ImGui::Button("Disconnect", {-1, 0})) {
+            app.link.disconnect();
+        }
+
+        if (app.link.connected()) {
+            ImGui::TextColored({0.45f, 0.85f, 0.5f, 1}, "Connected, :%d", app.link.port());
+
+            // A guest with midibridge replays Engine's lamps the moment a
+            // client connects, so silence means nothing in it reads the port.
+            if (app.link.received() == 0) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("Nothing from the guest yet. An image built before midibridge has nothing "
+                                   "reading this port; rebuild it with new_instance.sh --force.");
+                ImGui::PopStyleColor();
+            }
+        } else {
+            ImGui::TextColored({0.95f, 0.75f, 0.3f, 1}, "Waiting for :%d", app.link.port());
+
+            if (!app.link.problem().empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s", app.link.problem().c_str());
+                ImGui::PopStyleColor();
+            }
+        }
+
+        const auto& codes = app.devices[size_t(app.current)].layout.products;
+
+        if (std::find(codes.begin(), codes.end(), inst.product) == codes.end()) {
+            ImGui::TextWrapped("This panel is not a %s, so Engine will read its controls as that product's.",
+                               inst.product.c_str());
+        }
+
+        ImGui::TextDisabled("%u sent, %u received", app.link.sent(), app.link.received());
+        ImGui::BeginChild("##midilog", {-1, 120}, ImGuiChildFlags_Borders);
+        ImGui::PushFont(nullptr, 12.0f);
+
+        for (const std::string& line : app.link.log()) {
+            ImGui::TextUnformatted(line.c_str());
+        }
+
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+
+        ImGui::PopFont();
+        ImGui::EndChild();
+    }
+}
 
 void loadDevices(App& app) {
     for (const fs::path& path : findLayouts(app.args.layouts)) {
@@ -425,12 +558,21 @@ void sidebar(App& app, float width) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+    guestPanel(app);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
     ImGui::TextDisabled("CONTROL");
 
     if (const Element* e = app.surface.hovered()) {
         const ImVec2 at = vec2(e->p, "at");
         ImGui::TextUnformatted(e->id.c_str());
         ImGui::TextDisabled("%s at %.1f, %.1f mm", e->kind.c_str(), at.x, at.y);
+
+        if (e->p.contains("midi")) {
+            ImGui::TextDisabled("midi %s", e->p["midi"].dump().c_str());
+        }
     } else {
         ImGui::TextDisabled("Hover a control");
     }
@@ -467,7 +609,13 @@ void frame(App& app) {
     ImGui::Begin("##surface", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse);
+    // With a guest connected its lamps are the ones shown.
+    if (app.link.connected()) {
+        app.options.layoutLamps = true;
+    }
+
     app.surface.draw(app.options, app.fonts);
+    app.link.update(app.surface, ImGui::GetTime());
     ImGui::End();
     ImGui::PopStyleVar();
 }
@@ -677,6 +825,19 @@ int main(int argc, char** argv) {
         selectDevice(app, app.current);
     }
 
+    if (!app.args.instance.empty()) {
+        for (const Instance& i : findInstances(app.args.instances)) {
+            if (i.name == app.args.instance) {
+                app.link.connect(i.port);
+            }
+        }
+
+        if (!app.link.wanted()) {
+            std::fprintf(stderr, "no Engine instance %s in %s\n", app.args.instance.c_str(),
+                         app.args.instances.string().c_str());
+        }
+    }
+
     bool running = true;
     int frames = 0;
 
@@ -731,8 +892,23 @@ int main(int argc, char** argv) {
 
         // A few frames first, so fonts are rasterised and the layout settles.
         if (shot) {
-            if (++frames == 4) {
+            // With a guest, long enough for it to answer, so the shot shows
+            // its lamps.
+            const bool settled = !app.link.wanted() || ImGui::GetTime() > app.args.wait;
+
+            if (++frames >= 4 && settled) {
                 running = false;
+
+                if (app.link.wanted()) {
+                    std::printf("guest: %s, %u sent, %u received\n",
+                                app.link.connected() ? "connected" : "not connected", app.link.sent(),
+                                app.link.received());
+                    const auto& log = app.link.log();
+
+                    for (size_t i = log.size() > 12 ? log.size() - 12 : 0; i < log.size(); ++i) {
+                        std::printf("  %s\n", log[i].c_str());
+                    }
+                }
 
                 if (!saveScreenshot(app, drawData, format, app.args.screenshot)) {
                     return 1;

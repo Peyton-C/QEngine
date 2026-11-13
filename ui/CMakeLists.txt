@@ -52,6 +52,7 @@ target_link_libraries(qengine_imgui PUBLIC SDL3::SDL3)
 add_executable(qengine-ui
   src/main.cpp
   src/Layout.cpp
+  src/Midi.cpp
   src/Surface.cpp
   src/Texture.cpp
   src/Touch.cpp)
@@ -73,6 +74,7 @@ endif()
 # the photos in QEngine's untracked build/ directory, since they are inMusic's.
 target_compile_definitions(qengine-ui PRIVATE
   QENGINE_UI_LAYOUTS="${CMAKE_CURRENT_SOURCE_DIR}/layouts"
-  QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos")
+  QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos"
+  QENGINE_UI_INSTANCES="${CMAKE_CURRENT_SOURCE_DIR}/../build/instances")
 
 target_link_libraries(qengine-ui PRIVATE qengine_imgui nlohmann_json::nlohmann_json)

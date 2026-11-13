@@ -25,9 +25,9 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 | SoundSwitch             | Y                     | ?                     | ?                     | ?                    |
 | Display                 | Y                     | Y                     | Y                     | Y                    |
 | Virgl                   | Y                     | Y                     | Y                     | N                    |
-| Touch input              | Y                     | Y                     | Y                     | Y                    |
+| Touch input             | Y                     | Y                     | Y                     | Y                    |
 | Keyboard navigation     | Y                     | ?                     | ?                     | ?                    |
-| Audio playback          | Y                     | N                     | ?                     | ?                    |
+| Audio playback          | Y                     | Y (chroot only)       | ?                     | ?                    |
 | MIDI                    | Y                     | Y                     | ?                     | ?                    |
 | External media (USB/SD) | Y                     | Y                     | ?                     | ?                    |
 

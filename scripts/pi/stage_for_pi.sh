@@ -158,7 +158,7 @@ esac
 # A stage refreshed without --wayland must not install an earlier one's files,
 # nor one for the other layout.
 rm -rf "$OUT/stage/libEGL.so.1.0.0" "$OUT/stage/wayland" "$OUT/stage/qtwayland" \
-    "$OUT/stage/dri" "$OUT/stage/mali" "$OUT/stage"/libgallium-*.so
+    "$OUT/stage/dri" "$OUT/stage/mali" "$OUT/stage/qt5wayland" "$OUT/stage"/libgallium-*.so
 # The gallium layout (arm64 5.x) replaces the vendor libgallium whole. The dri
 # layout (armv7 5.3.0) loads /usr/lib/dri/<kernel driver>_dri.so, so the one
 # megadriver is staged under the Pi's two names, v3d and vc4, beside the vendor's.
@@ -180,12 +180,25 @@ if [ "$MESA_LAYOUT" = mali ]; then
     # Qt 5.15.2 Engine (4.3.4 and earlier): the rootfs builder already put
     # build_mali_mesa.sh's Mesa in place of the Mali blob. The Pi gets the same
     # build with v3d and vc4 added, whole, since its drivers and libglapi have
-    # to come from one build.
-    [ "$WAYLAND" -eq 0 ] || {
-        echo "ERROR: --wayland needs Qt 6 Engine; this rootfs has Qt 5 and the Mali blob's layout." >&2
-        exit 1; }
-    "$REPO_ROOT/scripts/build_scripts/build_mali_mesa.sh" --extra-drivers v3d,vc4
-    cp -R "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+v3d+vc4" "$OUT/stage/mali"
+    # to come from one build. --wayland adds its Wayland libEGL and libwayland,
+    # and Qt 5's Wayland plugin, checked against the rootfs's own Qt.
+    if [ "$WAYLAND" -eq 1 ]; then
+        "$REPO_ROOT/scripts/build_scripts/build_mali_mesa.sh" --extra-drivers v3d,vc4 --platforms wayland
+        cp -R "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+v3d+vc4+wayland" "$OUT/stage/mali"
+        QT_LIBS="$(mktemp -d /tmp/qengine-qt.XXXXXX)"
+        trap 'rm -rf "$QT_LIBS"' EXIT
+        "$DEBUGFS" -R 'ls -p /usr/qt/lib' "$ROOTFS_IMG" 2>/dev/null | tr '/' ' ' |
+            awk '$5 ~ /^libQt5[A-Za-z]+\.so\.5\.15\.2$/ {print $5}' | while read -r f; do
+                "$DEBUGFS" -R "dump /usr/qt/lib/$f $QT_LIBS/$f" "$ROOTFS_IMG" 2>/dev/null
+            done
+        [ -s "$QT_LIBS/libQt5Gui.so.5.15.2" ] || {
+            echo "ERROR: no Qt 5.15.2 in this rootfs's /usr/qt/lib; --wayland needs it." >&2; exit 1; }
+        "$REPO_ROOT/scripts/build_scripts/build_qt5_qtwayland.sh" --check-against "$QT_LIBS"
+        cp -R "$REPO_ROOT/build/qt5-qtwayland-5.15.2-armhf" "$OUT/stage/qt5wayland"
+    else
+        "$REPO_ROOT/scripts/build_scripts/build_mali_mesa.sh" --extra-drivers v3d,vc4
+        cp -R "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+v3d+vc4" "$OUT/stage/mali"
+    fi
 elif [ "$WAYLAND" -eq 1 ]; then
     # The libEGL and the driver come from one build, so they go in together.
     "$REPO_ROOT/scripts/build_scripts/build_virgl_mesa.sh" --arch "$ARCH" \

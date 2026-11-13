@@ -90,7 +90,9 @@ if [ "$PLATFORM" = wayland ]; then
     [ -S "${WAYLAND_PATH:-}" ] || {
         echo "ERROR: no Wayland compositor socket${WAYLAND_PATH:+ at $WAYLAND_PATH}; start one or set WAYLAND_PATH." >&2
         exit 1; }
-    [ -e "$R/usr/lib/plugins/platforms/libqwayland-egl.so" ] || {
+    # Qt 6's prefix is /usr, Qt 5's (4.3.4 and earlier) /usr/qt.
+    [ -e "$R/usr/lib/plugins/platforms/libqwayland-egl.so" ] ||
+        [ -e "$R/usr/qt/plugins/platforms/libqwayland-egl.so" ] || {
         echo "ERROR: this rootfs has no Wayland Qt; stage with --wayland and reinstall." >&2; exit 1; }
     mkdir -p "$R/run/qengine-wayland"
     mountpoint -q "$R/run/qengine-wayland" && umount "$R/run/qengine-wayland"

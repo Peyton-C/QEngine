@@ -47,6 +47,28 @@ if [ -d "$STAGE/mali" ]; then
     chown -h 0:0 "$R"/usr/lib/libmali.so.14.0 "$R"/usr/lib/libEGL.so* "$R"/usr/lib/libGLES* \
         "$R"/usr/lib/libgbm.so* "$R"/usr/lib/libglapi.so* "$R"/usr/lib/dri/*_dri.so
     echo "installed Mesa in place of libmali, with $(cd "$STAGE/mali/dri" && echo *_dri.so | wc -w) drivers"
+    # With --wayland: the libwayland its libEGL needs, and libffi where the
+    # rootfs has none of its own.
+    for so in "$STAGE"/mali/wayland/*.so.*; do
+        [ -e "$so" ] || continue
+        case "$(basename "$so")" in
+            libffi.*) [ -e "$R/usr/lib/$(basename "$so")" ] && continue ;;
+        esac
+        install -o 0 -g 0 -m 755 "$so" "$R/usr/lib/$(basename "$so")"
+    done
+    [ ! -d "$STAGE/mali/wayland" ] || echo "installed libwayland"
+fi
+
+# Qt 5's Wayland plugin (4.3.4 and earlier), under Qt's prefix, /usr/qt.
+if [ -d "$STAGE/qt5wayland" ]; then
+    cp -a "$STAGE"/qt5wayland/lib/libQt5WaylandClient.so.5* "$R/usr/qt/lib/"
+    chown -h 0:0 "$R"/usr/qt/lib/libQt5WaylandClient.so.5*
+    for d in "$STAGE"/qt5wayland/plugins/*/; do
+        d="$(basename "$d")"
+        mkdir -p "$R/usr/qt/plugins/$d"
+        install -o 0 -g 0 -m 755 "$STAGE/qt5wayland/plugins/$d"/*.so "$R/usr/qt/plugins/$d/"
+    done
+    echo "installed qt5wayland"
 fi
 
 # Mesa in the dri layout (armv7 5.3.0): the Pi's drivers, under the names its

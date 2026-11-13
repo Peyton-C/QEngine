@@ -38,6 +38,17 @@ struct SurfaceOptions {
         ImVec2 size = {0, 0};
     };
     std::vector<Photo> photos;
+
+    // The guest's display, drawn in the lcd; an invalid id for none.
+    Photo screen;
+};
+
+// Where the panel's screen is being pointed at, 0 to 1 across the guest's
+// display, and whether it is pressed.
+struct ScreenPointer {
+    bool inside = false;
+    bool down = false;
+    ImVec2 uv = {0, 0};
 };
 
 // What a control is doing right now. Kept by element id, so it survives a
@@ -70,6 +81,9 @@ public:
     // light lamps in.
     std::unordered_map<std::string, ControlState>& states() { return state_; }
     const Layout* layout() const { return layout_; }
+
+    // The mouse or one finger on the lcd, for the guest's screen.
+    const ScreenPointer& screenPointer() const { return screenPointer_; }
 
     // A scroll, as the finger moved it, in screen pixels with y down. macOS
     // turns a finger dragged on a touchscreen or on Sidecar into a scroll
@@ -107,6 +121,7 @@ private:
     void scrolled(int index, ImVec2 finger);
     void reset(int index);
     bool hit(const Element& e, ImVec2 mouseMm) const;
+    bool onScreen(ImVec2 at, ImVec2* uv = nullptr) const;
 
     const Layout* layout_ = nullptr;
     std::unordered_map<std::string, ControlState> state_;
@@ -115,6 +130,15 @@ private:
     std::unordered_map<uint64_t, Contact> contacts_;
     std::vector<TouchEvent> touches_;
     ImVec2 scroll_ = {0, 0};
+
+    // The lcd's picture, in screen pixels from the last draw, and who holds
+    // it: kMouse, a finger, or kNobody.
+    static constexpr uint64_t kNobody = ~uint64_t(0) - 1;
+    ImVec2 screenMin_ = {0, 0};
+    ImVec2 screenMax_ = {0, 0};
+    uint64_t screenHolder_ = kNobody;
+    bool screenLift_ = false;
+    ScreenPointer screenPointer_;
     ImVec2 canvasMin_ = {0, 0};
     ImVec2 canvasMax_ = {0, 0};
 

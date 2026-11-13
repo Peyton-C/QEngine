@@ -1,11 +1,12 @@
 // QEngine's surface concept: a device's front panel drawn from its layout
 // file, to try out how a UI for every emulated device could look. It can play
-// a running Engine instance over MIDI, see Midi.hpp.
+// a running Engine instance over MIDI, see Midi.hpp, and shows its screen in
+// the panel's lcd over VNC, see Screen.hpp.
 //
 //   qengine-ui [layout name] [--layouts DIR] [--photos DIR] [--instance NAME]
 //              [--view drawn|photo|trace] [--screenshot out.png] [--log-input]
 //
-// --instance connects to that Engine instance's MIDI at start; the sidebar
+// --instance connects to that Engine instance's MIDI and screen at start; the sidebar
 // does the same for any instance under build/instances.
 // --screenshot renders one frame offscreen into a PNG and quits, without
 // showing a window, so a layout change can be checked from a script. With
@@ -15,6 +16,7 @@
 
 #include "Layout.hpp"
 #include "Midi.hpp"
+#include "Screen.hpp"
 #include "Surface.hpp"
 #include "Texture.hpp"
 #include "Touch.hpp"
@@ -239,12 +241,49 @@ struct App {
     uint64_t uiTouch = 0;
     bool swallowedClick = false;
 
-    // The Engine instance the panel plays, over MIDI.
+    // The Engine instance the panel plays, over MIDI, and shows the screen of.
     GuestLink link;
+    GuestScreen screen;
     std::vector<Instance> instances;
     int instance = -1;
     double lastInstanceScan = -10;
 };
+
+void connectGuest(App& app, const Instance& i) {
+    app.link.connect(i.port);
+
+    if (i.screenPort > 0) {
+        app.screen.connect(i.screenPort);
+    }
+}
+
+void disconnectGuest(App& app) {
+    app.link.disconnect();
+    app.screen.disconnect();
+}
+
+// What the screen half of the guest section says.
+void screenStatus(const App& app, const Instance& inst) {
+    const char* what = inst.engineVnc ? "Engine's VNC" : "QEMU's VNC";
+
+    if (app.screen.connected()) {
+        ImGui::TextColored({0.45f, 0.85f, 0.5f, 1}, "Screen, %s", app.screen.status().c_str());
+        ImGui::TextDisabled("%s on :%d", what, app.screen.port());
+        return;
+    }
+
+    ImGui::TextColored({0.95f, 0.75f, 0.3f, 1}, "Screen waiting for :%d", app.screen.port());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", app.screen.status().c_str());
+
+    // QEMU only serves VNC for these two; sdl and cocoa open a window instead.
+    if (!inst.engineVnc && inst.display != "vnc" && inst.display != "egl-vnc") {
+        ImGui::TextWrapped("QEMU serves the screen over VNC only with run_instance.sh --display vnc, or "
+                           "egl-vnc, the macOS default with virgl.");
+    }
+
+    ImGui::PopStyleColor();
+}
 
 // The instance to offer first: the one named on the command line, else one
 // built as this device's product.
@@ -297,7 +336,7 @@ void guestPanel(App& app) {
                 app.instance = i;
 
                 if (app.link.wanted()) {
-                    app.link.connect(app.instances[size_t(i)].port);
+                    connectGuest(app, app.instances[size_t(i)]);
                 }
             }
         }
@@ -308,12 +347,17 @@ void guestPanel(App& app) {
 
     if (!app.link.wanted()) {
         if (ImGui::Button("Connect", {-1, 0})) {
-            app.link.connect(inst.port);
+            connectGuest(app, inst);
         }
         ImGui::TextDisabled("MIDI on localhost:%d", inst.port);
+
+        if (inst.screenPort > 0) {
+            ImGui::TextDisabled("Screen on localhost:%d", inst.screenPort);
+        }
     } else {
         if (ImGui::Button("Disconnect", {-1, 0})) {
-            app.link.disconnect();
+            disconnectGuest(app);
+            return;
         }
 
         if (app.link.connected()) {
@@ -342,6 +386,10 @@ void guestPanel(App& app) {
         if (std::find(codes.begin(), codes.end(), inst.product) == codes.end()) {
             ImGui::TextWrapped("This panel is not a %s, so Engine will read its controls as that product's.",
                                inst.product.c_str());
+        }
+
+        if (app.screen.wanted()) {
+            screenStatus(app, inst);
         }
 
         ImGui::TextDisabled("%u sent, %u received", app.link.sent(), app.link.received());
@@ -614,8 +662,19 @@ void frame(App& app) {
         app.options.layoutLamps = true;
     }
 
+    app.options.screen = {};
+
+    if (app.screen.connected() && app.screen.texture() != ImTextureID_Invalid) {
+        app.options.screen = {app.screen.texture(), app.screen.size()};
+    }
+
     app.surface.draw(app.options, app.fonts);
     app.link.update(app.surface, ImGui::GetTime());
+
+    // Every frame, so a press dragged off the screen still lets go; only a
+    // change is sent.
+    const ScreenPointer& sp = app.surface.screenPointer();
+    app.screen.pointer(sp.uv, sp.down);
     ImGui::End();
     ImGui::PopStyleVar();
 }
@@ -642,6 +701,7 @@ bool saveScreenshot(App& app, ImDrawData* drawData, SDL_GPUTextureFormat format,
     SDL_GPUTransferBuffer* download = SDL_CreateGPUTransferBuffer(app.gpu, &tb);
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(app.gpu);
+    app.screen.upload(cmd);
     ImGui_ImplSDLGPU3_PrepareDrawData(drawData, cmd);
 
     SDL_GPUColorTargetInfo ct = {};
@@ -828,7 +888,7 @@ int main(int argc, char** argv) {
     if (!app.args.instance.empty()) {
         for (const Instance& i : findInstances(app.args.instances)) {
             if (i.name == app.args.instance) {
-                app.link.connect(i.port);
+                connectGuest(app, i);
             }
         }
 
@@ -882,6 +942,7 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        app.screen.prepare(app.gpu);
         ImGui_ImplSDLGPU3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
@@ -903,6 +964,8 @@ int main(int argc, char** argv) {
                     std::printf("guest: %s, %u sent, %u received\n",
                                 app.link.connected() ? "connected" : "not connected", app.link.sent(),
                                 app.link.received());
+                    std::printf("screen: %s, %s\n", app.screen.connected() ? "connected" : "not connected",
+                                app.screen.status().c_str());
                     const auto& log = app.link.log();
 
                     for (size_t i = log.size() > 12 ? log.size() - 12 : 0; i < log.size(); ++i) {
@@ -922,6 +985,7 @@ int main(int argc, char** argv) {
         SDL_WaitAndAcquireGPUSwapchainTexture(cmd, app.window, &swapchain, nullptr, nullptr);
 
         if (swapchain) {
+            app.screen.upload(cmd);
             ImGui_ImplSDLGPU3_PrepareDrawData(drawData, cmd);
             SDL_GPUColorTargetInfo target = {};
             target.texture = swapchain;
@@ -936,7 +1000,9 @@ int main(int argc, char** argv) {
         SDL_SubmitGPUCommandBuffer(cmd);
     }
 
+    disconnectGuest(app);
     SDL_WaitForGPUIdle(app.gpu);
+    app.screen.release();
     app.photos.clear();
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();

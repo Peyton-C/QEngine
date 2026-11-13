@@ -35,11 +35,16 @@
 // and note, lit at 64 and over and dim below, or inMusic's RGB SysEx,
 // F0 00 02 0B 7F <product> 03 00 05 <ch> <note> <r> <g> <b> F7.
 
-// An Engine instance under build/instances, and the port its MIDI is on.
+// An Engine instance under build/instances, and the ports its MIDI and its
+// screen are on. The screen is Engine's own Qt VNC server on a legacy rootfs,
+// else QEMU's VNC console, which only the vnc and egl-vnc displays serve.
 struct Instance {
     std::string name;
     std::string product;
     int port = 0;
+    int screenPort = 0;
+    bool engineVnc = false;  // the screen is Engine's own server
+    std::string display;     // DISPLAY_MODE, empty when the host picks it
 };
 
 std::vector<Instance> findInstances(const std::filesystem::path& dir);

@@ -53,6 +53,7 @@ add_executable(qengine-ui
   src/main.cpp
   src/Layout.cpp
   src/Midi.cpp
+  src/Screen.cpp
   src/Surface.cpp
   src/Texture.cpp
   src/Touch.cpp)
@@ -77,4 +78,5 @@ target_compile_definitions(qengine-ui PRIVATE
   QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos"
   QENGINE_UI_INSTANCES="${CMAKE_CURRENT_SOURCE_DIR}/../build/instances")
 
-target_link_libraries(qengine-ui PRIVATE qengine_imgui nlohmann_json::nlohmann_json)
+find_package(Threads REQUIRED)
+target_link_libraries(qengine-ui PRIVATE qengine_imgui nlohmann_json::nlohmann_json Threads::Threads)

@@ -7,6 +7,7 @@
 #include "imgui_internal.h"
 
 #include <algorithm>
+#include <utility>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -401,18 +402,46 @@ void drawHatch(const Painter& g, const json& p) {
     }
 }
 
-void drawLcd(const Painter& g, const json& p) {
+// The part of an lcd the guest's picture fills: all of it, unless the
+// guest's shape differs from the layout's, when it is centred at its own.
+void lcdPicture(ImVec2 p0, ImVec2 p1, ImVec2 size, ImVec2& min, ImVec2& max) {
+    min = p0;
+    max = p1;
+
+    if (size.x <= 0 || size.y <= 0) {
+        return;
+    }
+
+    const ImVec2 box = p1 - p0;
+    const float s = std::min(box.x / size.x, box.y / size.y);
+    min = p0 + (box - size * s) * 0.5f;
+    max = min + size * s;
+}
+
+void drawLcd(const Painter& g, const json& p, const SurfaceOptions::Photo& screen) {
     const ImVec4 r = rect(p, "rect");
     const ImVec2 p0 = g.P({r.x, r.y});
     const ImVec2 p1 = g.P({r.x + r.z, r.y + r.w});
 
     g.rect(p0, p1, 0, {0.05f, 0.07f, 0.09f, 1}, {0.02f, 0.025f, 0.035f, 1});
 
+    if (screen.id != ImTextureID_Invalid) {
+        ImVec2 min;
+        ImVec2 max;
+        lcdPicture(p0, p1, screen.size, min, max);
+        g.dl->AddRectFilled(p0, p1, g.C({0, 0, 0, 1}));
+        g.dl->AddImage(screen.id, min, max, {0, 0}, {1, 1}, g.C({1, 1, 1, 1}));
+    }
+
     // A faint diagonal reflection is most of what makes a black rectangle
     // look like glass.
     g.dl->AddTriangleFilled(p0, {p0.x + (p1.x - p0.x) * 0.62f, p0.y}, {p0.x, p0.y + (p1.y - p0.y) * 0.9f},
                             g.C({1, 1, 1, 0.025f}));
     g.dl->AddRect(p0, p1, g.C({0, 0, 0, 1}), 0, 0, 1.0f);
+
+    if (screen.id != ImTextureID_Invalid) {
+        return;
+    }
 
     const ImVec2 mid = {r.x + r.z * 0.5f, r.y + r.w * 0.5f};
     g.text(g.fonts->title, std::min(r.w * 0.06f, 5.0f), mid - ImVec2(0, r.w * 0.04f),
@@ -1307,6 +1336,19 @@ int Surface::elementAt(ImVec2 screen) const {
     return -1;
 }
 
+bool Surface::onScreen(ImVec2 at, ImVec2* uv) const {
+    if (screenMax_.x <= screenMin_.x || at.x < screenMin_.x || at.y < screenMin_.y || at.x >= screenMax_.x ||
+        at.y >= screenMax_.y) {
+        return false;
+    }
+
+    if (uv) {
+        *uv = (at - screenMin_) / (screenMax_ - screenMin_);
+    }
+
+    return true;
+}
+
 void Surface::begin(uint64_t who, int index, ImVec2 at) {
     const Element& e = layout_->elements[size_t(index)];
     ControlState& st = state_[e.id];
@@ -1422,11 +1464,28 @@ void Surface::touches() {
     };
 
     for (const TouchEvent& t : touches_) {
+        if (t.id == screenHolder_) {
+            // One finger on the screen at a time, since VNC has one pointer.
+            onScreen(t.pos, &screenPointer_.uv);
+
+            // Let go a frame later, or a tap that lands and lifts within
+            // one frame would never reach the guest pressed.
+            if (t.phase == TouchEvent::Up) {
+                screenHolder_ = kNobody;
+                screenLift_ = true;
+            }
+            continue;
+        }
+
         if (t.phase == TouchEvent::Down) {
             const int index = elementAt(t.pos);
 
             if (index >= 0) {
                 begin(t.id, index, t.pos);
+            } else if (screenHolder_ == kNobody && onScreen(t.pos, &screenPointer_.uv)) {
+                screenHolder_ = t.id;
+                screenPointer_.inside = true;
+                screenPointer_.down = true;
             }
         } else if (t.phase == TouchEvent::Move) {
             moved[t.id] = t.pos;
@@ -1522,8 +1581,41 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
     canvasMax_ = pos + avail;
     hovered_ = canvasHovered || contacts_.count(kMouse) ? elementAt(io.MousePos) : -1;
 
+    // The first lcd is the guest's screen. A device with two, such as one
+    // with a screen in each jog, shows the guest's main display in the first.
+    screenMin_ = screenMax_ = {0, 0};
+
+    for (const Element& e : layout.elements) {
+        if (e.kind == "lcd" && !flag(e.p, "hidden")) {
+            const ImVec4 r = rect(e.p, "rect");
+            lcdPicture(g.P({r.x, r.y}), g.P({r.x + r.z, r.y + r.w}), options.screen.size, screenMin_, screenMax_);
+            break;
+        }
+    }
+
+    if (std::exchange(screenLift_, false)) {
+        screenPointer_.down = false;
+    }
+
     if (ImGui::IsItemActivated() && hovered_ >= 0) {
         begin(kMouse, hovered_, io.MousePos);
+    } else if (ImGui::IsItemActivated() && screenHolder_ == kNobody && onScreen(io.MousePos)) {
+        screenHolder_ = kMouse;
+    }
+
+    if (screenHolder_ == kMouse) {
+        screenPointer_.inside = true;
+        screenPointer_.down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        // Clamped rather than dropped, so a drag off the edge still lets go
+        // where the guest can see it.
+        screenPointer_.uv = ImClamp((io.MousePos - screenMin_) / ImMax(screenMax_ - screenMin_, ImVec2(1, 1)),
+                                    ImVec2(0, 0), ImVec2(1, 1));
+
+        if (!screenPointer_.down) {
+            screenHolder_ = kNobody;
+        }
+    } else if (screenHolder_ == kNobody && !screenPointer_.down) {
+        screenPointer_.inside = canvasHovered && hovered_ < 0 && onScreen(io.MousePos, &screenPointer_.uv);
     }
 
     if (auto it = contacts_.find(kMouse); it != contacts_.end()) {
@@ -1620,7 +1712,7 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
 
         if (view == View::Photo) {
             if (e.kind == "lcd") {
-                drawLcd(g, p);
+                drawLcd(g, p, options.screen);
             } else if (interactive(e.kind)) {
                 drawPressedOverlay(g, e, st);
             }
@@ -1633,7 +1725,7 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         else if (e.kind == "text") drawText(g, p);
         else if (e.kind == "led") drawLed(g, p, options.layoutLamps && flag(p, "lit"));
         else if (e.kind == "meter") drawMeter(g, p, st.value);
-        else if (e.kind == "lcd") drawLcd(g, p);
+        else if (e.kind == "lcd") drawLcd(g, p, options.screen);
         else if (e.kind == "hatch") drawHatch(g, p);
         else if (e.kind == "button") drawButton(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);
         else if (e.kind == "pad") drawPad(g, st.lamp.w > 0 ? guestLamp(p, st.lamp) : p, st, options.layoutLamps);

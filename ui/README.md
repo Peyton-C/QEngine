@@ -36,7 +36,10 @@ The sidebar's Guest section lists the Engine instances under `build/instances` a
 
 A control sends what its `midi` field says, in the numbers from the product's assignment file: a `note` for a button or pad, a `cc` or a 14-bit `[upper, lower]` pair for a knob or fader, a `relative` CC for an encoder, and a touch note with a position pair for a jog. A placed template's `midi_channel` gives its controls their channel, and the layout's `midi.channel` the rest. Only the Prime 4 G2 (`JP24`) is mapped so far, and it needs an instance built as `JP24`. A panel for another product sends that product's numbers, which the guest reads as its own product's.
 
-Engine only binds the surface when it starts, so connect before starting it or restart it. Knobs and faders are sent when they move, not when connecting, so Engine keeps its own positions until then. The guest display is not shown in the panel yet.
+Engine only binds the surface when it starts, so connect before starting it or restart it. Knobs and faders are sent when they move, not when connecting, so Engine keeps its own positions until then.
+
+## Screen
+Connecting also shows the guest's display in the layout's first `lcd`, read over VNC, and a click or a finger on it reaches the guest as a touch through its usb-tablet. The UI reads QEMU's VNC console on `5900 + VNC_DISPLAY`, which only the `vnc` and `egl-vnc` displays serve, so run the instance with `--display vnc` where it would otherwise open a window. A legacy rootfs draws Engine through its own Qt VNC server instead, and the UI reads that on `ENGINE_VNC_PORT`. The UI has its own small RFB client, which asks for raw pixels since both servers are on localhost, and accepts no password. A VNC viewer can stay connected beside it.
 
 ## Photos
 Product photos are inMusic's and are never committed. Put them in `build/product_photos`, or point `--photos` elsewhere, and a layout's `photo.rect` maps its faceplate. The Photo view shows the photo with the screen and pressed controls drawn over it. Trace lays the drawing over the photo, which is how a new layout is checked.

@@ -122,6 +122,20 @@ std::vector<Instance> findInstances(const fs::path& dir) {
             i.port = 0;
         }
 
+        i.display = v["DISPLAY_MODE"];
+
+        try {
+            if (!v["ENGINE_VNC_PORT"].empty()) {
+                i.screenPort = std::stoi(v["ENGINE_VNC_PORT"]);
+                i.engineVnc = true;
+            } else {
+                // run_qemu.sh's default when none is recorded.
+                i.screenPort = 5900 + (v["VNC_DISPLAY"].empty() ? 1 : std::stoi(v["VNC_DISPLAY"]));
+            }
+        } catch (const std::exception&) {
+            i.screenPort = 0;
+        }
+
         if (i.port > 0) {
             found.push_back(i);
         }

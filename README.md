@@ -19,19 +19,35 @@ See [Build](docs/BUILDING.md) for requirements, rebuilds and display options. On
 ## Engine OS support matrix
 Y means supported in the builds tried, N means unavailable, and ? means unverified or unresolved. Results do not cover every device and firmware combination. The [era guides](docs/engine/README.md) describe the runtime limits.
 
-|                         | Modern arm64 (4.4.0+) | Modern armv7 (5.0.0+) | Classic (2.4.0-4.3.4) | Legacy (1.0.0-2.3.x) |
-|-------------------------|-----------------------|-----------------------|-----------------------|----------------------|
-| Engine                  | Y                     | Y                     | Y                     | Y                    |
-| SoundSwitch             | Y                     | ?                     | ?                     | ?                    |
-| Display                 | Y                     | Y                     | Y                     | Y                    |
-| Virgl                   | Y                     | Y                     | Y                     | N                    |
-| Touch input             | Y                     | Y                     | Y                     | Y                    |
-| Keyboard navigation     | Y                     | ?                     | ?                     | ?                    |
-| Audio playback          | Y                     | Y (chroot only)       | ?                     | ?                    |
-| MIDI                    | Y                     | Y                     | ?                     | ?                    |
-| External media (USB/SD) | Y                     | Y                     | ?                     | ?                    |
+|                         | Modern arm64 | Modern armv7    | Classic         | Legacy |
+|-------------------------|--------------|-----------------|-----------------|--------|
+| Engine                  | Y            | Y               | Y               | Y      |
+| SoundSwitch             | Y            | ?               | ?               | ?      |
+| Display                 | Y            | Y               | Y               | Y      |
+| Virgl                   | Y            | Y               | Y               | N      |
+| Touch input             | Y            | Y               | Y               | Y      |
+| Keyboard navigation     | Y            | Y               | Y               | ?      |
+| Audio playback          | Y            | Y (chroot only) | Y (chroot only) | ?      |
+| MIDI                    | Y            | Y               | Y               | ?      |
+| External media (USB/SD) | Y            | Y               | Y               | ?      |
 
-Legacy input checks cover single taps; playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+
+## OS Eras
+QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.
+
+| Platform                   | Modern  | Classic     | Legacy  |
+|----------------------------|---------|-------------|---------|
+| Engine                     | 4.4.0+  | 2.4.0-4.3.4 | < 2.4.0 |
+| MPC                        | 3.4.1+  | –           | 2.x     |
+| MPC Force                  | 3.5.0+  | –           | < 3.5.0 |
+| MPC Sample                 | 1.x     | –           | –       |
+| Alesis drum module         | 1.5.2.3 | –           | –       |
+| HeadRush VX5               | 1.x     | –           | –       |
+| HeadRush Prime, Flex Prime | –       | 5.2.0       | –       |
+| Sheeran Looper X           | –       | 1.0.2       | –       |
+| HeadRush Pedalboard        | –       | –           | 2.x     |
+| HeadRush Looperboard       | –       | –           | 2.x     |
 
 ## Emulated controllers
 Code selects the product identity with `--product-code`. Version cells list firmware booted; ranges summarize checked releases. ? means unverified or unresolved, and – means no release in that major. ! marks Prime GO firmware booted as `JC11` rather than its native `JP11` identity.

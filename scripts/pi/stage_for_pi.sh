@@ -4,7 +4,7 @@
 #
 # Usage: stage_for_pi.sh --name <instance> [--out <dir>] [--wayland]
 #   <instance> is one made by scripts/build_scripts/new_instance.sh; it must be an
-#   arm64 Engine or Gen 2 MPC instance and must not be running. Writes
+#   arm64 Engine, or a Gen 1 or Gen 2 MPC, instance and must not be running. Writes
 #   build/pi-stage/ by default. Requires Docker. An MPC instance goes into mpc/,
 #   beside chroot-mpc.sh, kmsshim.so and kmspresent.
 #
@@ -55,8 +55,9 @@ INSTANCE_DIR="$REPO_ROOT/build/instances/$NAME"
     echo "ERROR: no instance '$NAME' in build/instances." >&2; exit 1; }
 # shellcheck disable=SC1091
 . "$INSTANCE_DIR/instance.env"
-[ "${ARCH:-}" = arm64 ] || {
-    echo "ERROR: instance '$NAME' is ${ARCH:-unknown}; only arm64 has been run on a Pi." >&2
+# Gen 1 MPC is armhf, and runs as 32-bit programs on the arm64 host.
+[ "${ARCH:-}" = arm64 ] || { [ "${DEVICE:-}" = mpc ] && [ "${ARCH:-}" = armhf ]; } || {
+    echo "ERROR: instance '$NAME' is ${ARCH:-unknown}; only arm64, and armhf MPC, have been run on a Pi." >&2
     exit 1; }
 # A disk image copied while its guest has it mounted read-write is not a
 # consistent filesystem.
@@ -78,8 +79,7 @@ copy_image() {
 # there on bookworm so that any newer distribution can run it.
 if [ "${DEVICE:-}" = mpc ]; then
     [ -n "${DATA_IMG:-}" ] && [ -f "$DATA_IMG" ] || {
-        echo "ERROR: instance '$NAME' has no data_disk.img; only Gen 2 MPC runs in a chroot." >&2
-        exit 1; }
+        echo "ERROR: instance '$NAME' has no data disk." >&2; exit 1; }
     mkdir -p "$OUT/mpc"
     echo "--- building kmsshim and kmspresent ---"
     docker pull -q --platform linux/arm64 debian:bookworm >/dev/null
@@ -100,13 +100,33 @@ if [ "${DEVICE:-}" = mpc ]; then
             gcc -O2 -Wall -Wno-missing-field-initializers -I. -I/shims/kmsshim $(pkg-config --cflags libdecor-0) \
                 -o /out/kmspresent /shims/kmsshim/kmspresent.c viewporter.c -lwayland-client -ldecor-0
         '
-    for f in kmsshim.so kmspresent; do
+    # Gen 1's MPC is a 32-bit program, so the kmsshim loaded into it is too.
+    # kmspresent stays the host's.
+    KMS_FILES="kmsshim.so kmspresent"
+    if [ "$ARCH" = armhf ]; then
+        KMS_FILES="$KMS_FILES kmsshim-armhf.so"
+        docker pull -q --platform linux/arm/v7 debian:bookworm >/dev/null
+        docker run --rm --platform linux/arm/v7 \
+            -v "$REPO_ROOT/shims:/shims:ro" -v "$OUT:/out" \
+            debian:bookworm bash -c '
+                set -e
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update -qq
+                apt-get install -y -qq gcc libc6-dev libdrm-dev >/dev/null 2>&1
+                gcc -shared -fPIC -O2 -Wall -I/usr/include/libdrm \
+                    -o /out/kmsshim-armhf.so /shims/kmsshim/kmsshim.c -ldl -lpthread
+            '
+    fi
+    for f in $KMS_FILES; do
         [ -s "$OUT/$f" ] || { echo "ERROR: $f was not built." >&2; exit 1; }
     done
     echo "--- copying the rootfs and data disk ---"
     copy_image "$ROOTFS_IMG" "$OUT/mpc/rootfs.img"
-    copy_image "$DATA_IMG" "$OUT/mpc/data_disk.img"
+    # data_disk.img on Gen 2, emmc.img on Gen 1, which chroot-mpc.sh tells apart.
+    rm -f "$OUT/mpc/data_disk.img" "$OUT/mpc/emmc.img"
+    copy_image "$DATA_IMG" "$OUT/mpc/$(basename "$DATA_IMG")"
     cp "$SCRIPT_DIR/chroot-mpc.sh" "$OUT/"
+    chmod 755 "$OUT/chroot-mpc.sh"
     echo ""
     echo "Staged $NAME (${PRODUCT_CODE:-default product}) in $OUT/mpc"
     echo "Copy it across with something that keeps the images sparse, e.g."

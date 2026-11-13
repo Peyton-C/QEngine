@@ -123,7 +123,15 @@ static struct fb fbs[MAX_FBS];       /* by fb id - FB_BASE */
 static struct blob blobs[MAX_BLOBS]; /* by blob id - BLOB_BASE */
 #define FB_BASE 100
 #define BLOB_BASE 1000
-#define MAP_SHIFT 32  /* MAP_DUMB offset = handle << MAP_SHIFT */
+/* MAP_DUMB offset = handle << MAP_SHIFT. On armv7 (Gen 1 MPC) mmap takes a
+ * 32-bit signed off_t, so the handle has to sit lower: 256 handles << 22 still
+ * fits below 2^31, and leaves 4 MiB of offset within a buffer, more than a
+ * 1280x800 XR24 frame. */
+#if UINTPTR_MAX > 0xffffffffu
+#define MAP_SHIFT 32
+#else
+#define MAP_SHIFT 22
+#endif
 
 static pthread_mutex_t lk = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t flip_cv = PTHREAD_COND_INITIALIZER;
@@ -673,6 +681,20 @@ int ioctl(int fd, unsigned long req, ...) {
     return real_ioctl(fd, req, arg);
 }
 
+#if UINTPTR_MAX <= 0xffffffffu
+/* 32-bit programs built with 64-bit time_t call this in place of ioctl (glibc
+ * 2.34 and later). Gen 1 MPC 3.10.0 and its libdrm do, and without it opened
+ * the fake device, saw no answer and quit with "Failed to initialise display".
+ * DRM's structures have no time_t in them, so the request is the same. */
+int __ioctl_time64(int fd, unsigned long req, ...) {
+    static int (*real)(int, unsigned long, ...);
+    va_list ap; va_start(ap, req); void *arg = va_arg(ap, void *); va_end(ap);
+    if (_IOC_TYPE(req) == DRM_IOCTL_BASE && is_fake(fd)) return ioctl(fd, req, arg);
+    if (!real) real = dlsym(RTLD_NEXT, "__ioctl_time64");
+    return real ? real(fd, req, arg) : real_ioctl(fd, req, arg);
+}
+#endif
+
 void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
     if (is_fake(fd)) {
         uint32_t h = (uint32_t)((uint64_t)off >> MAP_SHIFT);
@@ -684,7 +706,18 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
     }
     return real_mmap(addr, len, prot, flags, fd, off);
 }
+#if UINTPTR_MAX > 0xffffffffu
 void *mmap64(void *addr, size_t len, int prot, int flags, int fd, off_t off) __attribute__((alias("mmap")));
+#else
+/* On 32-bit, mmap64 takes a 64-bit offset and is what an app built with
+ * _FILE_OFFSET_BITS=64 calls in place of mmap. */
+void *mmap64(void *addr, size_t len, int prot, int flags, int fd, int64_t off) {
+    static void *(*real_mmap64)(void *, size_t, int, int, int, int64_t);
+    if (is_fake(fd)) return mmap(addr, len, prot, flags, fd, (off_t)off);
+    if (!real_mmap64) real_mmap64 = dlsym(RTLD_NEXT, "mmap64");
+    return real_mmap64(addr, len, prot, flags, fd, off);
+}
+#endif
 
 /* Input. MPC takes its touchscreen, keyboards and mice through libinput, which
  * keeps the devices whose udev ID_SEAT is the seat it was given, seat0, the

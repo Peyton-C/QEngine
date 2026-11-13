@@ -1,7 +1,8 @@
 #!/bin/bash
-# chroot-mpc.sh — runs a Gen 2 MPC, MPC Sample or HeadRush VX5 instance's rootfs
-# in a chroot on an arm64 Linux host, the way chroot-up.sh and chroot-engine.sh
-# do for Engine.
+# chroot-mpc.sh — runs a Gen 1 or Gen 2 MPC, MPC Sample or HeadRush VX5
+# instance's rootfs in a chroot on an arm64 Linux host, the way chroot-up.sh and
+# chroot-engine.sh do for Engine. Gen 1 is armv7, and runs on a host whose kernel
+# runs 32-bit programs (CONFIG_COMPAT, a CPU with AArch32 at EL0, as a Pi 5's).
 #
 # Usage: sudo chroot-mpc.sh [up|start|stop|down]
 #   up     mount the rootfs, its data disk and the host's /proc, /sys, /dev; load
@@ -13,11 +14,13 @@
 # The instance's own rootfs.img and data_disk.img are used as they are: what QEMU
 # needed is already in them (dtshim and its fake devicetree, mpcsurface,
 # alsashim, touchbridge_mpc), and nothing about the chroot needs more. Copy them
-# from build/instances/<name>/ into $MPC_DIR, or let stage_for_pi.sh do it.
+# from build/instances/<name>/ into $MPC_DIR, or let stage_for_pi.sh do it. A
+# Gen 1 instance's data disk is emmc.img, used in place of data_disk.img.
 #
 # Environment (or $QENGINE_DIR/pi.env, shared with the Engine scripts):
 #   QENGINE_DIR  Default: ~/qengine of the user who ran sudo.
-#   MPC_DIR      where rootfs.img and data_disk.img are. Default: $QENGINE_DIR/mpc
+#   MPC_DIR      where rootfs.img and data_disk.img (or emmc.img) are.
+#                Default: $QENGINE_DIR/mpc
 #   MPC_ROOT     where the rootfs is mounted. Default: /srv/mpc
 #   AUDIO_CARD   where MPC's main output is heard: an ALSA id from
 #                /proc/asound/cards, or a name in /dev/snd/by-path. Default: the
@@ -27,7 +30,8 @@
 #   PLATFORM     `wayland` to run MPC as a window in a running compositor (sway)
 #                instead of on the display: kmsshim.so is preloaded into MPC as
 #                its display, and kmspresent shows it and is its touchscreen. Both
-#                are looked for in $QENGINE_DIR. Default: MPC drives the display.
+#                are looked for in $QENGINE_DIR, and kmsshim-armhf.so for Gen 1.
+#                Default: MPC drives the display.
 #   WAYLAND_PATH the compositor's socket. Default: the newest in /run/user/*/.
 #   ALSASHIM_METER=1  log the output's peak level in mpc.log every second.
 #
@@ -45,6 +49,9 @@ _caller_env="$(export -p)"
 [ -f "$QENGINE_DIR/pi.env" ] && . "$QENGINE_DIR/pi.env"
 eval "$_caller_env"
 MPC_DIR="${MPC_DIR:-$QENGINE_DIR/mpc}"
+# Gen 2's data disk has /data and /factory; Gen 1's eMMC has /data alone.
+DATA_DISK="$MPC_DIR/data_disk.img"
+[ -f "$DATA_DISK" ] || [ ! -f "$MPC_DIR/emmc.img" ] || DATA_DISK="$MPC_DIR/emmc.img"
 R="${MPC_ROOT:-/srv/mpc}"
 BASE=(PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root)
 
@@ -80,10 +87,13 @@ mpc_pid() {
 # The preloads and environment are each app's QEngine unit drop-in's, and the
 # launch its launcher's (MPC's and the Sample's), or the bare binary (VX5's).
 app_detect() {
-    APP_PANEL=""; APP_WRAP=1
+    APP_PANEL=""; APP_WRAP=1; APP_ARCH=arm64
+    [ -e "$R/lib/ld-linux-armhf.so.3" ] && APP_ARCH=armhf
     if [ -x "$R/usr/bin/MPC" ]; then
         APP_BIN=/usr/bin/MPC; APP_MODEL=""; APP_SCREEN=1280x800; APP_TOUCH=1
         APP_ID=qengine-mpc; APP_NAME=MPC
+        # Its own seat and window, so that Gen 1 and Gen 2 can run side by side.
+        [ "$APP_ARCH" = armhf ] && { APP_ID=qengine-mpc-gen1; APP_NAME="MPC Gen 1"; }
         APP_PRELOAD=/root/dtshim.so:/root/mpcsurface.so:/root/alsashim.so
         APP_ENV=(GLIBC_TUNABLES=glibc.malloc.hugetlb=2 MALLOC_ARENA_MAX=1)
     elif [ -x "$R/usr/bin/MPC Sample" ]; then
@@ -116,8 +126,8 @@ app_detect() {
 }
 
 up() {
-    [ -f "$MPC_DIR/rootfs.img" ] && [ -f "$MPC_DIR/data_disk.img" ] || {
-        echo "ERROR: no rootfs.img and data_disk.img in $MPC_DIR (set MPC_DIR)." >&2; exit 1; }
+    [ -f "$MPC_DIR/rootfs.img" ] && [ -f "$DATA_DISK" ] || {
+        echo "ERROR: no rootfs.img and data_disk.img or emmc.img in $MPC_DIR (set MPC_DIR)." >&2; exit 1; }
     mkdir -p "$R"
     # The mount point is bound onto itself and made private before anything goes
     # on it. Services that run in a mount namespace of their own (logind, udevd,
@@ -131,19 +141,24 @@ up() {
     findmnt -n -o SOURCE --mountpoint "$R" | grep -q '^/dev/loop' ||
         mount -o loop,ro "$MPC_DIR/rootfs.img" "$R" || exit 1
     app_detect
-    [ -n "$APP_BIN" ] && [ -e "$R/lib/ld-linux-aarch64.so.1" ] || {
-        echo "ERROR: $MPC_DIR/rootfs.img is not an arm64 MPC, MPC Sample or VX5 rootfs." >&2
-        umount "$R"; exit 1; }
+    if [ -z "$APP_BIN" ] || { [ ! -e "$R/lib/ld-linux-aarch64.so.1" ] && [ "$APP_ARCH" != armhf ]; }; then
+        echo "ERROR: $MPC_DIR/rootfs.img is not an MPC, MPC Sample or VX5 rootfs." >&2
+        umount "$R"; exit 1
+    fi
+    if [ "$APP_ARCH" = armhf ] && ! chroot "$R" /bin/true 2>/dev/null; then
+        echo "ERROR: this is a Gen 1 (armv7) rootfs, and this kernel does not run 32-bit programs." >&2
+        umount "$R"; exit 1
+    fi
 
     # data_disk.img is /data and /factory, the two partitions new_instance.sh
     # gave it. The vendor mount units find them by PARTUUID, which the host's
     # loop devices also carry, but there is no systemd in here to read the units.
     local loop
-    loop="$(losetup -j "$MPC_DIR/data_disk.img" | cut -d: -f1 | head -n 1)"
-    [ -n "$loop" ] || loop="$(losetup -fP --show "$MPC_DIR/data_disk.img")"
+    loop="$(losetup -j "$DATA_DISK" | cut -d: -f1 | head -n 1)"
+    [ -n "$loop" ] || loop="$(losetup -fP --show "$DATA_DISK")"
     mountpoint -q "$R/data"    || mount "${loop}p1" "$R/data"
-    # The VX5 rootfs has no /factory to mount it on.
-    [ ! -d "$R/factory" ] || mountpoint -q "$R/factory" || mount "${loop}p2" "$R/factory"
+    # The VX5 rootfs has no /factory to mount it on, and Gen 1 has no partition.
+    [ ! -d "$R/factory" ] || [ ! -b "${loop}p2" ] || mountpoint -q "$R/factory" || mount "${loop}p2" "$R/factory"
 
     mountpoint -q "$R/proc" || mount -t proc proc "$R/proc"
     mountpoint -q "$R/sys"  || mount --rbind /sys "$R/sys"
@@ -158,11 +173,27 @@ up() {
     mountpoint -q "$R/run/udev" || mount --bind /run/udev "$R/run/udev"
     mountpoint -q "$R/media" || mount -t tmpfs -o mode=1777 tmpfs "$R/media"
     mountpoint -q "$R/tmp"   || mount -t tmpfs -o mode=1777 tmpfs "$R/tmp"
-    mountpoint -q "$R/var/volatile" || mount -t tmpfs tmpfs "$R/var/volatile"
-    mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
-    # var-lib.mount on the device.
-    mkdir -p "$R/data/system/var-lib"
-    mountpoint -q "$R/var/lib" || mount --bind "$R/data/system/var-lib" "$R/var/lib"
+    if [ "$APP_ARCH" = armhf ]; then
+        # Gen 1 overlays all of /etc and /var from /data (etc.mount, var.mount),
+        # and MPC finds its internal storage at /media/az01-internal, a bind of
+        # /data (3.10.0). Its own units, in the order systemd would mount them.
+        local d
+        for d in etc var; do
+            mkdir -p "$R/data/system/$d/overlay" "$R/data/system/$d/.work"
+            findmnt -n -t overlay --mountpoint "$R/$d" >/dev/null ||
+                mount -t overlay overlay -o "lowerdir=$R/$d,upperdir=$R/data/system/$d/overlay,workdir=$R/data/system/$d/.work" "$R/$d"
+        done
+        mountpoint -q "$R/var/volatile" || mount -t tmpfs tmpfs "$R/var/volatile"
+        mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
+        mountpoint -q "$R/media/az01-internal" || {
+            mkdir -p "$R/media/az01-internal" && mount --bind "$R/data" "$R/media/az01-internal"; }
+    else
+        mountpoint -q "$R/var/volatile" || mount -t tmpfs tmpfs "$R/var/volatile"
+        mkdir -p "$R/var/volatile/log" "$R/var/volatile/tmp"
+        # var-lib.mount on the device.
+        mkdir -p "$R/data/system/var-lib"
+        mountpoint -q "$R/var/lib" || mount --bind "$R/data/system/var-lib" "$R/var/lib"
+    fi
 
     # MPC's internal card, as qengine-mpc-audio.service gives it in a guest: a
     # duplex card that keeps time at 128-frame periods, opened by udev path.
@@ -335,8 +366,11 @@ SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{name}==\"QEngine VX5 phantom pow
     # MPC looks for touchscreens once, as it starts, so whichever one it gets
     # has to exist first.
     if [ "$platform" = wayland ]; then
-        [ -x "$QENGINE_DIR/kmspresent" ] && [ -f "$QENGINE_DIR/kmsshim.so" ] || {
-            echo "ERROR: PLATFORM=wayland needs kmspresent and kmsshim.so in $QENGINE_DIR." >&2; exit 1; }
+        # kmsshim is loaded into the app, so it is built for the app's architecture.
+        local kmsshim="$QENGINE_DIR/kmsshim.so"
+        [ "$APP_ARCH" = armhf ] && kmsshim="$QENGINE_DIR/kmsshim-armhf.so"
+        [ -x "$QENGINE_DIR/kmspresent" ] && [ -f "$kmsshim" ] || {
+            echo "ERROR: PLATFORM=wayland needs kmspresent and $(basename "$kmsshim") in $QENGINE_DIR." >&2; exit 1; }
         if [ -z "${WAYLAND_PATH:-}" ]; then
             # Newest first; the names are wayland-N, nothing ls could mangle.
             # shellcheck disable=SC2010
@@ -367,7 +401,7 @@ SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{name}==\"QEngine VX5 phantom pow
             mkdir -p "$(dirname "$desktop")"; printf '%s\n' "$dwant" > "$desktop"
         fi
         # In /run and not in the rootfs: nothing written for a session goes there.
-        cp "$QENGINE_DIR/kmsshim.so" "$R/run/qengine-bin/kmsshim.so"
+        cp "$kmsshim" "$R/run/qengine-bin/kmsshim.so"
         display_shim=:/run/qengine-bin/kmsshim.so
         seat_env="KMSSHIM_SEAT=$APP_SEAT"
         setsid env XDG_RUNTIME_DIR="$(dirname "$WAYLAND_PATH")" WAYLAND_DISPLAY="$(basename "$WAYLAND_PATH")" \
@@ -454,7 +488,7 @@ down() {
         fi
         echo "chroot at $R unmounted"
     fi
-    losetup -j "$MPC_DIR/data_disk.img" 2>/dev/null | cut -d: -f1 | xargs -r -n 1 losetup -d
+    losetup -j "$DATA_DISK" 2>/dev/null | cut -d: -f1 | xargs -r -n 1 losetup -d
     if [ -e /run/qengine-mpc-getty ]; then
         rm -f /run/qengine-mpc-getty
         systemctl start --no-block getty@tty1.service 2>/dev/null || true

@@ -140,7 +140,7 @@ sudo systemctl daemon-reload && sudo systemctl enable qengine-sway rx3
 - To boot Engine alone again: `sudo rm -r /etc/systemd/system/qengine.service.d && sudo systemctl disable qengine-sway rx3`.
 
 ## MPC
-[chroot-mpc.sh](chroot-mpc.sh) runs a Gen 2 MPC, MPC Sample or HeadRush VX5 instance the same way, on any arm64 Linux machine with a 4K-page kernel, telling them apart by the rootfs. It was tried with MPC 3.10.0 as `ACVA3` in an Ubuntu 26.04 VM under UTM, and not yet on a Pi. Gen 1 images are armv7 and it does not run them.
+[chroot-mpc.sh](chroot-mpc.sh) runs a Gen 1 or Gen 2 MPC, MPC Sample or HeadRush VX5 instance the same way, on any arm64 Linux machine with a 4K-page kernel, telling them apart by the rootfs. Gen 1 is armv7, and needs a kernel and CPU that run 32-bit programs, as a Pi 5's do. MPC 3.10.0 ran as `ACVA3` in an Ubuntu 26.04 VM under UTM, and as `ACVA3` and Gen 1 `ACVA` side by side as windows in sway on a Pi 5.
 
 ```sh
 scripts/pi/stage_for_pi.sh --name mpc-gen2-3.10.0   # its two disks to build/pi-stage/mpc/, and kmsshim

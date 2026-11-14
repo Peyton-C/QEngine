@@ -12,7 +12,7 @@ Run commands from the repository root. Start Docker before building; the builder
 | e2fsprogs, including `debugfs` and `dumpe2fs` | Inspects the rootfs and reads its UUID |
 | `file` | Checks extracted and built images |
 
-`qemu-system-aarch64` can run both arm64 and armv7 guests. QEngine falls back to `qemu-system-arm` for armv7 when needed; `QEMU_BIN` selects a particular binary. On macOS, add Homebrew's keg-only e2fsprogs tools to `PATH`:
+`qemu-system-aarch64` can run both arm64 and armv7 guests. QEngine falls back to `qemu-system-arm` for armv7 when needed; `QEMU_BIN` selects a particular binary. On an arm64 Linux host whose cores run AArch32, such as a Raspberry Pi 4, armv7 guests use KVM when you can open `/dev/kvm`, so add yourself to the `kvm` group; otherwise they fall back to TCG. On macOS, add Homebrew's keg-only e2fsprogs tools to `PATH`:
 
 ```sh
 export PATH="$(brew --prefix e2fsprogs)/sbin:$PATH"
@@ -130,7 +130,7 @@ scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl
 
 `--display` changes one run. `--gl` and `--no-gl` select the GL or software member of the SDL/VNC pair. Edit `DISPLAY_MODE` in `instance.env` to keep a choice. Legacy Engine uses software rendering and its own VNC server regardless of QEMU's console display.
 
-Virgl needs both the guest Mesa driver and a QEMU built with virglrenderer and OpenGL. If QEMU lacks the required device or display backend, the launcher prints a warning and falls back to software rendering. On Linux, use a QEMU build with `virtio-gpu-gl-pci` and `egl-headless` or SDL OpenGL support. On macOS, follow [macOS virgl](MACOS_VIRGL.md).
+Virgl needs both the guest Mesa driver and a QEMU built with virglrenderer and OpenGL. If QEMU lacks the required device or display backend, the launcher prints a warning and falls back to software rendering. On Linux, use a QEMU build with `virtio-gpu-gl-pci` and `egl-headless` or SDL OpenGL support. Debian ships those as modules, so install `qemu-system-modules-opengl` and `libegl1` alongside `qemu-system-arm`; a Raspberry Pi 4 serves `egl-vnc` this way on its V3D. On macOS, follow [macOS virgl](MACOS_VIRGL.md).
 
 For JP22, set `GPU_MAX_OUTPUTS=3` in `instance.env`. Engine creates three windows and aborts if they share one EGLFS screen. QEngine supplies one connector and tablet per head; the rootfs configures matching screen names and touch-device links. Changing the screen JSON to one output does not reduce Engine's window count. Multi-head operation has only been tried on arm64.
 

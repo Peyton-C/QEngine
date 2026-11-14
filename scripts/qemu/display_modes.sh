@@ -149,9 +149,10 @@ fi
 
 # Whether this QEMU can serve a GL mode at all. Asking for one it cannot used to
 # fail at startup with QEMU's own message about an unknown device, which does not
-# say that the *binary* is the problem: Debian's arm64 package has neither
-# virtio-gpu-gl-pci nor egl-headless, so the GL modes are simply unavailable on such
-# a host however the instance is configured. Rather than stop, drop to the
+# say that the *binary* is the problem: Debian builds both virtio-gpu-gl-pci and
+# egl-headless as modules in qemu-system-modules-opengl, and an install without
+# Recommends has neither, so the GL modes are unavailable on such a host however the
+# instance is configured. Rather than stop, drop to the
 # equivalent non-GL mode and say so -- loudly, because this project has lost enough
 # time to software rendering that looked like hardware rendering.
 #
@@ -175,7 +176,8 @@ if [ "$NEEDS_GL" -eq 1 ] && [ -n "${QEMU_BIN:-}" ] && ! _qemu_serves_gl "$GL_BAC
             echo "         Build one with:  scripts/build_scripts/build_virgl_qemu_macos.sh" >&2
             echo "         (see docs/MACOS_VIRGL.md). Pass --no-gl to silence this." >&2 ;;
         *)
-            echo "         Build QEMU with virglrenderer and OpenGL to get GL here; see" >&2
+            echo "         On Debian, install qemu-system-modules-opengl and libegl1;" >&2
+            echo "         elsewhere, a QEMU built with virglrenderer and OpenGL. See" >&2
             echo "         docs/BUILDING.md. Pass --no-gl to silence this." >&2 ;;
     esac
     DISPLAY_MODE="$NOGL_MODE"

@@ -109,9 +109,12 @@ case "$ARCH" in
         # cannot load in these images.
         #
         # Whether a *host* can serve it is separate. QEMU needs virglrenderer built
-        # in, and Debian's arm64 QEMU has neither virtio-gpu-gl-pci nor
-        # egl-headless, so on such a host the GL modes fail at startup no matter
-        # what this sets.
+        # in. Debian's arm64 QEMU has it, but ships virtio-gpu-gl-pci and
+        # egl-headless as modules in qemu-system-modules-opengl, a Recommends that
+        # --no-install-recommends leaves out, and egl-headless then needs libegl1
+        # and Mesa's libgallium on the host. Without them display_modes.sh drops to
+        # software rendering. Verified on a Pi 4 (V3D, Debian 13, QEMU 10.0.13)
+        # with JC11 5.3.0 under KVM.
         GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"

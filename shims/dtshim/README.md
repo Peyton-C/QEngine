@@ -197,3 +197,15 @@ MPC Sample 1.3.0 uses `-DSOC_RK3566`. This table serves `inmusic,az07-pcb-rev` a
 
 ## Legacy Engine
 SC5000 1.2.0, 1.2.2 and 1.3.1 and Prime 4 1.3.2, 1.3.3 and 1.4.1 use the same source with `legacy_compat.c`, linked against the guest's glibc. It supplies `memfd_create` through the kernel, covers fortified open calls and serves physical-register mappings as anonymous zero-filled memory. The builder enables large-file access for `/dev/mem`'s sparse stand-in. Newer firmware builds omit this compatibility object.
+
+## Battery
+`dtshim` redirects these RK3288 power-supply paths to `/root/fake-power`. `write_fake_dt` creates the files for `JP11`, `JP11S` and `NH10`, keeping Engine on AC with a full battery.
+
+| Sysfs path | Value |
+| --- | --- |
+| `/sys/class/power_supply/sbs-3-000b/present` | `1` |
+| `/sys/class/power_supply/sbs-3-000b/capacity` | `100` |
+| `/sys/class/power_supply/sbs-3-000b/status` | `Full` |
+| `/sys/class/power_supply/az01-ac-power/online` | `1` |
+
+Rebuild existing instances to install both the shim and the files. See [Identity](../../docs/engine/IDENTITY.md#battery-identities) for firmware coverage.

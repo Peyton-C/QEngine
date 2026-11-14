@@ -634,9 +634,9 @@ static const struct dt_remap *dt_lookup(const char *path) {
 }
 
 #ifdef SOC_RK3288
-static const char *remap_secure_efuse(const char *path, char *mapped,
-                                      size_t mapped_size);
-static __thread char g_secure_efuse_path[PATH_MAX];
+static const char *remap_rk3288_sysfs(const char *path, char *mapped,
+                                     size_t mapped_size);
+static __thread char g_rk3288_sysfs_path[PATH_MAX];
 #endif
 
 /* The path to open for this request: a remap target, or the original. An entry
@@ -646,8 +646,8 @@ static const char *remap(const char *path) {
     const struct dt_remap *e = dt_lookup(path);
     if (e && e->to) return e->to;
 #ifdef SOC_RK3288
-    return remap_secure_efuse(path, g_secure_efuse_path,
-                              sizeof(g_secure_efuse_path));
+    return remap_rk3288_sysfs(path, g_rk3288_sysfs_path,
+                              sizeof(g_rk3288_sysfs_path));
 #else
     return path;
 #endif
@@ -658,13 +658,21 @@ static const char *remap(const char *path) {
  * The generic QEMU machine has no RK3288 eFuse platform device, so redirect
  * that sysfs subtree to the fixed nvmem fixtures written by write_fake_dt().
  * Interposing open() alone is too late: glibc resolves every parent component
- * and rejects the missing platform directory first. */
-static const char *remap_secure_efuse(const char *path, char *mapped,
-                                      size_t mapped_size) {
+ * and rejects the missing platform directory first. The battery paths use the
+ * same remapping so Qt sees their metadata and contents consistently. */
+static const char *remap_rk3288_sysfs(const char *path, char *mapped,
+                                     size_t mapped_size) {
     static const struct {
         const char *real_prefix;
         const char *fake_prefix;
-    } EFUSE_REMAPS[] = {
+    } SYSFS_REMAPS[] = {
+        /* Prime GO, Prime GO+ and Mixstream Pro GO on Engine 5.3.0
+         * poll these paths directly, rather than discovering power supplies.
+         * Keep metadata and canonicalization on the same fixtures as reads. */
+        {"/sys/class/power_supply/sbs-3-000b",
+         "/root/fake-power/sbs-3-000b"},
+        {"/sys/class/power_supply/az01-ac-power",
+         "/root/fake-power/az01-ac-power"},
         {"/sys/devices/platform/ffb10000.efuse",
          "/root/fake-dt/ffb10000.efuse"},
         {"/sys/devices/platform/ffb40000.efuse",
@@ -672,13 +680,13 @@ static const char *remap_secure_efuse(const char *path, char *mapped,
     };
 
     if (!path) return path;
-    for (size_t i = 0; i < sizeof(EFUSE_REMAPS) / sizeof(EFUSE_REMAPS[0]); i++) {
-        size_t prefix_len = strlen(EFUSE_REMAPS[i].real_prefix);
-        if (strncmp(path, EFUSE_REMAPS[i].real_prefix, prefix_len) != 0 ||
+    for (size_t i = 0; i < sizeof(SYSFS_REMAPS) / sizeof(SYSFS_REMAPS[0]); i++) {
+        size_t prefix_len = strlen(SYSFS_REMAPS[i].real_prefix);
+        if (strncmp(path, SYSFS_REMAPS[i].real_prefix, prefix_len) != 0 ||
             (path[prefix_len] != '\0' && path[prefix_len] != '/')) {
             continue;
         }
-        if (snprintf(mapped, mapped_size, "%s%s", EFUSE_REMAPS[i].fake_prefix,
+        if (snprintf(mapped, mapped_size, "%s%s", SYSFS_REMAPS[i].fake_prefix,
                      path + prefix_len) >= (int)mapped_size) {
             return path;
         }
@@ -696,7 +704,7 @@ char *__realpath_chk(const char *path, char *resolved, size_t resolved_size) {
             (realpath_chk_t)dlsym(RTLD_NEXT, "__realpath_chk");
     }
     return real_realpath_chk(
-        remap_secure_efuse(path, mapped, sizeof(mapped)), resolved,
+        remap_rk3288_sysfs(path, mapped, sizeof(mapped)), resolved,
         resolved_size);
 }
 
@@ -896,8 +904,9 @@ int __fstatat64_time64(int dirfd, const char *path, void *buf, int flags) {
  * and Engine exits cleanly. Exporting them costs a 5.x guest nothing: its Engine
  * never calls these names.
  *
- * These remap only the eFuse subtree, not every devicetree path as remap()
- * does. RK3288 MPC builds preload this shim too and share the 32-bit time_t,
+ * These remap only the eFuse and power-supply subtrees, not every devicetree
+ * path as remap() does. RK3288 MPC builds preload this shim too and share
+ * the 32-bit time_t,
  * so a full remap here would change what MPC sees when it stats a devicetree
  * path, for no reason that anything has shown. */
 typedef int (*stat64_t)(const char *, struct stat64 *);
@@ -908,21 +917,21 @@ int stat64(const char *path, struct stat64 *buf) {
     static stat64_t real_stat64 = NULL;
     char mapped[PATH_MAX];
     if (!real_stat64) real_stat64 = (stat64_t)dlsym(RTLD_NEXT, "stat64");
-    return real_stat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+    return real_stat64(remap_rk3288_sysfs(path, mapped, sizeof(mapped)), buf);
 }
 
 int lstat64(const char *path, struct stat64 *buf) {
     static stat64_t real_lstat64 = NULL;
     char mapped[PATH_MAX];
     if (!real_lstat64) real_lstat64 = (stat64_t)dlsym(RTLD_NEXT, "lstat64");
-    return real_lstat64(remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+    return real_lstat64(remap_rk3288_sysfs(path, mapped, sizeof(mapped)), buf);
 }
 
 int fstatat64(int dirfd, const char *path, struct stat64 *buf, int flags) {
     static fstatat64_t real_fstatat64 = NULL;
     char mapped[PATH_MAX];
     if (!real_fstatat64) real_fstatat64 = (fstatat64_t)dlsym(RTLD_NEXT, "fstatat64");
-    const char *p = path && path[0] == '/' ? remap_secure_efuse(path, mapped, sizeof(mapped)) : path;
+    const char *p = path && path[0] == '/' ? remap_rk3288_sysfs(path, mapped, sizeof(mapped)) : path;
     return real_fstatat64(dirfd, p, buf, flags);
 }
 
@@ -937,21 +946,21 @@ int __xstat64(int ver, const char *path, struct stat64 *buf) {
     static xstat64_t real_xstat64 = NULL;
     char mapped[PATH_MAX];
     if (!real_xstat64) real_xstat64 = (xstat64_t)dlsym(RTLD_NEXT, "__xstat64");
-    return real_xstat64(ver, remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+    return real_xstat64(ver, remap_rk3288_sysfs(path, mapped, sizeof(mapped)), buf);
 }
 
 int __lxstat64(int ver, const char *path, struct stat64 *buf) {
     static xstat64_t real_lxstat64 = NULL;
     char mapped[PATH_MAX];
     if (!real_lxstat64) real_lxstat64 = (xstat64_t)dlsym(RTLD_NEXT, "__lxstat64");
-    return real_lxstat64(ver, remap_secure_efuse(path, mapped, sizeof(mapped)), buf);
+    return real_lxstat64(ver, remap_rk3288_sysfs(path, mapped, sizeof(mapped)), buf);
 }
 
 char *realpath(const char *path, char *resolved) {
     static realpath_t real_realpath = NULL;
     char mapped[PATH_MAX];
     if (!real_realpath) real_realpath = (realpath_t)dlsym(RTLD_NEXT, "realpath");
-    return real_realpath(remap_secure_efuse(path, mapped, sizeof(mapped)), resolved);
+    return real_realpath(remap_rk3288_sysfs(path, mapped, sizeof(mapped)), resolved);
 }
 
 ssize_t readlink(const char *path, char *buf, size_t buf_size) {

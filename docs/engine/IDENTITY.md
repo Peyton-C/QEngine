@@ -44,6 +44,12 @@ Write identity strings without a trailing newline. Devicetree cells are binary, 
 Signed RK3288 firmware checks Rockchip eFuse identity. QEngine supplies it through the shared devicetree step. RK3588 Engine 5.1.0 and later also checks TEE attestation; `teeshim` answers it so Engine does not exit to TestApp. These shims leave the application binary unmodified.
 
 ## Battery identities
-Prime GO can require a hold gesture at startup and quit without it. Building as `JC11` avoids that gate in several releases, but Prime GO 1.5.2 keeps the check in its product-specific binary. Native `JP11` rendering has also shown only the upper-left part of the interface. QEngine has no verified general fake-AC setting.
+QEngine supplies a full battery on AC for `JP11`, `JP11S` and `NH10`. `dtshim` redirects Engine's battery and AC sysfs reads to files written by `write_fake_dt`. Build with the native product code; existing instances need a rebuild to install the shim and files.
 
-On 5.3.0, Prime GO+ as `JP11S` and Mixstream Pro GO as `NH10` started Engine, showed a blank screen and powered off after about two minutes. Their images booted as `JC11S` and `NH08S`. Use those alternate identities when the native one will not stay up, accepting the alternate product's interface and control map.
+| Device | Product code | Native UI boot |
+| --- | --- | --- |
+| Prime GO | `JP11` | 5.3.0, armv7 |
+| Prime GO+ | `JP11S` | 5.3.0, armv7 |
+| Mixstream Pro GO | `NH10` | 5.3.0, armv7 |
+
+Older releases have not been booted with the fake battery. The earlier Prime GO boots marked `!` used `JC11`; 1.5.2 still quit on its battery check with that identity. Audio and the full control map remain unverified on these three native identities.

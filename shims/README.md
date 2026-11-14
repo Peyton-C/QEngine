@@ -11,7 +11,7 @@ Allows for a regular cursor to be displayed in Engine.
 Converts the ARGB8888 format frames from Qt to XRGB8888 for use with the virtio gpu.
 
 ## dtshim
-Fakes various parts of the device tree expected by Engine and other InMusic OSes.
+Serves the devicetree and hardware sysfs files expected by Engine and other inMusic applications, including a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO.
 
 ## kmsshim
 A fake KMS device for apps that drive the display themselves, preloaded into MPC so it can run as a window under a Wayland compositor. `kmspresent`, beside it, runs on the host: it shows the app's frames as a window and gives the app a touchscreen from the window's input. Used by `chroot-mpc.sh` with `PLATFORM=wayland`.

@@ -26,7 +26,7 @@ QEngine keeps the vendor Qt runtime. MONTERO can load QML mods on Qt 6; enable i
 The RK3588 firmware uses open-source Panthor/Panfrost drivers rather than the proprietary `libmali` stack. QEMU uses virgl instead. On armv7, time64 symbol names matter to preloaded shims: `drmatomic` exports both `ioctl` and `__ioctl_time64`.
 
 ## Limits
-RMZ2 starts with motorized platters enabled, so QEngine disables that mode through `midisurface` before normal playback. Native battery identities can quit without their hardware: Prime GO+ as `JP11S` and Mixstream Pro GO as `NH10` on 5.3.0 showed a blank screen and powered off; their images booted as `JC11S` and `NH08S`. See [Identity](IDENTITY.md) and [Audio and MIDI](AUDIO_MIDI.md).
+RMZ2 starts with motorized platters enabled, so QEngine disables that mode through `midisurface` before normal playback. QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO; their native identities boot on 5.3.0. See [Identity](IDENTITY.md) and [Audio and MIDI](AUDIO_MIDI.md).
 
 The repository records audible playback on arm64 RMZ2 5.0.4. That does not establish playback on modern armv7 or every product identity. Consult the [support matrix](../../README.md#engine-os-support-matrix) before choosing an instance.
 

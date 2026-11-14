@@ -41,6 +41,9 @@ Buttons have names on `ACVA3`, `ADA2`, `ADA2S` and `AC50`. On other panels, use 
 
 The Force map follows [IamForce](https://github.com/TheKikGen/MPCLiveXplore-libs). Only `menu`, `matrix`, `mixer`, `note`, `play` and `stop` were checked here on `ADA2S`; the remaining named controls are unverified. Names describe observed screen or lamp behavior without a real panel comparison.
 
+## Host MIDI
+In QEMU, `mpcsurface` also reads the virtio-serial port `org.qengine.midi`, served on the host at `localhost:$MIDI_PORT`, as `midibridge` does for Engine. What arrives there goes to the application as the panel's own messages, and the lamps and pad colours the application sends come back, replayed when a host connects. The handshake and pings stay in the shim, so a host only has to send what the panel sends: buttons as notes on channel 1, pads as notes on channel 10, the dial and Q-Links as relative CCs. A note off from the host is sent as the panel lets go, a note on of velocity 0 on a USB panel. The front panel UI in `ui/` plays an `ACVA3` this way. A chroot has no such port, so there it is the fifo only.
+
 ## MPC Sample
 The Sample presents its UART panel as a sound card named `Control Surface`. With product code `AC50`, the shim supplies that interface and accepts these controls:
 

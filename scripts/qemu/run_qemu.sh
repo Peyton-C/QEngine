@@ -13,7 +13,7 @@
 # Anything else the wrappers used to hardcode is an override with the same default:
 # ROOTFS_IMG, DATA_IMG, SD_IMG (unset for no third drive), KERNEL_IMG, INITRD_IMG, SSH_PORT, VNC_DISPLAY, QEMU_BIN,
 # ACCEL, CPU, MEM, SMP, RENDERNODE, KERNEL_EXTRA_ARGS.
-# MIDI_PORT, for an engine guest, is the localhost TCP port its MIDI is served on.
+# MIDI_PORT, for an engine, mpc or mpc-sample guest, is the localhost TCP port its MIDI is served on.
 # QEMU_AUDIO=off omits the emulated sound card; guest loopback audio remains.
 #
 # This replaced seven near-identical launcher scripts. They differed only in the two
@@ -163,17 +163,20 @@ if [ "$_audio" = 1 ] && [ "${QEMU_AUDIO:-on}" != off ]; then
     AUDIO_ARGS="$(arch_audio_devices "$AUDIODEV_ID") -audiodev $AUDIODEV_BACKEND,id=$AUDIODEV_ID"
 fi
 
-# MIDI to and from the host, for Engine guests. One virtio-serial port, named
-# org.qengine.midi, which the guest's midibridge presents as the sequencer client
-# "QEngine MIDI" and midisurface forwards from, the same way the Pi forwards a USB
-# controller. The bytes on it are plain MIDI 1.0 (see shims/midibridge).
+# MIDI to and from the host, for Engine, MPC and MPC Sample guests. One
+# virtio-serial port, named org.qengine.midi. In an Engine guest midibridge
+# presents it as the sequencer client "QEngine MIDI" and midisurface forwards
+# from it, the same way the Pi forwards a USB controller. In MPC and MPC Sample,
+# mpcsurface reads it as its panel's own messages. The bytes on it are plain
+# MIDI 1.0 (see shims/midibridge).
 #
 # TCP on localhost rather than a unix socket: an instance directory under the repo
 # is already long enough that a socket path in it can pass sun_path's 104 bytes on
 # macOS, and the port follows SSH_PORT's per-instance allocation. wait=off so QEMU
 # boots with nothing connected; the guest sees the host come and go.
 MIDI_ARGS=""
-if [ "$DEVICE" = engine ] && [ -n "${MIDI_PORT:-}" ]; then
+case "$DEVICE" in engine|mpc|mpc-sample) _midi=1 ;; *) _midi=0 ;; esac
+if [ "$_midi" = 1 ] && [ -n "${MIDI_PORT:-}" ]; then
     case "$MIDI_PORT" in
         *[!0-9]*) echo "ERROR: MIDI_PORT must be a TCP port, got '$MIDI_PORT'." >&2; exit 1 ;;
     esac

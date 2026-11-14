@@ -62,6 +62,8 @@ The mode is not persisted, so it must be disabled at each launch. Automatic moto
 ## Host MIDI
 QEMU gives an Engine guest one virtio-serial port, `org.qengine.midi`, served on the host at `localhost:$MIDI_PORT` over TCP. `run_instance.sh` prints the port, and `new_instance.sh` records it in `instance.env` as 6200 plus the instance's offset. In the guest, `midibridge` presents the port as the sequencer client `QEngine MIDI`, and `midisurface` forwards from it, as it forwards a USB controller on the Pi. Engine sees the bridge too, the same way it sees a controller on the Pi.
 
+MPC and MPC Sample guests get the same port, read by `mpcsurface` as their panel's own messages rather than by `midibridge`. See [mpcsurface](../../shims/mpcsurface/README.md#host-midi).
+
 The stream is plain MIDI 1.0 bytes in both directions, with no framing. The guest never sends running status, so each message stands on its own. Connect anything that reads and writes MIDI bytes over TCP; QEMU boots without a client, and the bridge notices a client connecting or leaving at any time. Messages from the guest are dropped while nothing is connected, except lamps: `midibridge` replays the last note, CC and inMusic RGB lamp it sent to each client that connects, since Engine lights a surface only once when it binds it.
 
 `midisurface --echo-all` sends everything Engine sends the surface back to the host, SysEx included, which is how the front panel UI in `ui/` lights its buttons. A third-party controller on the host receives those messages too, in the guest product's numbers.

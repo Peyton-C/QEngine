@@ -67,6 +67,16 @@
  * for 0x58, one past its fourth Q-Link's touch note, stops MPC listening to the
  * panel until it is restarted.
  *
+ * The host can play the panel too. run_qemu.sh gives an MPC guest the same
+ * virtio-serial port, org.qengine.midi, that midibridge serves for Engine, with
+ * a localhost TCP socket on the host end. Engine's panel is a sequencer client,
+ * so midibridge and midisurface carry the host's bytes to it, but MPC's panel
+ * lives only inside MPC, here, so this opens the port itself. The bytes on it
+ * are the panel's own messages, as they would cross its USB or serial cable:
+ * what arrives goes to MPC as if the panel sent it, and the lamps, as control
+ * changes, and the pad colours, as Akai's SysEx 65, go back. The handshake and
+ * the pings stay here, so the host only has to be a panel and never sets one up.
+ *
  * MPCSURFACE_VOLUME sets where MPC Sample's MAIN VOLUME starts, 100 unless
  * given, the level the Sample's panel reports when the app asks.
  *
@@ -76,6 +86,7 @@
  * to in place of stderr.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -676,6 +687,196 @@ static void report_pots(void) {
     if (verbose) LOG("reported MAIN VOLUME %d", pots[POT_VOLUME]);
 }
 
+/* ---- the host ---------------------------------------------------------------- */
+
+/* The port's guest end, found by name under /sys/class/virtio-ports as
+ * midibridge finds it, since only a udev rule makes /dev/virtio-ports/<name>. */
+#define VPORT_NAME "org.qengine.midi"
+static char host_path[300];
+static int host_fd = -1;
+static int host_up;
+static long long host_retry;            /* when to try opening it again, ms */
+static unsigned char host_buf[4096];    /* a message from the host not yet whole */
+static size_t host_len;
+static unsigned char host_running;
+static unsigned long host_dropped;
+
+/* The last of each lamp MPC lit, replayed to a host that connects. MPC sends a
+ * lamp when it changes and never again, so a host that came later would see
+ * the panel dark. Control changes and notes by channel and number, and pad
+ * colours, Akai's SysEx 65, by pad. */
+static unsigned char last_cc[16][128], cc_seen[16][128];
+static unsigned char last_note[16][128], note_seen[16][128];
+#define PAD_COLOUR_LEN 12               /* F0 47 dev pid 65 00 04 pad r g b F7 */
+static unsigned char last_pad[128][PAD_COLOUR_LEN], pad_seen[128];
+
+static int pad_colour(const unsigned char *m, size_t n) {
+    return n == PAD_COLOUR_LEN && m[0] == 0xF0 && m[1] == 0x47 && m[4] == 0x65 &&
+           m[7] < 128;
+}
+
+static void find_host(void) {
+    DIR *d = opendir("/sys/class/virtio-ports");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[300], name[64] = "";
+        snprintf(p, sizeof p, "/sys/class/virtio-ports/%s/name", e->d_name);
+        FILE *f = fopen(p, "re");
+        if (!f) continue;
+        if (fgets(name, sizeof name, f)) name[strcspn(name, "\n")] = '\0';
+        fclose(f);
+        if (strcmp(name, VPORT_NAME) == 0) {
+            snprintf(host_path, sizeof host_path, "/dev/%s", e->d_name);
+            break;
+        }
+    }
+    closedir(d);
+    if (*host_path) LOG("host MIDI on %s", host_path);
+}
+
+static void to_host(const unsigned char *b, size_t n);
+
+static void set_host_up(int up) {
+    if (up == host_up) return;
+    host_up = up;
+    host_len = 0;
+    host_running = 0;
+    LOG("host %s", up ? "connected" : "disconnected");
+    if (!up) return;
+    for (int ch = 0; ch < 16; ch++)
+        for (int i = 0; i < 128; i++) {
+            if (cc_seen[ch][i]) {
+                unsigned char m[3] = {(unsigned char)(0xB0 | ch), (unsigned char)i, last_cc[ch][i]};
+                to_host(m, 3);
+            }
+            if (note_seen[ch][i]) {
+                unsigned char m[3] = {(unsigned char)(0x90 | ch), (unsigned char)i, last_note[ch][i]};
+                to_host(m, 3);
+            }
+        }
+    for (int i = 0; i < 128; i++)
+        if (pad_seen[i]) to_host(last_pad[i], PAD_COLOUR_LEN);
+}
+
+/* virtio_console reports POLLHUP for as long as nothing holds the host end, and
+ * a read then returns 0 at once rather than blocking, so the port is asked on a
+ * timer while the host is away rather than polled. A port another process holds
+ * open, the Sample's firmware tool before the app, is tried again later. */
+static void check_host(void) {
+    if (!*host_path) return;
+    if (host_fd < 0) {
+        if (now_ms() < host_retry) return;
+        host_fd = open(host_path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (host_fd < 0) {
+            host_retry = now_ms() + 1000;
+            return;
+        }
+    }
+    struct pollfd p = {.fd = host_fd, .events = POLLIN};
+    if (poll(&p, 1, 0) >= 0) set_host_up(!(p.revents & POLLHUP));
+}
+
+/* Dropped rather than queued when the host is not reading, as midibridge does:
+ * MPC sends pad colours by the hundred a second, and blocking here would stop
+ * the panel answering MPC's pings. */
+static void to_host(const unsigned char *b, size_t n) {
+    if (!host_up) return;
+    while (n > 0) {
+        ssize_t w = write(host_fd, b, n);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN) set_host_up(0);
+            if (++host_dropped == 1 || host_dropped % 1000 == 0)
+                LOG("host not reading; %lu messages dropped", host_dropped);
+            return;
+        }
+        b += w;
+        n -= (size_t)w;
+    }
+}
+
+/* What MPC sends that a panel shows: lamps and pad colours. Its setup, pings
+ * and identity requests are answered here and not passed on. */
+static void lamp_to_host(const unsigned char *m, size_t n) {
+    unsigned char kind = m[0] & 0xF0, ch = m[0] & 0x0F;
+    if (kind == 0xB0 && n == 3) {
+        last_cc[ch][m[1]] = m[2];
+        cc_seen[ch][m[1]] = 1;
+    } else if ((kind == 0x90 || kind == 0x80) && n == 3) {
+        last_note[ch][m[1]] = kind == 0x80 ? 0 : m[2];
+        note_seen[ch][m[1]] = 1;
+    } else if (pad_colour(m, n)) {
+        memcpy(last_pad[m[7]], m, PAD_COLOUR_LEN);
+        pad_seen[m[7]] = 1;
+    } else {
+        return;
+    }
+    to_host(m, n);
+}
+
+/* One message from the host, to MPC as the panel's. A key lets go as this
+ * panel's does: a USB panel sends a note on of velocity 0, and the Sample's a
+ * note off. The Sample's pots are kept, so the volume reported when the app
+ * asks is where the host left it. */
+static void host_message(const unsigned char *m, size_t n) {
+    unsigned char out[3];
+    if (n == 3 && (m[0] & 0xF0) == 0x80 && !product->uart) {
+        out[0] = (unsigned char)(0x90 | (m[0] & 0x0F));
+        out[1] = m[1];
+        out[2] = 0;
+        m = out;
+    } else if (n == 3 && (m[0] & 0xF0) == 0x90 && m[2] == 0 && product->uart) {
+        out[0] = (unsigned char)(0x80 | (m[0] & 0x0F));
+        out[1] = m[1];
+        out[2] = 0;
+        m = out;
+    }
+    if (product->uart && n == 3 && m[0] == 0xB0 && m[1] >= CC_POT && m[1] < CC_POT + POTS)
+        pots[m[1] - CC_POT] = m[2];
+    send_bytes(PANEL_PORT, m, n);
+}
+
+static void from_host(void) {
+    ssize_t r = read(host_fd, host_buf + host_len, sizeof host_buf - host_len);
+    if (r == 0 || (r < 0 && errno != EAGAIN && errno != EINTR)) {
+        set_host_up(0);
+        return;
+    }
+    if (r < 0) return;
+    host_len += (size_t)r;
+    size_t i = 0;
+    while (i < host_len) {
+        unsigned char b = host_buf[i];
+        if (b == 0xF0) {
+            unsigned char *end = memchr(host_buf + i, 0xF7, host_len - i);
+            if (!end) break;
+            host_message(host_buf + i, (size_t)(end - (host_buf + i)) + 1);
+            i = (size_t)(end - host_buf) + 1;
+        } else if (b >= 0xF0) {
+            i++;                              /* realtime and common, not a panel's */
+        } else if (b >= 0x80) {
+            size_t need = b >= 0xC0 && b <= 0xDF ? 2 : 3;
+            if (host_len - i < need) break;
+            host_running = b;
+            host_message(host_buf + i, need);
+            i += need;
+        } else if (host_running) {
+            size_t need = host_running >= 0xC0 && host_running <= 0xDF ? 1 : 2;
+            if (host_len - i < need) break;
+            unsigned char m[3] = {host_running, host_buf[i], need == 2 ? host_buf[i + 1] : 0};
+            host_message(m, need + 1);
+            i += need;
+        } else {
+            i++;
+        }
+    }
+    memmove(host_buf, host_buf + i, host_len - i);
+    host_len -= i;
+    if (host_len == sizeof host_buf) host_len = 0;   /* an unterminated SysEx */
+}
+
 /* One complete message from MPC.
  *
  * MPC 3.10.0 opens the private port for input and output and the public port
@@ -687,6 +888,7 @@ static void report_pots(void) {
  * bytes of seven bits> <data> F7. */
 static void from_mpc(int port, const unsigned char *m, size_t n) {
     if (verbose && quiet(m, n) < verbose) log_bytes("MPC ->", port, m, n);
+    lamp_to_host(m, n);
     if (n < 6 || m[0] != 0xF0) return;
 
     /* The universal identity request, F0 7E <device> 06 01 F7. */
@@ -810,14 +1012,17 @@ static void *surface_thread(void *unused) {
         LOG("no command fifo at %s: %s", fifo, strerror(errno));
     else
         LOG("commands on %s", fifo);
+    find_host();
 
     char line[1024];
     size_t line_len = 0;
     for (;;) {
-        struct pollfd p[MAX_CONNS + 2];
-        int who[MAX_CONNS + 2], n = 0;
+        check_host();
+        struct pollfd p[MAX_CONNS + 3];
+        int who[MAX_CONNS + 3], n = 0;
         p[n].fd = wake_pipe[0]; p[n].events = POLLIN; who[n++] = -1;
         if (cmd_fd >= 0) { p[n].fd = cmd_fd; p[n].events = POLLIN; who[n++] = -2; }
+        if (host_up) { p[n].fd = host_fd; p[n].events = POLLIN; who[n++] = -3; }
         pthread_mutex_lock(&lock);
         for (int i = 0; i < MAX_CONNS; i++)
             if (conns[i].fd >= 0) { p[n].fd = conns[i].fd; p[n].events = POLLIN; who[n++] = i; }
@@ -827,6 +1032,8 @@ static void *surface_thread(void *unused) {
             long long left = report_due - now_ms();
             timeout = left > 0 ? (int)left : 0;
         }
+        /* Watching for the host to come, see check_host. */
+        if (*host_path && !host_up && (timeout < 0 || timeout > 250)) timeout = 250;
         int ready = poll(p, (nfds_t)n, timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -838,7 +1045,10 @@ static void *surface_thread(void *unused) {
         }
         for (int k = 0; k < n; k++) {
             if (!p[k].revents) continue;
-            if (who[k] == -1) {
+            if (who[k] == -3) {
+                if (p[k].revents & POLLHUP) set_host_up(0);
+                else from_host();
+            } else if (who[k] == -1) {
                 char drain[64];
                 while (read(wake_pipe[0], drain, sizeof drain) > 0) { }
             } else if (who[k] == -2) {

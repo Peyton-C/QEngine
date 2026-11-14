@@ -225,6 +225,7 @@ bool loadLayout(const fs::path& path, Layout& out, std::string& error, const std
 
         if (doc.contains("midi")) {
             layout.midiChannel = doc["midi"].value("channel", layout.midiChannel);
+            layout.ccLamps = doc["midi"].value("lamps", "") == "cc";
         }
 
         if (doc.contains("fonts")) {

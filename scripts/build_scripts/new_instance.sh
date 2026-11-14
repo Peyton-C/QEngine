@@ -523,10 +523,11 @@ EOF
 if [ -n "$ENGINE_VNC_PORT" ]; then
     printf 'ENGINE_VNC_PORT=%s\nSMP=4\n' "$ENGINE_VNC_PORT" >> "$INSTANCE_DIR/instance.env"
 fi
-# Where run_qemu.sh serves the guest's MIDI, read and written by midibridge in the
-# guest. 6200 + OFFSET keeps clear of ENGINE_VNC_PORT's 6000 + OFFSET, and is
-# SSH_PORT + 4000, which run_instance.sh relies on for older instances.
-if [ "$DEVICE" = engine ]; then
+# Where run_qemu.sh serves the guest's MIDI, read and written by midibridge in an
+# Engine guest and by mpcsurface in MPC and MPC Sample. 6200 + OFFSET keeps clear
+# of ENGINE_VNC_PORT's 6000 + OFFSET, and is SSH_PORT + 4000, which
+# run_instance.sh relies on for older instances.
+if [ "$DEVICE" = engine ] || [ "$DEVICE" = mpc ] || [ "$DEVICE" = mpc-sample ]; then
     printf 'MIDI_PORT=%s\n' "$(( 6200 + OFFSET ))" >> "$INSTANCE_DIR/instance.env"
 fi
 

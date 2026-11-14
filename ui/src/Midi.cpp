@@ -31,6 +31,10 @@ constexpr float kEncoderStep = kTwoPi / 24.0f;
 // they are taken back out of it to look right on screen.
 constexpr float kLampGamma = 3.5f;
 
+// Akai's pad colours are lit by pad number rather than by MIDI channel and
+// note, so they are kept under a channel MIDI does not have.
+constexpr int kAkaiPads = 16;
+
 std::string hex(const std::vector<unsigned char>& m, size_t limit = 16) {
     std::string s;
     char b[4];
@@ -110,13 +114,25 @@ std::vector<Instance> findInstances(const fs::path& dir) {
             }
         }
 
-        if (v["DEVICE"] != "engine") {
+        // The families whose guests serve a panel over MIDI: Engine through
+        // midibridge, MPC and MPC Sample through mpcsurface.
+        const std::string& device = v["DEVICE"];
+
+        if (device != "engine" && device != "mpc" && device != "mpc-sample") {
             continue;
         }
 
         Instance i;
         i.name = entry.path().filename().string();
         i.product = v["PRODUCT_CODE"];
+
+        // An MPC built without --product-code is the builder's default,
+        // build_mpc_rootfs.sh's MPC_DEFAULT_CODE.
+        if (i.product.empty() && device == "mpc") {
+            i.product = v["ARCH"] == "arm64" ? "ACVA3" : "ACV5";
+        } else if (i.product.empty() && device == "mpc-sample") {
+            i.product = "AC50";
+        }
 
         // An instance from before MIDI_PORT was recorded is served where
         // run_instance.sh puts it, 4000 above its SSH port.
@@ -394,7 +410,17 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
     if (kind == 0xB0 && m.size() == 3) {
         auto it = meters_.find((m[0] & 0x0F) << 8 | m[1]);
 
+        // Else, on an MPC, a button's lamp: 0 off, 1 dim, and 3 lit, as
+        // 3.10.0 sends them to an ACVA3. Its lamp setup, SysEx 42, gives each
+        // button six states, which suggests 2 is lit as well.
         if (it == meters_.end()) {
+            if (layout->ccLamps) {
+                const int state = m[2];
+                light(false, m[0] & 0x0F, m[1], state > 0, [&](const Element& e) {
+                    const ImVec4 c = layoutLamp(e.p);
+                    return state >= 2 ? ImVec4() : ImVec4(c.x * 0.35f, c.y * 0.35f, c.z * 0.35f, 1);
+                });
+            }
             return;
         }
 
@@ -427,6 +453,17 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
         const ImVec4 c = {level(m[11]) * dim, level(m[12]) * dim, level(m[13]) * dim, 1};
 
         light(true, m[9], m[10], m[11] || m[12] || m[13], [&](const Element&) { return c; });
+        return;
+    }
+
+    // Akai's pad colour: F0 47 7F <product> 65 00 04 <pad> <r> <g> <b> F7, pad
+    // 1 as 0, each level 0 to 127. MPC kits use about half, so a level is the
+    // LED's drive and is shown through the screen's gamma.
+    if (m.size() == 12 && m[1] == 0x47 && m[4] == 0x65 && m[5] == 0x00 && m[6] == 0x04) {
+        const auto level = [](unsigned char v) { return std::pow(float(v) / 127.0f, 1.0f / 2.2f); };
+        const ImVec4 c = {level(m[8]), level(m[9]), level(m[10]), 1};
+
+        light(true, kAkaiPads, m[7], m[8] || m[9] || m[10], [&](const Element&) { return c; });
     }
 }
 
@@ -496,6 +533,12 @@ void GuestLink::bind(Surface& surface) {
         const std::string type = m.value("lamp_type", "");
         Lamp l{e.id, -1, type != "rgb", type != "note"};
 
+        // An MPC pad, lit by its number in Akai's pad colour SysEx.
+        if (m.contains("pad") && m["pad"].is_number()) {
+            lamps_[kAkaiPads << 8 | m["pad"].get<int>()].push_back({e.id, -1, false, true});
+            continue;
+        }
+
         if (lamp.is_array()) {
             for (size_t q = 0; q < lamp.size() && q < 4; ++q) {
                 l.quad = int(q);
@@ -528,6 +571,14 @@ void GuestLink::track(Control& c, const ControlState& st, const Element& e) {
             note(ch, n, on);
         }
     } else if (e.kind == "encoder") {
+        // A touch sensor, as an MPC's Q-Links have, held for as long as the
+        // encoder is, and sent before the turn it comes with.
+        const int touch = m.value("touch", -1);
+
+        if (touch >= 0 && down) {
+            note(ch, touch, true);
+        }
+
         c.turned += (st.angle - c.prev.angle) / kEncoderStep;
 
         for (; c.turned >= 1.0f; c.turned -= 1.0f) cc(ch, m.value("cc", json()), 1);
@@ -542,6 +593,10 @@ void GuestLink::track(Control& c, const ControlState& st, const Element& e) {
         if (up && n >= 0 && std::fabs(st.angle - c.pressAngle) < 0.05f) {
             note(ch, n, true);
             note(ch, n, false);
+        }
+
+        if (touch >= 0 && up) {
+            note(ch, touch, false);
         }
     } else if (e.kind == "jog") {
         if (n >= 0 && (down || up)) {

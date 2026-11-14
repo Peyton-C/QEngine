@@ -30,7 +30,9 @@
 //              "offset"}; a two deck unit draws its deck once
 //   elements   drawn in order, later ones on top
 //   midi       optional, {"channel": N}, the channel for controls that name
-//              none; see Midi.hpp for a control's own "midi" field
+//              none, and "lamps": "cc" where the guest lights buttons with
+//              control changes, as MPC does; see Midi.hpp for a control's own
+//              "midi" field
 //
 // Unknown properties are kept, so the format can grow without the loader
 // knowing about every field.
@@ -59,6 +61,7 @@ struct Layout {
     float labelSize = 2.4f;    // cap height of control legends, mm
     float textScale = 1.0f;    // for a maker whose printing runs wider than ours
     int midiChannel = 0;       // for controls whose "midi" names no channel, 0 to 15
+    bool ccLamps = false;      // buttons are lit by a control change on their note
 
     std::vector<Face> faces;
     std::vector<Element> elements;

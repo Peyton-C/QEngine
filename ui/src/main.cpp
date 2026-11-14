@@ -1,12 +1,12 @@
 // QEngine's surface concept: a device's front panel drawn from its layout
 // file, to try out how a UI for every emulated device could look. It can play
-// a running Engine instance over MIDI, see Midi.hpp, and shows its screen in
+// a running Engine or MPC instance over MIDI, see Midi.hpp, and shows its screen in
 // the panel's lcd over VNC, see Screen.hpp.
 //
 //   qengine-ui [layout name] [--layouts DIR] [--photos DIR] [--instance NAME]
 //              [--view drawn|photo|trace] [--screenshot out.png] [--log-input]
 //
-// --instance connects to that Engine instance's MIDI and screen at start; the sidebar
+// --instance connects to that instance's MIDI and screen at start; the sidebar
 // does the same for any instance under build/instances.
 // --screenshot renders one frame offscreen into a PNG and quits, without
 // showing a window, so a layout change can be checked from a script. With
@@ -241,7 +241,7 @@ struct App {
     uint64_t uiTouch = 0;
     bool swallowedClick = false;
 
-    // The Engine instance the panel plays, over MIDI, and shows the screen of.
+    // The instance the panel plays, over MIDI, and shows the screen of.
     GuestLink link;
     GuestScreen screen;
     std::vector<Instance> instances;
@@ -323,7 +323,7 @@ void guestPanel(App& app) {
     }
 
     if (app.instances.empty()) {
-        ImGui::TextWrapped("No Engine instances in %s.", app.args.instances.string().c_str());
+        ImGui::TextWrapped("No Engine or MPC instances in %s.", app.args.instances.string().c_str());
         return;
     }
 
@@ -363,12 +363,12 @@ void guestPanel(App& app) {
         if (app.link.connected()) {
             ImGui::TextColored({0.45f, 0.85f, 0.5f, 1}, "Connected, :%d", app.link.port());
 
-            // A guest with midibridge replays Engine's lamps the moment a
+            // midibridge and mpcsurface replay the guest's lamps the moment a
             // client connects, so silence means nothing in it reads the port.
             if (app.link.received() == 0) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-                ImGui::TextWrapped("Nothing from the guest yet. An image built before midibridge has nothing "
-                                   "reading this port; rebuild it with new_instance.sh --force.");
+                ImGui::TextWrapped("Nothing from the guest yet. An image built before it served MIDI to the host "
+                                   "has nothing reading this port; rebuild it with new_instance.sh --force.");
                 ImGui::PopStyleColor();
             }
         } else {
@@ -384,7 +384,7 @@ void guestPanel(App& app) {
         const auto& codes = app.devices[size_t(app.current)].layout.products;
 
         if (std::find(codes.begin(), codes.end(), inst.product) == codes.end()) {
-            ImGui::TextWrapped("This panel is not a %s, so Engine will read its controls as that product's.",
+            ImGui::TextWrapped("This panel is not a %s, so the guest will read its controls as that product's.",
                                inst.product.c_str());
         }
 
@@ -893,7 +893,7 @@ int main(int argc, char** argv) {
         }
 
         if (!app.link.wanted()) {
-            std::fprintf(stderr, "no Engine instance %s in %s\n", app.args.instance.c_str(),
+            std::fprintf(stderr, "no instance %s in %s\n", app.args.instance.c_str(),
                          app.args.instances.string().c_str());
         }
     }

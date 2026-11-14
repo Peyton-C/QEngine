@@ -10,8 +10,9 @@
 
 // The front panel played into a running guest, over MIDI.
 //
-// An Engine instance serves its guest's MIDI on a localhost TCP port, MIDI_PORT
-// in its instance.env, as plain MIDI 1.0 bytes both ways. In the guest,
+// An Engine, MPC or MPC Sample instance serves its guest's MIDI on a localhost
+// TCP port, MIDI_PORT in its instance.env, as plain MIDI 1.0 bytes both ways.
+// In an Engine guest,
 // midibridge hands them to midisurface, which forwards them to Engine as the
 // product's own control surface and sends Engine's lamps back (--echo-all). So
 // the panel speaks the product's own protocol, in the numbers from its
@@ -24,6 +25,9 @@
 //   {"cc": [UPPER, LOWER]}         knob or fader, 14 bits as a pair
 //   {"cc": N, "relative": true}    encoder, one step a click as 1 or 127; with
 //                                  "note", a tap that does not turn it pushes it
+//   {"cc": N, "relative": true, "touch": T}
+//                                  encoder with a touch sensor, note T on while
+//                                  it is held, as an MPC's Q-Link sends
 //   {"note": T, "cc": [U, L], "ticks": R}
 //                                  jog, touch note T and the platter's position
 //                                  as a 14-bit count that runs R a turn
@@ -37,6 +41,8 @@
 //   "lamp_type": "rgb" or "note"   only that kind of lamp message, where an
 //                                  RGB lamp and a simple one share a note, as
 //                                  a Prime 4 G2's load buttons and pitch LEDs do
+//   "pad": N                       an MPC pad's number in Akai's pad colour
+//                                  SysEx, pad 1 as 0, which lights it
 //
 // A meter's "midi" is {"cc": N}, the CC Engine sends its level on: how many
 // of ten LEDs are lit, plus 20 to 110 in tens for the one its peak holds at. A control
@@ -45,8 +51,16 @@
 // Lamps come back as Engine lights the product: a note on the lamp's channel
 // and note, lit at 64 and over and dim below, or inMusic's RGB SysEx,
 // F0 00 02 0B 7F <product> 03 00 05 <ch> <note> <r> <g> <b> F7.
+//
+// MPC is played the same way, through mpcsurface in the guest, which answers
+// MPC's handshake itself and passes the panel's own messages both ways: a
+// button is a note on channel 1, let go with velocity 0, a pad a note on
+// channel 10, and the dial and Q-Links relative CCs. A layout with
+// "midi": {"lamps": "cc"} is lit as MPC lights its panel, a button by a CC on
+// its own note, 0 off, 1 dim and 3 lit, and a pad by Akai's pad colour,
+// F0 47 7F <product> 65 00 04 <pad> <r> <g> <b> F7.
 
-// An Engine instance under build/instances, and the ports its MIDI and its
+// An Engine or MPC instance under build/instances, and the ports its MIDI and its
 // screen are on. The screen is Engine's own Qt VNC server on a legacy rootfs,
 // else QEMU's VNC console, which only the vnc and egl-vnc displays serve.
 struct Instance {

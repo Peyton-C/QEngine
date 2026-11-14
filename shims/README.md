@@ -23,7 +23,7 @@ Carries MIDI between a QEMU guest and its host over a virtio-serial port, as a s
 An emulated midi surface to control Engine.
 
 ## mpcsurface
-An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the dial, Q-Links and the Sample's knobs. Preloaded into the app, which finds it as its panel's USB MIDI card, or on MPC Sample as its serial "Control Surface" card, and driven through `/run/mpcsurface.fifo`. See [mpcsurface](mpcsurface/README.md) for commands.
+An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the dial, Q-Links and the Sample's knobs. Preloaded into the app, which finds it as its panel's USB MIDI card, or on MPC Sample as its serial "Control Surface" card, and driven through `/run/mpcsurface.fifo` or, in QEMU, MIDI from the host. See [mpcsurface](mpcsurface/README.md) for commands.
 
 ## montero
 Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.

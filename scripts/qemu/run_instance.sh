@@ -110,7 +110,8 @@ echo "=== root UUID: ${ROOT_UUID:-<derived by the launcher>}"
 echo "=== ssh      : ssh -p ${SSH_PORT:-2225} root@localhost"
 # An instance created before MIDI_PORT was recorded gets the port new_instance.sh
 # would have given it, which sits a fixed distance above its SSH port.
-if [ "${DEVICE:-}" = engine ]; then
+case "${DEVICE:-}" in engine|mpc|mpc-sample) _midi=1 ;; *) _midi=0 ;; esac
+if [ "$_midi" = 1 ]; then
     MIDI_PORT="${MIDI_PORT:-$(( ${SSH_PORT:-2225} + 4000 ))}"
     echo "=== midi     : localhost:$MIDI_PORT (raw MIDI over TCP)"
 fi

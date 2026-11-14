@@ -74,11 +74,11 @@ Code selects the product identity with `--product-code`. Version cells list firm
 QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0; older releases remain unverified with the fake battery. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
 
 ## MPC
-Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x remains untested.
+Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x has been booted as `ACV5` only.
 
 |                    | Code  | SoC    | Signed | Arch  | 2.x | 3.x          |
 |--------------------|-------|--------|-----------|-------|-----|--------------|
-| MPC X              | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC X              | ACV5  | RK3288 | 3.x only  | armv7 | 2.7.0, 2.9.1, 2.11.7 | 3.9.1-3.10.0 |
 | MPC X SE           | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
 | MPC XL             | ACVC  | RK3588 | Y         | arm64 | –   | 3.10.0       |
 | MPC Live           | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |

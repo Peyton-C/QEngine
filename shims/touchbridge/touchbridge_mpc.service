@@ -1,8 +1,8 @@
 [Unit]
 Description=MPC QEMU tablet -> synthetic multitouch bridge
-# acvs.service is MPC, alesis-drummodule.service the drum module. Ordering against a
-# unit that is not installed is a no-op, so one file serves both.
-Before=acvs.service alesis-drummodule.service
+# acvs.service is MPC, inmusic-mpc.service MPC 2.x, alesis-drummodule.service the drum module. Ordering against a
+# unit that is not installed is a no-op, so one file serves all three.
+Before=acvs.service inmusic-mpc.service alesis-drummodule.service
 DefaultDependencies=no
 After=systemd-udevd.service
 

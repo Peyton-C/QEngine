@@ -146,6 +146,36 @@ if "$DEBUGFS" -R 'stat /usr/bin/HV03' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'
     BUILD_VX5SURFACE=1
 fi
 
+# MPC 2.x is Buildroot with glibc 2.28 (2.7.x) to 2.32 (2.11.x). The shims built on
+# bookworm bind dlsym and pthread_* to their GLIBC_2.34 versions, so the guest's
+# loader rejects them, and touchbridge fails with "GLIBC_2.34 not found" (2.11.7).
+# As build_legacy_engine_shims.sh does for early Engine, the preloads are linked
+# against the guest's own libraries instead, and touchbridge, which preloads into
+# nothing, is linked statically. glibc 2.34 stopped shipping libc-2.NN.so, so the
+# versioned file alone marks an older libc; tr is used rather than grep -q, which
+# would get it killed by SIGPIPE under pipefail.
+LEGACY_LIBC=0
+GUESTLIB_DIR=""
+if "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
+        tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; then
+    LEGACY_LIBC=1
+    GUESTLIB_DIR="$(mktemp -d "$OUT_DIR/.guestlib.XXXXXX")"
+    trap 'rm -rf "$GUESTLIB_DIR"' EXIT
+    # debugfs dump does not follow symlinks, so pick the real versioned names. ld.so
+    # is needed under -z defs for __tls_get_addr, which dtshim reaches through its
+    # __thread state and the loader, not libc, exports.
+    for _lib in '^libc-[0-9.]+\.so$' '^libdl-[0-9.]+\.so$' '^libpthread-[0-9.]+\.so$' \
+                '^librt-[0-9.]+\.so$' '^ld-[0-9.]+\.so$'; do
+        _name="$("$DEBUGFS" -R 'ls -p /usr/lib' "$OUT_PATH" 2>/dev/null |
+            awk -F/ '$3 ~ /^100/ {print $6}' | grep -E "$_lib" | sed -n '1p' || true)"
+        [ -n "$_name" ] || { echo "ERROR: no $_lib in the guest's /usr/lib" >&2; exit 1; }
+        _dest="$GUESTLIB_DIR/$(echo "$_name" | sed -E 's/-[0-9.]+\.so$/.so/')"
+        "$DEBUGFS" -R "dump /usr/lib/$_name $_dest" "$OUT_PATH" >/dev/null 2>&1
+        [ -s "$_dest" ] || { echo "ERROR: could not extract /usr/lib/$_name" >&2; exit 1; }
+    done
+    echo "--- guest glibc predates 2.34: linking shims against its own libraries ---"
+fi
+
 ### 2. Grow the image and filesystem #########################################
 
 echo "--- resizing image to $SIZE bytes ---"
@@ -173,7 +203,9 @@ docker run --rm --platform "$SHIM_PLATFORM" \
     -e SHIM_MACHINE="$SHIM_MACHINE" \
     -e DT_SOC="$DT_SOC" \
     -e BUILD_VX5SURFACE="$BUILD_VX5SURFACE" \
+    -e LEGACY_LIBC="$LEGACY_LIBC" \
     -v "$SHIMS_DIR:/shims" \
+    ${GUESTLIB_DIR:+-v "$GUESTLIB_DIR:/guestlib:ro"} \
     debian:bookworm bash -c '
         set -e
         # These shims are copied straight into a $SHIM_ARCH rootfs, so a
@@ -183,6 +215,26 @@ docker run --rm --platform "$SHIM_PLATFORM" \
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev >/dev/null 2>&1
+
+        if [ "$LEGACY_LIBC" = 1 ]; then
+            # Bookworm compiles, the guest libraries link, and -z defs makes a
+            # symbol the guest lacks a build error rather than a loader one.
+            G=/guestlib
+            # mpcsurface calls fstat, which these libcs do not export; its
+            # legacy_compat.c supplies it.
+            gcc -fPIC -O2 -Wall -c /shims/mpcsurface/legacy_compat.c -o /tmp/mpcsurface_compat.o
+            for s in dtshim mpcsurface alsashim; do
+                extra=""; objs="/tmp/$s.o"
+                [ "$s" = dtshim ] && extra="-D$DT_SOC"
+                [ "$s" = mpcsurface ] && objs="$objs /tmp/mpcsurface_compat.o"
+                gcc -fPIC -O2 -Wall $extra -c /shims/$s/$s.c -o /tmp/$s.o
+                gcc -shared -nostdlib -Wl,-z,defs -o /shims/$s/${s}_$SHIM_ARCH.so $objs -lgcc \
+                    $G/libc.so $G/libdl.so $G/libpthread.so $G/librt.so $G/ld.so
+            done
+            gcc -static -O2 -Wall \
+                -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+            exit 0
+        fi
 
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -D$DT_SOC -ldl -lpthread
@@ -219,7 +271,7 @@ done
 ### privileged container with real loop-device support #######################
 
 INNER_SCRIPT="$(mktemp /tmp/build-mpc-rootfs-inner.XXXXXX)"
-trap 'rm -f "$INNER_SCRIPT"' EXIT
+trap 'rm -f "$INNER_SCRIPT"; [ -z "$GUESTLIB_DIR" ] || rm -rf "$GUESTLIB_DIR"' EXIT
 
 cat > "$INNER_SCRIPT" <<'DOCKER_SCRIPT'
 set -euo pipefail
@@ -272,7 +324,12 @@ fi
 # LDMD is the drum module's default because it is the code the app names its USB
 # volume after; the image also carries LDMF, and both have controller firmware in
 # /usr/share/Alesis/DrumModule/Resources/firmware.
-if [ -f /mnt/rootfs/usr/bin/MPC ]; then
+# MPC 2.x, on Buildroot, starts the same /usr/bin/MPC from inmusic-mpc.service
+# through az01-launch-MPC. A drop-in on acvs.service there lands on a unit that does
+# not exist, so MPC runs without dtshim or its sound card.
+if [ -f /mnt/rootfs/usr/bin/MPC ] && [ -f /mnt/rootfs/usr/lib/systemd/system/inmusic-mpc.service ]; then
+    APP_UNIT="inmusic-mpc.service"; DEFAULT_CODE="$MPC_DEFAULT_CODE"
+elif [ -f /mnt/rootfs/usr/bin/MPC ]; then
     APP_UNIT="acvs.service"; DEFAULT_CODE="$MPC_DEFAULT_CODE"
 elif [ -f "/mnt/rootfs/usr/bin/MPC Sample" ]; then
     [ "$ARCH" = arm64 ] || { echo "ERROR: MPC Sample requires arm64." >&2; exit 1; }
@@ -289,6 +346,8 @@ else
     exit 1
 fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
+IS_MPC=0
+case "$APP_UNIT" in acvs.service|inmusic-mpc.service) IS_MPC=1 ;; esac
 # LDMF keeps its kit content on an eMMC partition (content.mount, PARTUUID
 # 4054a70b-...) that no QEngine disk provides, so its overlay on /sdcard/bfd has no
 # lower layer and the app comes up without storage. Refused rather than built into
@@ -375,12 +434,12 @@ done
 # vx5surface supplies as a service below. The drum module reaches its panel some
 # other way, not looked at yet.
 PRELOAD=/root/dtshim.so
-if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
+if [ "$IS_MPC" = 1 ] || [ "$APP_UNIT" = ac50.service ]; then
     cp -a /shims/mpcsurface/mpcsurface_$SHIM_ARCH.so /mnt/rootfs/root/mpcsurface.so
     chmod 755 /mnt/rootfs/root/mpcsurface.so
     PRELOAD="$PRELOAD:/root/mpcsurface.so"
 fi
-if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ] ||
+if [ "$IS_MPC" = 1 ] || [ "$APP_UNIT" = ac50.service ] ||
    [ "$APP_UNIT" = HV03.service ]; then
     # alsashim carries the app's sound out to QEMU's card, see below.
     cp -a /shims/alsashim/alsashim_$SHIM_ARCH.so /mnt/rootfs/root/alsashim.so
@@ -393,7 +452,7 @@ cat > "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 Environment=LD_PRELOAD=$PRELOAD
 EOF
 
-if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
+if [ "$IS_MPC" = 1 ] || [ "$APP_UNIT" = ac50.service ]; then
     echo "--- giving MPC a sound card, and its output to QEMU's ---"
     # MPC opens its internal card by udev path, /dev/snd/by-path/platform-sound, as
     # VX5 does. With nothing there 3.10.0 puts "No internal audio device could be
@@ -411,8 +470,14 @@ if [ "$APP_UNIT" = acvs.service ] || [ "$APP_UNIT" = ac50.service ]; then
     # get_kernel.sh adds a qengine-ac50 model that does, chosen here only for the
     # Sample, so Gen 2 keeps the card it was heard on. Its first pair is the
     # speaker and line out and follows MAIN VOLUME, which mpcsurface reports.
+    #
+    # MPC 2.9.1 asks for S32_LE and powers the unit off when the card refuses it,
+    # where 2.11.7 falls back to S16. So MPC 2.x, started from inmusic-mpc.service,
+    # gets the qengine-ac50 model too, which offers both at two channels.
     DUMMY_ARGS=""
-    [ "$APP_UNIT" = ac50.service ] && DUMMY_ARGS=" model=qengine-ac50"
+    case "$APP_UNIT" in
+        ac50.service|inmusic-mpc.service) DUMMY_ARGS=" model=qengine-ac50" ;;
+    esac
     mkdir -p /mnt/rootfs/etc/udev/rules.d
     cat > /mnt/rootfs/etc/udev/rules.d/90-qengine-mpc-audio.rules <<'EOF'
 SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="Dummy", SYMLINK+="snd/by-path/platform-sound"
@@ -435,9 +500,34 @@ EOF
     # kernel has no hda driver (arch_audio_devices in scripts/qemu/arch_devices.sh).
     QEMU_CARD=Intel
     [ "$ARCH" = armhf ] && QEMU_CARD=SoundCard
+    MAIN_PCM_ENV=""
+    if [ "$IS_MPC" = 1 ] && ! grep -q -a 'snd/by-path/platform-sound' /mnt/rootfs/usr/bin/MPC; then
+        # MPC 2.7.0 predates the by-path lookup, which 2.7.2 already has. It polls
+        # JUCE's ALSA devices for one whose name contains "MPC" and records from
+        # it, and plays to "default", which the vendor asound.conf points at card
+        # 0, the internal card on hardware. Here card 0 is QEMU's, so default goes
+        # to the dummy card instead, and an MPC-named PCM over the same card is
+        # added for the lookup. It is an empty PCM rather than a hw one because
+        # alsa-lib's name hints leave out top-level hw definitions. Without it 2.7.0
+        # searches for 13 s and starts with no audio device.
+        sed -i 's/^\([[:space:]]*card\) 0$/\1 Dummy/' /mnt/rootfs/etc/asound.conf
+        grep -q '^pcm.qengine_mpc' /mnt/rootfs/etc/asound.conf ||
+            cat >> /mnt/rootfs/etc/asound.conf <<'EOF'
+
+pcm.qengine_mpc {
+    type empty
+    slave.pcm "hw:Dummy"
+    hint {
+        show on
+        description "MPC"
+    }
+}
+EOF
+        MAIN_PCM_ENV=" ALSASHIM_MAIN_PCM=default"
+    fi
     cat >> "/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf" <<EOF
 Environment=ALSASHIM_AS=off ALSASHIM_NOPLUG=1 ALSASHIM_BUFFER_SCALE=1 ALSASHIM_MIDI_CARD=-1
-Environment=ALSASHIM_CUE_PCM=plughw:$QEMU_CARD ALSASHIM_CUE_CHANNEL=1
+Environment=ALSASHIM_CUE_PCM=plughw:$QEMU_CARD ALSASHIM_CUE_CHANNEL=1$MAIN_PCM_ENV
 
 [Unit]
 Wants=qengine-mpc-audio.service

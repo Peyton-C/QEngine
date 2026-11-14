@@ -220,6 +220,9 @@
  *                   unset for none
  *   ALSASHIM_CUE_CHANNEL  first channel of that pair in Engine's frame, counting
  *                   from 1 (default 3)
+ *   ALSASHIM_MAIN_PCM  one more PCM name to treat as the app's own device, as a
+ *                   hw: name is, for the cue, the input and the meter. MPC 2.7.0
+ *                   plays to "default" rather than to a hw: name.
  *   ALSASHIM_INPUT_WAV  WAV file to replace what the app records with: PCM of
  *                   16, 24 or 32 bits or 32-bit float, any rate, mono or more
  *                   channels; unset to leave capture alone
@@ -514,8 +517,10 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
     }
     int ret = real_pcm_open(pcmp, name, stream, mode);
     /* Left on hw: by ALSASHIM_NOPLUG, as MPC is, it is still the device the
-     * second output copies from, and the input replaces. */
-    if (ret >= 0 && name && strncmp(name, "hw:", 3) == 0 && pcmp)
+     * second output copies from, and the input replaces. So is ALSASHIM_MAIN_PCM. */
+    const char *main_pcm = getenv("ALSASHIM_MAIN_PCM");
+    if (ret >= 0 && name && pcmp && (strncmp(name, "hw:", 3) == 0 ||
+                                     (main_pcm && *main_pcm && strcmp(name, main_pcm) == 0)))
         atomic_store(stream == ALSASHIM_STREAM_PLAYBACK ? &g_main_pcm : &g_capture_pcm,
                      *pcmp);
     return ret;

@@ -17,7 +17,12 @@ QEngine detects the image's generation and architecture. Use `--product-code` to
 | Gen 1 | RK3288, armv7 | `ACV5`, MPC X | `emmc.img`, single `az01-internal` partition |
 | Gen 2 | RK3588, arm64 | `ACVA3`, MPC One (Gen 2) | `data_disk.img`, `/data` and `/factory` |
 
-MPC 2.x extracts but remains unbooted. The [device table](../../README.md#mpc) lists booted 3.x versions and Gen 1 codes.
+The [device table](../../README.md#mpc) lists booted versions and Gen 1 codes.
+
+## MPC 2.x
+MPC 2.x is Gen 1 on Buildroot, with glibc 2.28 to 2.32, and starts MPC from `inmusic-mpc.service` rather than `acvs.service`. QEngine links the shims against the image's own libraries and attaches them to that unit, so the same build command works. 2.7.0, 2.9.1 and 2.11.7 boot as `ACV5` with touch, the panel and output; other codes are untried on 2.x.
+
+2.x opens the dummy card as S32, so QEngine loads it with the `qengine-ac50` model, as for MPC Sample. 2.9.1 powers the guest off if the card refuses S32. 2.7.0 predates the `platform-sound` lookup and takes the first ALSA device whose name contains "MPC", so QEngine adds a PCM named that over the dummy card and points `default` at it.
 
 ## Gen 2
 | Model | Code |
@@ -32,7 +37,7 @@ MPC 2.x extracts but remains unbooted. The [device table](../../README.md#mpc) l
 The Gen 2 image also runs as Gen 1 products: `ADA2`, `ACVA`, `ACV5` and `ACVB` have played pads on 3.10.0. That lets those identities use arm64 host acceleration. Running a Gen 1 image as a Gen 2 product is untested.
 
 ## Input
-QEngine starts `touchbridge_mpc.service` before `acvs.service`, since MPC discovers touchscreens only at startup. The bridge turns QEMU's tablet into a touchscreen. Hold scripted taps briefly; an immediate press and release may not register.
+QEngine starts `touchbridge_mpc.service` before MPC's unit, since MPC discovers touchscreens only at startup. The bridge turns QEMU's tablet into a touchscreen. Hold scripted taps briefly; an immediate press and release may not register.
 
 `mpcsurface` supplies the product's panel. Write commands in the guest:
 

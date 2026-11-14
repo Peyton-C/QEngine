@@ -19,6 +19,9 @@ A fake KMS device for apps that drive the display themselves, preloaded into MPC
 ## midisurface
 An emulated midi surface to control Engine.
 
+## maliwindow
+Renders Looper X's statically linked Mali backend through Mesa into QEMU's framebuffer, with a portrait-to-landscape rotation.
+
 ## mpcsurface
 An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the dial, Q-Links and the Sample's knobs. Preloaded into the app, which finds it as its panel's USB MIDI card, or on MPC Sample as its serial "Control Surface" card, and driven through `/run/mpcsurface.fifo`. See [mpcsurface](mpcsurface/README.md) for commands.
 

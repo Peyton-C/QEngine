@@ -106,6 +106,7 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | Alesis Core Drum Module | `LDMF` | armv7, RK3288 | ? | Build refused, content partition missing |
 | HeadRush Prime | `HG06` | armv7, RK3288 | 5.2.0 | Touch; silent loopback audio |
 | HeadRush VX5 | `HV03` | arm64, RK3566 | 1.2.2, 1.3.1 | Host audio and virtual panel; input from a WAV file |
+| Sheeran Looper X | `HG08` | armv7, RK3288 | 1.0.2 | Four-track UI; factory content absent; silent loopback audio |
 | HeadRush Core | `HV01` | ? | ? | Untested |
 | HeadRush Gigboard | `HG02` | ? | ? | Untested |
 | HeadRush Looperboard | `HG03` | ? | ? | Untested |

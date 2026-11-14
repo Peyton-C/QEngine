@@ -200,7 +200,7 @@ docker run --rm --platform linux/arm/v7 \
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h. No libgl1-mesa-dri:
         # unlike the RMZ2 rootfs this one already ships a complete Mesa, so
         # nothing foreign needs staging in. See the privileged container below.
-        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libegl-dev libgles-dev >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
@@ -216,6 +216,9 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
         gcc -O2 -Wall \
             -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
+            /shims/rk3288/maliwindow/maliwindow.c -ldl -lEGL -lGLESv2
         # -lpthread for its upstream relay thread. Only this builder compiles it:
         # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
         # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
@@ -247,6 +250,11 @@ elif [ "$MESA_LAYOUT" = mali ]; then
     # See build_mali_mesa.sh and build_qt5_eglfs_kms.sh.
     "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
     cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
+    # Looper X 1.0.2 links Qt statically, including eglfs_mali and eglfs_emu.
+    # A dynamic Qt plugin cannot replace its built-in integration.
+    if "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+        touch "$STAGE_DIR/mesa-only"
+    else
     # The plugin is checked against this rootfs's own Qt, read out of the image
     # the way detect_mesa.sh reads it.
     DEBUGFS=""
@@ -292,6 +300,7 @@ elif [ "$MESA_LAYOUT" = mali ]; then
         [ -s "$STAGE_DIR/qmlrotate.so" ] || {
             echo "ERROR: qmlrotate did not build." >&2; exit 1; }
     fi
+    fi # dynamically linked Qt
 else
     "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
         --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
@@ -317,6 +326,7 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 rk3288/vnctouchbridge/vnctouchbridge_$SHIM_ARCH \
                 midisurface/midisurface_$SHIM_ARCH \
                 pcmhold/pcmhold_$SHIM_ARCH \
+                rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
@@ -393,8 +403,10 @@ elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
 elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
     APP_UNIT=evil.service; DEFAULT_CODE=HG06
+elif [ -x /mnt/rootfs/usr/Looper/Looper ] && [ -f /mnt/rootfs/boot/rk3288-az05-hg08.dtb ]; then
+    APP_UNIT=looper.service; DEFAULT_CODE=HG08
 else
-    echo "ERROR: neither /usr/Engine nor /usr/Evil in this rootfs." >&2
+    echo "ERROR: no Engine, Evil or Looper application in this rootfs." >&2
     exit 1
 fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
@@ -488,7 +500,7 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 OVERRIDE="/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf"
 mkdir -p "$(dirname "$OVERRIDE")"
-if [ "$APP_UNIT" = evil.service ]; then
+if [ "$APP_UNIT" = evil.service ] || [ "$APP_UNIT" = looper.service ]; then
     # Evil opens its own card by name, hw:HV01, and Prime 5.2.0 segfaults a few
     # seconds after startup when there is none. The kernel's loopback card stands
     # in: it needs no host audio, and get_kernel.sh loads it from the initrd, which
@@ -502,7 +514,7 @@ if [ "$APP_UNIT" = evil.service ]; then
     # capture channels. pcmhold pins the loopback to that shape; see pcmhold.c.
     cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
     chmod 755 /mnt/rootfs/root/pcmhold
-    cat > /mnt/rootfs/etc/systemd/system/qengine-hv01.service <<'EOF'
+    cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<'EOF'
 [Unit]
 Description=Stand the loopback sound card in for HV01, the card Evil opens
 Before=evil.service
@@ -518,12 +530,14 @@ ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "$$(cat $$c/id)" 
 [Install]
 WantedBy=multi-user.target
 EOF
-    ln -sf ../qengine-hv01.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-hv01.service
+    ln -sf ../qengine-headrush-audio.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-audio.service
 
     # Evil turns its UI -90 degrees for HG06's portrait panel; qmlrotate turns it
     # back for QEngine's landscape screen. See qmlrotate.cpp.
-    cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
-    chmod 755 /mnt/rootfs/root/qmlrotate.so
+    if [ "$APP_UNIT" = evil.service ]; then
+        cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
+        chmod 755 /mnt/rootfs/root/qmlrotate.so
+    fi
 
     # dtshim for the product code, serial and pcb-rev Evil reads, and drmatomic for
     # virtio-gpu as below, and qmlrotate. Not alsashim or quitshim: both are
@@ -533,14 +547,22 @@ EOF
     # script, which sets it later.
     cat > "$OVERRIDE" <<'EOF'
 [Unit]
-After=touchbridge.service qengine-hv01.service
-Requires=touchbridge.service qengine-hv01.service
+After=touchbridge.service qengine-headrush-audio.service
+Requires=touchbridge.service qengine-headrush-audio.service
 
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/qmlrotate.so
 Environment=LD_LIBRARY_PATH=/usr/qt/lib
 Environment=QMLROTATE=90
 EOF
+    if [ "$APP_UNIT" = looper.service ]; then
+        # Looper X 1.0.2 opens hw:HG08. Its DT declares the same 8-out/2-in
+        # shape as Prime; keep the loopback bounded before Looper opens it.
+        sed -i 's/HV01/HG08/g; s/evil.service/looper.service/g; s/Evil/Looper/g' \
+            /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service
+        cp -a /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so /mnt/rootfs/root/maliwindow.so
+        sed -i 's@/root/drmatomic.so:/root/qmlrotate.so@/root/maliwindow.so@; /QMLROTATE/d' "$OVERRIDE"
+    fi
 else
     cat > "$OVERRIDE" <<'EOF'
 [Unit]
@@ -583,6 +605,25 @@ Environment=EGL_PLATFORM=gbm
 # in the image -- and use a non-GL display mode.
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
+if [ "$APP_UNIT" = looper.service ]; then
+    cat >> "$OVERRIDE" <<'EOF'
+# HG08 1.0.2 starts dozens of realtime DSP threads at 96000 Hz. Under TCG
+# they starve USB input processing; silent-loopback UI runs need normal scheduling.
+CapabilityBoundingSet=~CAP_SYS_NICE
+LimitRTPRIO=0
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_mali
+Environment=QT_QPA_EGLFS_WIDTH=800
+Environment=QT_QPA_EGLFS_HEIGHT=1280
+Environment=MALIWINDOW_ROTATE=90
+Environment=QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS=rotate=270
+# touchbridge already supplies the tablet as touch. Qt's raw mouse path would
+# also deliver each click, with coordinates for the unrotated portrait panel.
+Environment=QT_QPA_EVDEV_MOUSE_PARAMETERS=/dev/null
+Environment=EGL_PLATFORM=surfaceless
+Environment=LIBGL_ALWAYS_SOFTWARE=1
+Environment=MESA_LOADER_DRIVER_OVERRIDE=swrast
+EOF
+fi
 
 if [ "$MONTERO" = 1 ]; then
     install_montero /mnt/rootfs "$SHIM_ARCH" /stage

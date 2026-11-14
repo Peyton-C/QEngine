@@ -45,12 +45,12 @@ write_fake_dt() {
         printf '%s' "$_code" | dd of="$_secure_efuse" conv=notrunc status=none
 
         # The CPU-id cell holds "RK3288" + board + product. The board is product-
-        # specific: az05 for the JP11S/JP20/JP21 generation, az01 for everything
+        # specific: az05 for HG08 and the JP11S/JP20/JP21 generation, az01 for everything
         # else (JC11S, JC11, JC16, JP11, JP13, JP14, JP07, JP08, NH08). Derived
         # here rather than hardcoded so a JP11S/JP20/JP21 image gets the right
         # platform in its CPU id too.
         case "$_code" in
-            JP11S|JP20|JP21) _board="AZ05" ;;
+            JP11S|JP20|JP21|HG08) _board="AZ05" ;;
             *)               _board="AZ01" ;;
         esac
         mkdir -p "$_rootfs/root/fake-dt/ffb40000.efuse/rockchip-efuse"

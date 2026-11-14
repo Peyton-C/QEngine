@@ -162,7 +162,7 @@ mpc|arm64|/usr/bin/MPC|build_mpc_rootfs.sh|engine|data_disk.img|-
 mpc|armhf|/usr/bin/MPC|build_mpc_rootfs.sh|mpc|emmc.img|-
 drummodule|armhf|/usr/bin/DrumModule|build_mpc_rootfs.sh|mpc|emmc.img|internal-sd:sdcard.img
 headrush|arm64|/usr/bin/HV03|build_mpc_rootfs.sh|engine|data_disk.img|-
-headrush|armhf|/usr/Evil|build_armv7_engine_rootfs.sh|mpc|emmc.img|-"
+headrush|armhf|/usr/Evil,/usr/Looper/Looper|build_armv7_engine_rootfs.sh|mpc|emmc.img|-"
 
 family_names() { printf '%s\n' "$DEVICE_FAMILIES" | cut -d'|' -f1 | sort -u | tr '\n' ' '; }
 

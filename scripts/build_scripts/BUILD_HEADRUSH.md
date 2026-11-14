@@ -1,10 +1,11 @@
 # HeadRush
-QEngine boots HeadRush Prime and VX5 with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
+QEngine boots HeadRush Prime, VX5 and Sheeran Looper X with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
 
 | Device | Code | Firmware tried | Architecture | Display | Limits |
 | --- | --- | --- | --- | --- | --- |
 | Prime | `HG06` | 5.2.0 | armv7, RK3288 | Landscape with touch | Silent loopback audio |
 | VX5 | `HV03` | 1.2.2 | arm64, RK3566 | 160×128, landscape | Input from a WAV file, no LEDs or phantom power |
+| Sheeran Looper X | `HG08` | 1.0.2 | armv7, RK3288 | 1280×800, software rendering | Factory content absent; silent loopback audio; no virtual footswitches |
 
 ## Build
 ```sh
@@ -15,6 +16,16 @@ scripts/qemu/run_instance.sh --name headrush-vx5-1.2.2 --display vnc
 Use a different instance name for each device and firmware version. `--force` rebuilds the rootfs and keeps the data disk. See [INSTANCES.md](INSTANCES.md) for display options and host ports.
 
 VX5 uses the shared JUCE builder, `build_mpc_rootfs.sh`, and `HV03.service`. Prime uses the armv7 Engine builder and `evil.service`. VX5 needs no Qt or EGL replacement and no rotation shim. Both use QEngine's generic kernel, not the device kernel in the updater.
+
+## Looper X
+```sh
+scripts/build_scripts/new_instance.sh --name sheeran-looper-x-1.0.2 --firmware 'Sheeran Looper X 1.0.2 Firmware Updater - Mac.zip'
+scripts/qemu/run_instance.sh --name sheeran-looper-x-1.0.2 --display vnc
+```
+
+Looper X uses the armv7 builder and `looper.service`. Its Qt is statically linked, so `maliwindow` adapts the built-in Mali backend to Mesa and rotates the framebuffer into landscape. QEngine keeps its DSP threads on normal scheduling to reduce USB input starvation. Startup and rendering are slow under TCG, and touch input can miss taps.
+
+The updater omits the factory content partition. Looper creates a database and reaches its four-track screen without it, but the factory library is absent. Menu and Global Settings navigation have been checked. QEngine supplies a silent 8-out/2-in loopback card at 96000 Hz. Recording, playback and physical controls remain unverified. Looperboard firmware has not been tried with this path.
 
 ## Audio
 Prime gets a kernel loopback card, renamed `HV01`, which `pcmhold` keeps at 8 channels out and 2 in at 96000 Hz. Capture is silent and playback is discarded, so Prime makes no sound on the host.

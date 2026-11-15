@@ -160,6 +160,14 @@ case "$ARCH" in
                    echo "       the armmp-lpae kernel and drop highmem=off." >&2
                    exit 1; } ;;
         esac
+        # Four cores, the RK3288's own count, for the same reason MEM is set
+        # here: run_qemu.sh's ${SMP:-8} then leaves it in place. Eight was
+        # never all usable. Ubuntu's armhf kernel is built with NR_CPUS=4 and
+        # brings up four whatever QEMU offers, and the arm64 hosts that can
+        # run this guest under KVM are mostly four-core boards like the Pi 4,
+        # where eight vCPUs on four cores costs the audio thread its timing.
+        # Legacy instances already record SMP=4 for Engine's CPU-affinity setup.
+        SMP="${SMP:-4}"
         # A 32-bit guest *can* be KVM-accelerated, on a host whose cores implement
         # AArch32 at EL1 -- which is most arm64 Linux hardware, Cortex-A53/A72
         # included. Two things make that easy to miss. It does not work through

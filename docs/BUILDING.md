@@ -111,7 +111,7 @@ Raw images are sparse. Use `du -h build/instances/*/rootfs.img` to see allocated
 
 QEngine builds missing kernel files on demand. To refresh one architecture's pair, run `scripts/build_scripts/get_kernel.sh --arch arm64` or `--arch armhf`. Existing instances reference those shared paths.
 
-Armv7 needs `highmem=off` for its PCI devices and accepts at most 3072 MiB of RAM. Its default accelerator is TCG unless an arm64 Linux host and QEMU support AArch32 guests under KVM. Apple Silicon cannot accelerate armv7 guests. Arm64 uses HVF or KVM where available, otherwise TCG.
+Armv7 needs `highmem=off` for its PCI devices, accepts at most 3072 MiB of RAM and defaults to four cores, as the RK3288 has. Its default accelerator is TCG unless an arm64 Linux host and QEMU support AArch32 guests under KVM. Apple Silicon cannot accelerate armv7 guests. Arm64 uses HVF or KVM where available, otherwise TCG.
 
 ## Display
 ```sh

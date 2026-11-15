@@ -84,8 +84,9 @@ DATA_IMG="${DATA_IMG:-$BUILD_DIR/$_data}"
 KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/$_kern}"
 INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/$_init}"
 SSH_PORT="${SSH_PORT:-2225}"
-# armhf has already set this to a value its machine type can address; ${MEM:-...}
-# leaves that in place, the same way it does for ACCEL and CPU below.
+# armhf has already set these, MEM to a value its machine type can address and
+# SMP to the RK3288's four cores; ${MEM:-...} and ${SMP:-...} leave them in
+# place, the same way ACCEL and CPU are left below.
 MEM="${MEM:-4096}"
 SMP="${SMP:-8}"
 

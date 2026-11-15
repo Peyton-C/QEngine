@@ -74,7 +74,7 @@ Edit `build/instances/<name>/instance.env` to keep launch settings between runs.
 | `SSH_PORT` | Host TCP port forwarded to guest port 22 |
 | `VNC_DISPLAY` | QEMU VNC display number |
 | `ENGINE_VNC_PORT` | Legacy Engine's host port forwarded to its VNC touch bridge |
-| `SMP` | CPU count; legacy instances record 4, otherwise the launcher defaults to 8 |
+| `SMP` | CPU count; the launcher defaults to 4 for armv7 and 8 for arm64, and legacy instances record 4 |
 | `GPU_MAX_OUTPUTS` | Optional display count; set 3 for JP22 |
 
 Changing `PRODUCT_CODE` or `MONTERO` in this file does not modify an existing rootfs. Rebuild with the corresponding options. `DEVICE` and `ARCH` must agree with the built firmware; use another instance for a different target.

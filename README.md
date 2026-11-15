@@ -22,7 +22,7 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 |                         | Modern | Classic | Legacy |
 |-------------------------|--------|---------|--------|
 | Engine                  | Y      | Y       | Y      |
-| SoundSwitch             | Y      | ?       | ?      |
+| SoundSwitch             | Y      | Y       | ?      |
 | Display                 | Y      | Y       | Y      |
 | Virgl                   | Y      | Y       | N      |
 | Touch input             | Y      | Y       | Y      |

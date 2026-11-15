@@ -324,8 +324,15 @@ arch_audio_devices() {
     # than fall through to the architecture this file already defaulted to.
     # KERNEL_IMG is set by run_qemu.sh before it calls this. Every arm64 kernel
     # either distribution builds has snd_hda_intel, so only armhf asks.
-    if [ "${ARCH:-}" != armhf ] ||
-       grep -qx 'KERNEL_HDA=1' "${KERNEL_IMG:-}.info" 2>/dev/null; then
+    #
+    # Legacy Engine stays on virtio-sound whatever the kernel. Prime 4 and Prime 2
+    # 1.x run without alsashim, so nothing converts formats for them, and they
+    # set S32_LE on the card directly: hda offers only S16, the call fails, and
+    # Engine asserts in snd_pcm_state and exits before drawing (Prime 4 1.6.2,
+    # JC11). virtio-sound takes S32. ENGINE_VNC_PORT marks a legacy instance; only
+    # new_instance.sh's legacy path writes it.
+    if [ -z "${ENGINE_VNC_PORT:-}" ] && { [ "${ARCH:-}" != armhf ] ||
+       grep -qx 'KERNEL_HDA=1' "${KERNEL_IMG:-}.info" 2>/dev/null; }; then
         printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s,use-timer=false' "$1"
         return 0
     fi

@@ -102,7 +102,7 @@ Writable disks survive `--force`, including settings and any overlay files that 
 Raw images are sparse. Use `du -h build/instances/*/rootfs.img` to see allocated storage; `ls -lh` reports virtual capacity. Preserve holes when copying with `rsync --sparse`.
 
 ## Kernel
-`get_kernel.sh` prepares a generic Debian kernel and initrd for QEMU's `virt` machine. The initrd includes the storage, input, graphics and audio modules QEngine needs, and makes its modules available in the guest. A vendor Rockchip kernel targets hardware QEMU does not emulate and is not a substitute.
+`get_kernel.sh` prepares a generic distribution kernel and initrd for QEMU's `virt` machine, from Ubuntu 26.04 unless you pass `--distro debian`. The initrd includes the storage, input, graphics and audio modules QEngine needs, and makes its modules available in the guest. A vendor Rockchip kernel targets hardware QEMU does not emulate and is not a substitute.
 
 | Architecture | Shared files in `build/` | QEMU machine |
 | --- | --- | --- |
@@ -110,6 +110,13 @@ Raw images are sparse. Use `du -h build/instances/*/rootfs.img` to see allocated
 | armhf | `vmlinuz-generic-armhf`, `initrd-generic-armhf` | `virt,highmem=off` |
 
 QEngine builds missing kernel files on demand. To refresh one architecture's pair, run `scripts/build_scripts/get_kernel.sh --arch arm64` or `--arch armhf`. Existing instances reference those shared paths.
+
+| `--distro` | Kernel | Use |
+| --- | --- | --- |
+| `ubuntu` | Ubuntu 26.04, 7.0 | The default. Has the HDA sound driver on both architectures |
+| `debian` | Debian 13, 6.12 | The earlier kernel. Its armv7 build has no HDA driver |
+
+Both write the same files, so the last one built is the kernel every instance of that architecture boots. `vmlinuz-generic-<arch>.info` beside the kernel records which it is. Ubuntu's kernel was booted with Modern and Classic Engine and with MPC; Legacy Engine, HeadRush and the Alesis drum module were not tried on it, so build Debian's if one of those fails to start.
 
 Armv7 needs `highmem=off` for its PCI devices, accepts at most 3072 MiB of RAM and defaults to four cores, as the RK3288 has. Its default accelerator is TCG unless an arm64 Linux host and QEMU support AArch32 guests under KVM. Apple Silicon cannot accelerate armv7 guests. Arm64 uses HVF or KVM where available, otherwise TCG.
 

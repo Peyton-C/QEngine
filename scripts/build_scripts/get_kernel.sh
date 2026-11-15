@@ -1,12 +1,31 @@
 #!/bin/bash
-# get_kernel.sh — builds a Debian trixie (13) kernel and initrd for booting this
+# get_kernel.sh — builds a distribution kernel and initrd for booting this
 # project's targets under QEMU, with the modules it actually needs bundled in.
 #
-# Usage: get_kernel.sh --arch <arm64|armhf>
+# Usage: get_kernel.sh --arch <arm64|armhf> [--distro <ubuntu|debian>]
 #   arm64 boots the RK3588 targets (RANE SYSTEM ONE / RMZ2), armhf the RK3288 ones
 #   (Akai MPC, and the armv7 Engine OS devices).
-#   Writes vmlinuz-generic-<arch> and initrd-generic-<arch> to the repo's build/.
+#   Writes vmlinuz-generic-<arch> and initrd-generic-<arch> to the repo's build/,
+#   and vmlinuz-generic-<arch>.info beside them saying which kernel that is.
 #   Requires Docker.
+#
+#   --distro picks whose kernel: ubuntu (26.04, the default) or debian (trixie).
+#   Both write the same two files, since instances reference those shared paths;
+#   whichever ran last is the kernel every instance of that architecture boots.
+#
+# Why Ubuntu is the default. Debian's armhf kernel (linux-image-armmp) builds no
+# snd_hda_intel, which left 32-bit guests on virtio-sound, and QEMU's virtio-sound
+# never resumes once a guest lets its ring run dry: Engine's stream froze at start
+# on Prime GO 5.0.4 (JP11) in 5 of 7 tries under KVM, and died outright under TCG.
+# Ubuntu's armhf kernel has snd_hda_intel, so both architectures can use the one
+# card arm64's audio was confirmed against. It also ships snd-dummy and snd-aloop.
+# Booted on 7.0.0-43 (26.04): Engine 4.3.0, 5.0.4 and 5.3.0 on armhf, 5.3.0 on
+# arm64, MPC 2.11.7 and 3.10.0 Gen 1 and Gen 2, and MPC Sample 1.3.0. Legacy
+# Engine, HeadRush and the drum module were not tried on it. Debian stays
+# available for those, and as the way back if a firmware turns out to mind.
+#
+# Ubuntu's armhf kernel is built with NR_CPUS=4 (Debian's with 8), which is why
+# arch_devices.sh gives a 32-bit guest four cores.
 #
 # This was two scripts, get_arm64_kernel.sh and get_armv7_kernel.sh, differing in 48
 # lines of 360: the package name, the Docker platform, the output names, the container
@@ -20,9 +39,11 @@ OUT_DIR="$REPO_ROOT/build"
 mkdir -p "$OUT_DIR"
 
 ARCH=""
+DISTRO="ubuntu"
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
+        --distro) DISTRO="$2"; shift 2 ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -69,6 +90,23 @@ case "$ARCH" in
         exit 1 ;;
 esac
 
+# The arch block above holds Debian's values. Ubuntu names its kernel package the
+# same on both architectures and builds every module in the list below, so there
+# is nothing for the verification pass to expect missing.
+case "$DISTRO" in
+    ubuntu)
+        IMAGE="ubuntu:26.04"
+        KERNEL_PKG="linux-image-generic"
+        EXPECTED_ABSENT=""
+        ;;
+    debian)
+        IMAGE="debian:trixie"
+        ;;
+    *)
+        echo "ERROR: --distro must be 'ubuntu' or 'debian' (got '$DISTRO')." >&2
+        exit 1 ;;
+esac
+
 VMLINUZ="vmlinuz-generic-$ARCH"
 INITRD="initrd-generic-$ARCH"
 
@@ -89,6 +127,12 @@ MODULES=(
     # the codepage vfat asks for by default at mount time, and its absence
     # fails the mount even when the driver itself is loaded.
     fat vfat exfat nls_cp437 nls_iso8859-1 nls_ascii
+    # USB mass storage, so a drive handed to QEMU as usb-storage reaches the
+    # guest as a disk. Both distributions build these, but neither puts them in
+    # the initrd unasked, and the guest's /lib/modules is only what the initrd
+    # carried: on the Debian armhf kernel a hot-plugged drive enumerated on USB
+    # and never became /dev/sda (Prime 4 5.3.0, JC11).
+    usb_storage uas sd_mod
     # Loop devices. HeadRush keeps its USB-visible storage in an exFAT image on
     # /data and losetups it to /dev/loop1 before Evil starts; without the module
     # there is no /dev/loop1, and runevil retries losetup forever.
@@ -111,10 +155,11 @@ MODULES+=("${EXTRA_MODULES[@]+"${EXTRA_MODULES[@]}"}")
 # In the initrd, and so on every guest, but loaded only by whichever guest asks
 # for one. snd-dummy is a card MPC's rootfs loads for itself; loaded everywhere
 # it would also be a card to Engine, whose alsashim renames every card it sees.
-# The container below builds it, since Debian builds it for neither architecture.
+# The container below builds it: Debian builds it for neither architecture, and
+# Ubuntu's own copy lacks the qengine-ac50 model added there.
 ON_DEMAND_MODULES=(snd_dummy)
 
-INNER_SCRIPT="$(mktemp /tmp/get-debian-trixie-kernel-inner.XXXXXX)"
+INNER_SCRIPT="$(mktemp /tmp/qengine-get-kernel-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
 # Written to a real file and mounted in, not piped via stdin
@@ -136,8 +181,7 @@ apt-get install -y -qq initramfs-tools $KERNEL_PKG >/dev/null 2>&1
 KVER=\$(ls /lib/modules/)
 echo "Kernel version: \$KVER"
 
-# snd-dummy, built out of tree from the stable release Debian's kernel is cut
-# from. MPC runs its card at 128-frame periods, 2.9 ms at 44.1 kHz, and
+# snd-dummy, built out of tree from the release this kernel is cut from. MPC runs its card at 128-frame periods, 2.9 ms at 44.1 kHz, and
 # snd-aloop moves in whole jiffies, 4 ms at HZ=250: MPC 3.10.0's streams on it
 # overrun or stall within a tick or two. QEMU's hda only moves samples every
 # 10 ms. MPC will not run on any other period size, and snd-dummy's hrtimer
@@ -145,8 +189,15 @@ echo "Kernel version: \$KVER"
 echo "--- building snd-dummy ---"
 apt-get install -y -qq gcc make curl linux-headers-"\$KVER" >/dev/null 2>&1
 mkdir -p /tmp/snd-dummy
+# Debian's version is the stable release plus its own suffix, 6.12.116+deb13-armmp,
+# and names a tag outright. Ubuntu's, 7.0.0-43-generic, counts its own uploads in
+# the third field, so only the first two say which kernel it is.
+case "\$KVER" in
+    *+deb*) DUMMY_TAG="v\${KVER%%+*}" ;;
+    *)      DUMMY_TAG="v\$(echo "\$KVER" | cut -d. -f1-2)" ;;
+esac
 curl -fsSL -o /tmp/snd-dummy/dummy.c \
-    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/drivers/dummy.c?h=v\${KVER%%+*}"
+    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/sound/drivers/dummy.c?h=\$DUMMY_TAG"
 # Plus one model of our own. snd-dummy's own card is U8/S16 stereo, which Gen 2
 # MPC runs on, but MPC Sample 1.3.0 opens its card as four channels of S32_LE at
 # 44.1 kHz (AK4558's two pairs) and gets nothing it can use from that. Loading
@@ -263,7 +314,12 @@ for name in ${MODULES[@]} ${ON_DEMAND_MODULES[@]}; do
         ecc|snd_ump$EXPECTED_ABSENT) continue ;;
     esac
     pattern=\$(echo "\$name" | sed 's/[_-]/[-_]/g')
-    if ! find /tmp/verify -regextype posix-extended -regex ".*/\${pattern}\.ko(\.xz)?" | grep -q .; then
+    # Compiled into the kernel, so there is no file to find and nothing missing.
+    # Ubuntu builds in a good deal that Debian leaves as modules: evdev, loop,
+    # vfat, and on arm64 virtio_blk and drm.
+    if grep -Eq "/\${pattern}\.ko\$" /lib/modules/"\$KVER"/modules.builtin; then continue; fi
+    # .xz is Debian's module compression, .zst Ubuntu's.
+    if ! find /tmp/verify -regextype posix-extended -regex ".*/\${pattern}\.ko(\.xz|\.zst)?" | grep -q .; then
         MISSING="\$MISSING \$name"
     fi
 done
@@ -272,7 +328,62 @@ if [ -n "\$MISSING" ]; then
 fi
 
 cp /tmp/$INITRD /out/$INITRD
-cp /boot/vmlinuz-"\$KVER" /out/$VMLINUZ
+cp /boot/vmlinuz-"\$KVER" /tmp/$VMLINUZ
+
+# QEMU's -kernel wants a plain arm64 Image, which carries "ARMd" at offset 56.
+# Debian's vmlinuz is one. Ubuntu 26.04's arm64 vmlinuz is not: it is an EFI stub
+# holding dozens of devicetrees and, in a PE section named .linux, the kernel as
+# an EFI zboot image, which is a second small EFI program around a zstd stream.
+# Handed to -kernel as it comes, the guest sits at PC 0x200 with a silent console.
+# So peel both layers. Each is checked for rather than assumed, so a release that
+# drops one of them still comes out right. armhf's vmlinuz is an ordinary zImage.
+if [ "$ARCH" = arm64 ] &&
+   [ "\$(dd if=/tmp/$VMLINUZ bs=1 skip=56 count=4 2>/dev/null)" != ARMd ]; then
+    echo "--- unwrapping the EFI kernel image ---"
+    apt-get install -y -qq python3-minimal zstd >/dev/null 2>&1
+    python3 - /tmp/$VMLINUZ <<'PYEOF_INNER'
+import struct, subprocess, sys
+path = sys.argv[1]
+data = open(path, "rb").read()
+if data[56:60] != b"ARMd" and data[4:8] != b"zimg":
+    # A PE file: find the section table and take .linux.
+    pe = struct.unpack_from("<I", data, 0x3c)[0]
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    table = pe + 24 + struct.unpack_from("<H", data, pe + 20)[0]
+    for i in range(count):
+        entry = table + 40 * i
+        if data[entry:entry + 8].split(bytes(1))[0] == b".linux":
+            vsize, _, rsize, roff = struct.unpack_from("<IIII", data, entry + 8)
+            data = data[roff:roff + min(vsize, rsize)]
+            break
+    else:
+        sys.exit("no .linux section in this kernel image")
+if data[4:8] == b"zimg":
+    # EFI zboot: payload offset and size at 8 and 12, the compression's name at 24.
+    off, size = struct.unpack_from("<II", data, 8)
+    kind = data[24:32].split(bytes(1))[0].decode()
+    tool = {"zstd": ["zstd", "-dc"], "gzip": ["gzip", "-dc"]}.get(kind)
+    if tool is None:
+        sys.exit("kernel is compressed with " + kind + ", which this does not unpack")
+    data = subprocess.run(tool, input=data[off:off + size], stdout=subprocess.PIPE, check=True).stdout
+if data[56:60] != b"ARMd":
+    sys.exit("what was unwrapped is still not an arm64 Image")
+open(path, "wb").write(data)
+PYEOF_INNER
+fi
+cp /tmp/$VMLINUZ /out/$VMLINUZ
+chmod 644 /out/$VMLINUZ /out/$INITRD
+
+# Which kernel these two files are. Both distributions write the same names, and
+# what a guest can be given depends on which it is: KERNEL_HDA says whether this
+# kernel can drive QEMU's ich9-intel-hda.
+if find /tmp/verify -name 'snd-hda-intel.ko*' | grep -q .; then HDA=1; else HDA=0; fi
+cat > /out/$VMLINUZ.info <<EOF
+KERNEL_DISTRO=$DISTRO
+KERNEL_IMAGE=$IMAGE
+KERNEL_VERSION=\$KVER
+KERNEL_HDA=\$HDA
+EOF
 if [ ! -s /out/$INITRD ] || [ ! -s /out/$VMLINUZ ]; then
     echo "ERROR: output file(s) missing or empty" >&2
     exit 1
@@ -283,11 +394,11 @@ DOCKER_SCRIPT
 # `docker run --platform` does not re-pull: if the tag is already cached for a
 # different architecture Docker reuses that image, so the platform actually used
 # depends on pull order. The comment above pins intent; this pull makes it true.
-docker pull -q --platform "$DOCKER_PLATFORM" debian:trixie >/dev/null
+docker pull -q --platform "$DOCKER_PLATFORM" "$IMAGE" >/dev/null
 docker run --rm --platform "$DOCKER_PLATFORM" \
     -v "$OUT_DIR:/out" \
     -v "$INNER_SCRIPT:/inner.sh:ro" \
-    debian:trixie bash /inner.sh
+    "$IMAGE" bash /inner.sh
 
 if [ ! -s "$OUT_DIR/$INITRD" ] || [ ! -s "$OUT_DIR/$VMLINUZ" ]; then
     echo "FAILED: expected output files are missing from $OUT_DIR" >&2
@@ -295,5 +406,5 @@ if [ ! -s "$OUT_DIR/$INITRD" ] || [ ! -s "$OUT_DIR/$VMLINUZ" ]; then
 fi
 
 echo ""
-echo "Built: $OUT_DIR/$VMLINUZ"
+echo "Built: $OUT_DIR/$VMLINUZ  ($DISTRO)"
 echo "       $OUT_DIR/$INITRD"

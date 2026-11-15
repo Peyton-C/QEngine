@@ -42,6 +42,19 @@ detect_audio_card() {
     _product="$2"
     AUDIO_CARD_NAME=""
 
+    # Prime 4 and Prime 4+ are the exception to all of the above: their audio is
+    # an XMOS USB interface rather than an ASoC card, the devicetree has no
+    # inmusic,*-audio node to read, and the name Engine waits for is the
+    # interface's USB product string. JC11 5.3.0 never opens a card named "JC11"
+    # and plays on one named this in the Pi chroot; JC11S 5.0.4 opened both of
+    # its PCMs under this name in QEMU.
+    case "$_product" in
+        JC11|JC11S)
+            AUDIO_CARD_NAME="PRIME 4 Audio"
+            echo "--- audio card name: $AUDIO_CARD_NAME (XMOS USB interface) ---"
+            return 0 ;;
+    esac
+
     # tr rather than ${_product,,}: this is sourced by /bin/sh-compatible builders.
     _lower="$(printf '%s' "$_product" | tr '[:upper:]' '[:lower:]')"
 

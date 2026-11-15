@@ -656,14 +656,15 @@ fi
 # ends up with no audio device to select. The shim reports the name the real
 # hardware's ASoC driver registers instead. Left unset it would default to RMZ2,
 # which is the RK3588 product's name and in no RK3288 product's list.
-# ALSASHIM_CARD: restrict that spoof to card 0, QEMU's emulated HDA controller,
-# so a USB controller plugged in later keeps its own name.
+# ALSASHIM_CARD: restrict that spoof to card 0, QEMU's emulated card, so a USB
+# controller plugged in later keeps its own name.
 #
-# The card must be attached playback-only (-device ich9-intel-hda -device
-# hda-output, never hda-duplex): Engine takes the first device of each
-# enumeration pass as its default and the capture pass runs second, so a capture
-# PCM wins the default, the playback slot is left null, and playback never runs.
-# scripts/qemu/arch_devices.sh does this for both architectures.
+# The card must be attached playback-only (virtio-sound-pci,streams=1 here, the
+# counterpart of arm64's hda-output, never streams=2 or hda-duplex): Engine takes
+# the first device of each enumeration pass as its default and the capture pass
+# runs second, so a capture PCM wins the default, the playback slot is left null,
+# and playback never runs. arch_audio_devices in scripts/qemu/arch_devices.sh
+# picks the card for each architecture.
 #
 # The shim also rewrites hw:N to plughw:N so ALSA converts between the format
 # Engine asks for and the S16_LE/2ch the emulated card offers, and deepens the

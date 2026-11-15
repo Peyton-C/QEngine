@@ -72,4 +72,6 @@ Later Engine builds use EGLFS/KMS and Mesa with virgl in a GL display mode. QEng
 
 QEngine installs `touchbridge`, `midisurface`, the devicetree shim and the application override. The data disk uses the single `az01-internal` partition, the same layout as Gen 1 MPC. Direct use of `build_armv7_engine_rootfs.sh` defaults to the shared `build/rootfs_out.img`; use instances to keep devices apart.
 
+Three units fail at boot without affecting Engine: `az0x-info`, which reads the devicetree without `dtshim`, `az0x-loadpin-trustpoints`, for a kernel security module the guest does not run, and `xmos-update`, which looks for the Prime 4 audio interface. Engine may also report "Incompatible Format" at start for one of QEngine's disks, such as the SC6000's `az01-data`; tap Ok.
+
 See [INSTANCES.md](INSTANCES.md) for instance settings and [Engine OS](../../docs/engine/README.md) for the runtime mechanisms.

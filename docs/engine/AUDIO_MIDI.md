@@ -12,6 +12,8 @@ Engine filters ALSA cards by their reported name before inspecting PCM devices. 
 | Enough queued audio for QEMU | Enlarges the ring and thresholds without changing Engine's period size |
 | Userspace MIDI client with a card number | Supplies a card number when ALSA reports none |
 
+The name to report is the one the product's own audio driver registers. On RK3588 it is the product code. On RK3288 QEngine reads it from the firmware at build time with `detect_audio_card.sh`, because it is not always the product code: SC5000M (`JP08`) and SC6000 (`JP13`) come up as `JP07`. Prime 4 and Prime 4+ (`JC11`, `JC11S`) play through an XMOS USB interface instead, named `PRIME 4 Audio`.
+
 QEngine gives both architectures QEMU's HDA card when the guest kernel has its driver, as Ubuntu's does, with `use-timer=false` so the card moves samples when the host asks for them. With QEMU's own timer, 96 kHz products such as the SC6000 lose a few samples several times a second. Debian's armv7 kernel has no HDA driver, so on it QEngine falls back to virtio-sound, which stops for good once Engine falls behind and never starts with a ring under about 30 ms.
 
 Use the instance launcher so the sound device and preload configuration stay together. A capture PCM can take Engine's default-device slot and leave playback unused; adding `hda-duplex` is not a way to add working inputs.
@@ -19,7 +21,9 @@ Use the instance launcher so the sound device and preload configuration stay tog
 | `alsashim` setting | Effect |
 | --- | --- |
 | `ALSASHIM_AS` | Overrides the reported card name |
-| `ALSASHIM_BUFFER_SCALE` | Scales ring depth; default 8, while the Pi and guest-linked legacy configuration use 1 |
+| `ALSASHIM_CARD` | Limits that override to one card index; Engine builds use 0, QEMU's card, so a USB interface keeps its own name |
+| `ALSASHIM_BUFFER_SCALE` | Scales ring depth; default 8, which armv7 Engine builds also set, while the Pi and guest-linked legacy configuration use 1 |
+| `ALSASHIM_XRUN_FREE_RUN` | Keeps playback running through an underrun instead of stopping it, which Engine never recovers from; off by default |
 | `ALSASHIM_NO_CAPTURE` | Hides capture devices |
 | `ALSASHIM_MAX_CHANNELS` | Limits advertised channels; the legacy SC/Prime GO configuration uses 4 |
 | `ALSASHIM_METER` | Logs per-channel levels |
@@ -44,7 +48,7 @@ echo 'play left' > /run/midisurface.fifo
 echo 'cue left' > /run/midisurface.fifo
 ```
 
-Run these in the guest with the surface service active. The Pi uses `/srv/engine/run/midisurface.fifo` from the host. See the [Pi guide](../../scripts/pi/README.md) for forwarding a real controller.
+Prime 4 (`JC11`) 5.3.0 ignores `load` while `play` works; load a track by touch there, double-tapping it and then tapping a deck. Run these in the guest with the surface service active. The Pi uses `/srv/engine/run/midisurface.fifo` from the host. See the [Pi guide](../../scripts/pi/README.md) for forwarding a real controller.
 
 | Override | Effect |
 | --- | --- |

@@ -30,6 +30,23 @@ Connect your VNC viewer to `127.0.0.1:5991`. For legacy firmware, forward the pr
 
 If the guest runs an SSH server, the launcher's printed `ssh -p PORT root@localhost` command works on the build host. From your workstation, forward that port through the build host in the same way. A port forward does not install or start a guest SSH server.
 
+Engine OS ships OpenSSH with the service disabled and root limited to keys. Start it for one boot from the serial console, with your public key, leaving the rootfs untouched:
+
+```sh
+mkdir -p /run/sshd
+echo 'ssh-ed25519 AAAA... you@host' > /run/qengine_authorized_keys
+/usr/sbin/sshd -o AuthorizedKeysFile=/run/qengine_authorized_keys
+```
+
+Classic images such as 4.3.0 ship no host key. Generate one under `/run` and pass it with `-h`:
+
+```sh
+ssh-keygen -q -t ed25519 -N '' -f /run/qengine_hostkey
+/usr/sbin/sshd -h /run/qengine_hostkey -o AuthorizedKeysFile=/run/qengine_authorized_keys
+```
+
+Everything under `/run` is gone after a reboot. If your agent holds several keys, connect with `-o IdentitiesOnly=yes -i` and the matching key, or the guest refuses you after the first few attempts.
+
 ## Files
 Create a transfer directory on the build host and copy your file there:
 

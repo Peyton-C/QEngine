@@ -48,7 +48,7 @@ QEngine supplies a full battery on AC for `JP11`, `JP11S` and `NH10`. `dtshim` r
 
 | Device | Product code | Native UI boot |
 | --- | --- | --- |
-| Prime GO | `JP11` | 5.3.0, armv7 |
+| Prime GO | `JP11` | 4.3.0, 5.0.4, 5.3.0, armv7 |
 | Prime GO+ | `JP11S` | 5.3.0, armv7 |
 | Mixstream Pro GO | `NH10` | 5.3.0, armv7 |
 

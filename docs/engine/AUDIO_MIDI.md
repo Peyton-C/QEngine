@@ -30,6 +30,8 @@ Use the instance launcher so the sound device and preload configuration stay tog
 
 QEngine scales the buffer, period count and playback start/stop thresholds together. Raising buffer size alone can leave the stream underrunning. These settings adapt the output device; they do not supply hardware mixer inputs or motorized-platter timecode.
 
+Each step of the scale adds one of Engine's rings of latency in QEMU. At 8, Prime 4 plays about 93 ms late and SC6000 about 75 ms, before QEMU and the host add their own. Scale 4 halves that and plays cleanly under KVM, but drops out briefly when a track loads during playback, and repeatedly under TCG. Below 4 the stream glitches. For low latency, use the [Pi chroot](../../scripts/pi/README.md), which runs Engine at its own buffer size.
+
 The repository records audible end-to-end playback on arm64 RMZ2 5.0.4, and recorded playback on armv7 Prime 4, Prime 4+, Prime GO and SC6000 on 4.3.0 to 5.3.0 under KVM. Legacy playback and MIDI binding remain unverified despite the guest-linked audio setup. See the [support matrix](../../README.md#engine-os-support-matrix) for other targets. The experimental `az04-codec` modules are not required by the normal playback path.
 
 ## MIDI discovery

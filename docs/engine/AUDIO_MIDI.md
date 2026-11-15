@@ -12,6 +12,8 @@ Engine filters ALSA cards by their reported name before inspecting PCM devices. 
 | Enough queued audio for QEMU | Enlarges the ring and thresholds without changing Engine's period size |
 | Userspace MIDI client with a card number | Supplies a card number when ALSA reports none |
 
+QEngine gives both architectures QEMU's HDA card when the guest kernel has its driver, as Ubuntu's does, with `use-timer=false` so the card moves samples when the host asks for them. With QEMU's own timer, 96 kHz products such as the SC6000 lose a few samples several times a second. Debian's armv7 kernel has no HDA driver, so on it QEngine falls back to virtio-sound, which stops for good once Engine falls behind and never starts with a ring under about 30 ms.
+
 Use the instance launcher so the sound device and preload configuration stay together. A capture PCM can take Engine's default-device slot and leave playback unused; adding `hda-duplex` is not a way to add working inputs.
 
 | `alsashim` setting | Effect |
@@ -24,7 +26,7 @@ Use the instance launcher so the sound device and preload configuration stay tog
 
 QEngine scales the buffer, period count and playback start/stop thresholds together. Raising buffer size alone can leave the stream underrunning. These settings adapt the output device; they do not supply hardware mixer inputs or motorized-platter timecode.
 
-The repository records audible end-to-end playback on arm64 RMZ2 5.0.4. Legacy playback and MIDI binding remain unverified despite the guest-linked audio setup. See the [support matrix](../../README.md#engine-os-support-matrix) for other targets. The experimental `az04-codec` modules are not required by the normal playback path.
+The repository records audible end-to-end playback on arm64 RMZ2 5.0.4, and recorded playback on armv7 Prime 4, Prime 4+, Prime GO and SC6000 on 4.3.0 to 5.3.0 under KVM. Legacy playback and MIDI binding remain unverified despite the guest-linked audio setup. See the [support matrix](../../README.md#engine-os-support-matrix) for other targets. The experimental `az04-codec` modules are not required by the normal playback path.
 
 ## MIDI discovery
 The guest needs the USB audio/MIDI and ALSA sequencer kernel modules. QEngine's kernel build supplies them. Engine can enumerate generic sequencer clients, but enumeration does not establish a working control surface: it binds a control assignment only after a matching MIDI Device Inquiry reply.

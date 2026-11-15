@@ -290,11 +290,26 @@ fi
 # default and leave playback null, which presents as a stuck XRUN rather than an
 # error (see the note in each engine launcher).
 #
-# The card differs by architecture because of what Debian builds, not the machine:
-# linux-image-armmp ships the HDA codec modules but not snd_hda_intel, so in a
-# 32-bit guest an ich9-intel-hda sits on the PCI bus with no driver and no card
-# ever appears. armhf gets virtio-sound instead, whose virtio_snd get_kernel.sh
-# puts in both initrds. arm64 keeps hda, which its audio was confirmed against.
+# Every guest gets hda when its kernel can drive it, and that is a property of
+# the kernel, not the architecture. Debian's armhf kernel (linux-image-armmp)
+# ships the HDA codec modules but not snd_hda_intel, so in a 32-bit guest an
+# ich9-intel-hda would sit on the PCI bus with no driver and no card would ever
+# appear. Ubuntu's, get_kernel.sh's default, has it. get_kernel.sh records which
+# in KERNEL_HDA, in an .info file beside the kernel; a kernel without that file
+# predates it and is Debian's, so it counts as having no hda on armhf.
+#
+# virtio-sound is what armhf gets without hda, and only then, because QEMU's
+# virtio-sound never resumes a stream once the guest lets its ring run dry.
+# Engine's stream froze at start on Prime GO 5.0.4 (JP11) in 5 of 7 tries under
+# KVM on a Pi 4, never advanced at all with a ring under ~30 ms, and under TCG
+# died before a track was loaded. On hda the same guest ran 5 of 5 cold starts
+# and 3 of 3 Engine restarts, and under TCG it plays on with short dropouts.
+#
+# use-timer=false moves samples when the audio backend asks for them, instead of
+# on hda's own timer. With the timer, Engine at 96 kHz lost a few samples about
+# eight times a second and ran 0.2% sharp (SC6000 5.0.4, JP13, on a Pi 4 under
+# KVM, measured at a 96 kHz capture so no host resampling was involved); without
+# it the same run kept exact pitch. 44.1 kHz products were clean either way.
 #
 # streams=1 is one playback stream and no capture, the virtio-sound equivalent
 # of hda-output rather than hda-duplex: QEMU makes the first half of the streams
@@ -307,8 +322,11 @@ arch_audio_devices() {
     # ${ARCH:-} rather than $ARCH: this runs long after the file was sourced, and
     # under the launchers' `set -u` an unset ARCH would abort the boot here rather
     # than fall through to the architecture this file already defaulted to.
-    if [ "${ARCH:-}" != armhf ]; then
-        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+    # KERNEL_IMG is set by run_qemu.sh before it calls this. Every arm64 kernel
+    # either distribution builds has snd_hda_intel, so only armhf asks.
+    if [ "${ARCH:-}" != armhf ] ||
+       grep -qx 'KERNEL_HDA=1' "${KERNEL_IMG:-}.info" 2>/dev/null; then
+        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s,use-timer=false' "$1"
         return 0
     fi
 
@@ -321,8 +339,8 @@ arch_audio_devices() {
             printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1" ;;
         *)
             echo "WARNING: $QEMU_BIN has no virtio-sound-pci (QEMU 8.2+), which is" >&2
-            echo "         the only sound card a 32-bit guest can use here --" >&2
-            echo "         linux-image-armmp has no snd_hda_intel. Booting without" >&2
-            echo "         audio." >&2 ;;
+            echo "         the only sound card this guest's kernel can drive. Build" >&2
+            echo "         Ubuntu's with scripts/build_scripts/get_kernel.sh --arch" >&2
+            echo "         armhf, or boot without audio as this does now." >&2 ;;
     esac
 }

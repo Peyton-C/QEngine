@@ -659,12 +659,13 @@ fi
 # ALSASHIM_CARD: restrict that spoof to card 0, QEMU's emulated card, so a USB
 # controller plugged in later keeps its own name.
 #
-# The card must be attached playback-only (virtio-sound-pci,streams=1 here, the
-# counterpart of arm64's hda-output, never streams=2 or hda-duplex): Engine takes
+# The card must be attached playback-only (hda-output, or virtio-sound-pci with
+# streams=1 on a kernel without hda, never hda-duplex or streams=2): Engine takes
 # the first device of each enumeration pass as its default and the capture pass
 # runs second, so a capture PCM wins the default, the playback slot is left null,
 # and playback never runs. arch_audio_devices in scripts/qemu/arch_devices.sh
-# picks the card for each architecture.
+# picks the card from what the guest's kernel can drive, so the rootfs does not
+# depend on which it is: both are card 0.
 #
 # The shim also rewrites hw:N to plughw:N so ALSA converts between the format
 # Engine asks for and the S16_LE/2ch the emulated card offers, and deepens the

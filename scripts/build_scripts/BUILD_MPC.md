@@ -53,12 +53,12 @@ MPC opens `/dev/snd/by-path/platform-sound`, which QEngine points at `snd-dummy`
 | Card | Role |
 | --- | --- |
 | `snd-dummy` | MPC's internal audio device, with its original period size |
-| QEMU HDA on arm64, virtio-sound on armv7 | Host output receiving the copied stereo pair |
+| QEMU HDA, or virtio-sound on Debian's armv7 kernel | Host output receiving the copied stereo pair, card 0 |
 | `snd-aloop` | Unsuitable as MPC's internal card; streams stall |
 
 If MPC reports "No internal audio device could be found!", stop the guest and refresh its architecture's kernel and initrd with `get_kernel.sh --arch arm64` or `--arch armhf`. Older QEngine kernels may lack the required `snd-dummy` module.
 
-Output has additional latency and can tick as the two cards' clocks drift. `QEMU_AUDIO=off` leaves MPC playing to its dummy card without host output. Audio was heard on arm64 `ACVA3`, 3.10.0 through CoreAudio; Gen 1 3.10.0 output was recorded through QEMU's WAV backend but not listened to.
+Armv7 MPC instances built before QEngine named card 0 send their output to virtio-sound by name and are silent on HDA; rebuild them with `--force`. Output has additional latency and can tick as the two cards' clocks drift. `QEMU_AUDIO=off` leaves MPC playing to its dummy card without host output. Audio was heard on arm64 `ACVA3`, 3.10.0 through CoreAudio; Gen 1 3.10.0 and 2.11.7 output was recorded through QEMU's WAV backend on a Pi 4 under KVM but not listened to.
 
 ## Identity and storage
 `dtshim` serves the instance's product code and serial to the application. To inspect what the firmware library reports, run in the guest:

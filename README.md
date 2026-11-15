@@ -19,19 +19,19 @@ See [Build](docs/BUILDING.md) for requirements, rebuilds and display options. On
 ## Engine OS support matrix
 Y means supported in the builds tried, N means unavailable, and ? means unverified or unresolved. Results do not cover every device and firmware combination. The [era guides](docs/engine/README.md) describe the runtime limits.
 
-|                         | Modern arm64 | Modern armv7    | Classic         | Legacy |
-|-------------------------|--------------|-----------------|-----------------|--------|
-| Engine                  | Y            | Y               | Y               | Y      |
-| SoundSwitch             | Y            | ?               | ?               | ?      |
-| Display                 | Y            | Y               | Y               | Y      |
-| Virgl                   | Y            | Y               | Y               | N      |
-| Touch input             | Y            | Y               | Y               | Y      |
-| Keyboard navigation     | Y            | Y               | Y               | ?      |
-| Audio playback          | Y            | Y (chroot only) | Y (chroot only) | ?      |
-| MIDI                    | Y            | Y               | Y               | ?      |
-| External media (USB/SD) | Y            | Y               | Y               | ?      |
+|                         | Modern | Classic | Legacy |
+|-------------------------|--------|---------|--------|
+| Engine                  | Y      | Y       | Y      |
+| SoundSwitch             | Y      | ?       | ?      |
+| Display                 | Y      | Y       | Y      |
+| Virgl                   | Y      | Y       | N      |
+| Touch input             | Y      | Y       | Y      |
+| Keyboard navigation     | Y      | Y       | ?      |
+| Audio playback          | Y      | Y       | ?      |
+| MIDI                    | Y      | Y       | ?      |
+| External media (USB/SD) | Y      | Y       | ?      |
 
-Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes, and under TCG on Apple Silicon over shorter runs, where Engine's audio thread takes most of a host core. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.

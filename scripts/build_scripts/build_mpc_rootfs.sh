@@ -496,10 +496,13 @@ ExecStart=/usr/bin/udevadm settle --timeout=10
 EOF
     # alsashim does only the second output here: MPC's card keeps its own name
     # and its hw: device, and its ring and period stay as MPC asks. QEMU's card
-    # is hda, id Intel, on arm64, and virtio-sound, id SoundCard, on armhf, whose
-    # kernel has no hda driver (arch_audio_devices in scripts/qemu/arch_devices.sh).
-    QEMU_CARD=Intel
-    [ "$ARCH" = armhf ] && QEMU_CARD=SoundCard
+    # is named by index, not id. It is hda, id Intel, or on an armhf kernel
+    # without hda virtio-sound, id SoundCard, and which one is decided at boot by
+    # arch_audio_devices in scripts/qemu/arch_devices.sh from the kernel, which
+    # can change after this image is built. Either way it is card 0: its driver
+    # loads from the initrd, before snd-aloop's card 1 and the snd-dummy that
+    # qengine-mpc-audio.service loads later. Engine's builders count on card 0 too.
+    QEMU_CARD=0
     MAIN_PCM_ENV=""
     if [ "$IS_MPC" = 1 ] && ! grep -q -a 'snd/by-path/platform-sound' /mnt/rootfs/usr/bin/MPC; then
         # MPC 2.7.0 predates the by-path lookup, which 2.7.2 already has. It polls

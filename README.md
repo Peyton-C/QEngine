@@ -31,7 +31,7 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 | MIDI                    | Y      | Y       | ?      |
 | External media (USB/SD) | Y      | Y       | ?      |
 
-Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes, and under TCG on Apple Silicon over shorter runs, where Engine's audio thread takes most of a host core. Legacy SoundSwitch was checked on Mixstream Pro 2.3.2; SC5000 1.0.1 has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes. Under TCG on Apple Silicon Engine's audio thread takes most of a host core, and CoreAudio playback cuts out about once a second, so listen under KVM. SC LIVE 4 has no audio, as Engine crashes once it accepts a sound card. Legacy SoundSwitch was checked on Mixstream Pro 2.3.2; SC5000 1.0.1 has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.
@@ -54,24 +54,24 @@ Code selects the product identity with `--product-code`. Version cells list firm
 
 |                         | Code  | SoC    | Signed | Arch  | 1.x         | 2.x   | 3.x   | 4.x           | 5.x         |
 |-------------------------|-------|--------|-----------|-------|-------------|-------|-------|---------------|-------------|
-| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.5.2, 1.6.2 | ?     | ?     | ?             | 5.3.0       |
+| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.5.2, 1.6.2 | ?     | ?     | ?             | 5.1.0b8, 5.3.0 |
 | Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | 1.3.2-1.4.1, 1.5.2-1.6.2 | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | 5.3.0       |
 | Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | 5.0.4-5.3.0 |
 | Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | –             | 5.1.0-5.3.0 |
 | Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | 1.6.2 !     | ?     | ?     | 4.3.0         | 5.0.4-5.3.0 |
-| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | ?             | 5.3.0       |
+| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | 4.3.4         | 5.3.0       |
 | Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.0.1-1.3.1, 1.4.1-1.6.2 | ?     | ?     | ?             | 5.0.4-5.3.0 |
 | Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | 1.3.1-1.6.0 | ?     | ?     | ?             | 5.3.0       |
 | Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | 1.5.2, 1.5.3, 1.6.2 | ?     | ?     | ?             | 5.0.4-5.3.0 |
 | Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | 5.3.0       |
-| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | 2.3.3 | ?     | ?             | 5.3.0       |
-| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | 4.3.4         | 5.3.0       |
-| Numark Mixstream Pro    | NH08  | RK3288 | N         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | 5.3.0       |
-| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | 5.3.0       |
-| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | 5.3.0       |
+| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | 2.3.3 | ?     | ?             | 5.1.0b8, 5.3.0 |
+| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | 4.3.4         | 5.1.0b8, 5.3.0 |
+| Numark Mixstream Pro    | NH08  | RK3288 | N         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | 5.1.0b8, 5.3.0 |
+| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | 5.1.0b8, 5.3.0 |
+| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | 5.1.0b8, 5.3.0 |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
 
-QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0, and Prime GO's also on 4.3.0 and 5.0.4; other older releases remain unverified with the fake battery. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
+QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0, Prime GO's also on 4.3.0 and 5.0.4, Prime GO+'s on 4.3.4 and Mixstream Pro GO's on 5.1.0b8; other older releases remain unverified with the fake battery. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
 
 ## MPC
 Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x has been booted as `ACV5` only.

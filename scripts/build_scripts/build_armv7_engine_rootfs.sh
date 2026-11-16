@@ -162,7 +162,7 @@ fi
 # Set even where it goes unused, because docker run below passes it under set -u.
 AUDIO_CARD_NAME=""
 if [ "$LEGACY_ENGINE" != 1 ]; then
-    detect_audio_card "$OUT_PATH" "${PRODUCT_CODE:-JP07}"
+    detect_audio_card "$OUT_PATH" "${PRODUCT_CODE:-JP07}" "$FIRMWARE_IMG"
 fi
 
 ### 2. Grow the image and filesystem #########################################

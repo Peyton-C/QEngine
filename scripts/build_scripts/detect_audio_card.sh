@@ -1,10 +1,13 @@
+# shellcheck shell=bash
 # Sourced by the build scripts in this directory — not executed on its own.
 #
 # Reports the ALSA card name a product's real hardware registers, so alsashim can
 # spoof the emulated card as that name and get past Engine's compiled-in
 # card-name allowlist.
 #
-#   detect_audio_card <rootfs image> <product code>
+#   detect_audio_card <rootfs image> <product code> [firmware image]
+#
+# The firmware is read only when the rootfs has no devicetree for the product.
 #
 # On success AUDIO_CARD_NAME is set.
 #
@@ -37,9 +40,12 @@
 # `simple-audio-card,name = "RMZ2"` written straight into its devicetree, which is
 # why alsashim's built-in default is that string and why build_arm64_rootfs.sh
 # does not call this.
+_DETECT_AUDIO_CARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 detect_audio_card() {
     _img="$1"
     _product="$2"
+    _firmware="${3:-}"
     AUDIO_CARD_NAME=""
 
     # Prime 4 and Prime 4+ are the exception to all of the above: their audio is
@@ -93,10 +99,21 @@ detect_audio_card() {
             $6 ~ /\.dtb$/ && index($6, p) &&
             (best == "" || length($6) < length(best)) { best = $6 }
             END { print best }' || true)"
-    [ -n "$_dtb" ] || { _audio_card_giveup "no /boot/*$_lower*.dtb in this rootfs"; return 0; }
 
     _tmp="$(mktemp -d /tmp/qengine-audio-card.XXXXXX)"
-    "$_dbg" -R "dump /boot/$_dtb $_tmp/product.dtb" "$_img" >/dev/null 2>&1
+    if [ -n "$_dtb" ]; then
+        "$_dbg" -R "dump /boot/$_dtb $_tmp/product.dtb" "$_img" >/dev/null 2>&1
+    elif [ -n "$_firmware" ] &&
+         python3 -I "$_DETECT_AUDIO_CARD_DIR/extract_dtb.py" "$_firmware" "$_product" \
+             "$_tmp/product.dtb"; then
+        # The AZ05 generation (JP11S from 5.x, JP20, JP21, NH08S, NH10) keeps its
+        # devicetrees in the update's boot partition rather than the rootfs. Without
+        # this NH08S would guess "NH08S", while its driver registers "NH08".
+        _dtb="the firmware's $_lower devicetree"
+    else
+        rm -rf "$_tmp"
+        _audio_card_giveup "no /boot/*$_lower*.dtb in this rootfs or the firmware"; return 0
+    fi
 
     # A devicetree blob stores property values inline in its structure block, in
     # node order, so matching the raw file yields this product's compatibles in

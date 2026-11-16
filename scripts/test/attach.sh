@@ -14,5 +14,5 @@ guest "$port" '
 losetup -P -f /data/test.img; sleep 5
 echo "media: $(ls /media | tr "\n" " ")"
 grep -E "^ ?[0-9]" /proc/asound/cards
-grep -h "^Environment=ALSASHIM" /etc/systemd/system/engine.service.d/*.conf 2>/dev/null
+grep -hE "^Environment=\"?ALSASHIM" /etc/systemd/system/engine.service.d/*.conf 2>/dev/null
 echo "engine: $(systemctl is-active engine), $(systemctl show engine -p NRestarts)"'

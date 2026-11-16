@@ -79,7 +79,7 @@ struct probe {
     const char *name;
     const char *what;
     void (*run)(void);
-    int engine_only;
+    int (*applies)(void); /* whether it runs when no probes are named */
 };
 
 void probe_loader(void);

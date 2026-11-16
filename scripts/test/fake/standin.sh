@@ -32,13 +32,17 @@ PROBES=loader,identity,devmem,devicetree,efuse,battery,tee,quit
 # 64-bit time_t, as Yocto-built Engine 5.x does. Bookworm has 2.36 with a 32-bit
 # one, as 4.3.4 does. Stretch and buster, 2.24 and 2.28, are older than 2.34,
 # so their shims are linked against the container's own libc, the way the
-# legacy builders link against the guest's. JP11 is there for its battery.
+# legacy builders link against the guest's. JP11 is there for its battery. The
+# arm64 MPC, MPC Sample and VX5 images' glibc was not checked: 2.39 is a guess.
 STANDINS="\
 modern-arm64|linux/arm64|ubuntu:24.04|engine|rk3588|JP24|arm64-rk3588|dtshim drmatomic alsashim teeshim quitshim
 modern-armv7|linux/arm/v7|ubuntu:24.04|engine|rk3288|JC11|armhf-rk3288|dtshim drmatomic alsashim quitshim
 classic-armv7|linux/arm/v7|debian:bookworm|engine|rk3288|JP11|armhf-rk3288|dtshim drmatomic alsashim quitshim
 legacy-armv7|linux/arm/v7|debian/eol:stretch|engine|rk3288|JP07|guest|dtshim alsashim
 mpc-armv7|linux/arm/v7|debian:bookworm|mpc|rk3288|ACV5|armhf-rk3288|dtshim mpcsurface alsashim
+mpc-arm64|linux/arm64|ubuntu:24.04|mpc|rk3588|ACVA3|arm64-rk3588|dtshim mpcsurface alsashim
+sample-arm64|linux/arm64|ubuntu:24.04|mpc-sample|rk3566|AC50|arm64-rk3566|dtshim mpcsurface alsashim
+vx5-arm64|linux/arm64|ubuntu:24.04|headrush|rk3566|HV03|arm64-rk3566|dtshim alsashim
 mpc2-armv7|linux/arm/v7|debian/eol:buster|mpc|rk3288|ACV5|guest|dtshim mpcsurface alsashim"
 
 save=
@@ -71,13 +75,18 @@ for name in "$@"; do
     [ "$shims" != guest ] || shims="guest/standin-$name"
     case "$platform" in linux/arm64) arch=arm64 ;; *) arch=armhf ;; esac
     # Naming probes overrides the fake's own choice by application, so the
-    # choice is made here: the rest are Engine's.
-    probes=$PROBES; [ "$device" = engine ] || probes=loader,identity,devmem
+    # choice is made here, as main.c makes it. Only the Engine builders pass
+    # write_fake_dt a SoC, which is what writes the eFuse and battery fixtures.
+    probes=$PROBES; fixtures_soc=$soc
+    if [ "$device" != engine ]; then
+        probes=loader,identity,devmem; fixtures_soc=
+        [ "$soc" != rk3566 ] || probes=$probes,devicetree
+    fi
     echo "--- $name ---" >&2
     docker pull -q --platform "$platform" "$image" >/dev/null
     # Privileged for nothing but parity with a guest, where Engine is root.
     docker run --rm --privileged --platform "$platform" \
-        -e CODE="$code" -e SOC="$soc" -e DEVICE="$device" -e PRELOAD="$preload" -e PROBES="$probes" \
+        -e CODE="$code" -e SOC="$soc" -e FIXTURES_SOC="$fixtures_soc" -e DEVICE="$device" -e PRELOAD="$preload" -e PROBES="$probes" \
         -v "$OUT/fake/bin/$arch:/fake:ro" -v "$OUT/fake/shims/$shims:/built:ro" \
         -v "$ROOT/scripts/build_scripts/rootfs_steps:/steps:ro" "$image" bash -c '
         set -e
@@ -89,7 +98,7 @@ for name in "$@"; do
         { apt-get update -qq && { apt_install libasound2t64 || apt_install libasound2; }
         } >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
         . /steps/write_fake_dt.sh
-        write_fake_dt "" "$CODE" "" "$SOC"
+        write_fake_dt "" "$CODE" "" "$FIXTURES_SOC"
         mkdir -p /run/qengine-fake
         cp /fake/Engine /run/qengine-fake/Engine
         list=

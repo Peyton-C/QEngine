@@ -80,7 +80,8 @@ run_one() (
     [ -x "$bin" ] || { echo "# no fake Engine built for $arch; run fake/build.sh"; exit 1; }
     # Which dtshim table the builder compiled in for this family and architecture.
     case "$device:$arch" in
-        mpc-sample:*) soc=rk3566 ;;
+        # The AZ07 applications, MPC Sample and HeadRush VX5.
+        mpc-sample:*|headrush:arm64) soc=rk3566 ;;
         *:arm64)      soc=rk3588 ;;
         *)            soc=rk3288 ;;
     esac
@@ -170,7 +171,7 @@ run_one() (
             exports=$(echo "$exports" | sed "/^export LD_PRELOAD=/s#$path#/run/qengine-fake/shims/$file#")
             swapped="$swapped $file"
         done
-        if [ "$guest_mode" = 0 ] && [ -f "$built/midisurface" ]; then
+        if [ "$guest_mode" = 0 ] && [ "$device" = engine ] && [ -f "$built/midisurface" ]; then
             T 'cat > /run/qengine-fake/shims/midisurface &&
                 chmod 755 /run/qengine-fake/shims/midisurface' < "$built/midisurface"
             surface_bin=/run/qengine-fake/shims/midisurface
@@ -182,6 +183,9 @@ run_one() (
     case "$device" in
         engine)     candidates="/usr/Engine/Engine /usr/Engine/[A-Z][A-Z][0-9][0-9] /usr/JP07/JP07" ;;
         mpc)        candidates="/usr/bin/MPC" ;;
+        # "/usr/bin/MPC Sample", which launch-ac50 starts. The ? stands for its
+        # space, so the list still splits into words.
+        mpc-sample) candidates="/usr/bin/MPC?Sample" ;;
         drummodule) candidates="/usr/bin/DrumModule" ;;
         headrush)   candidates="/usr/Evil/Evil /usr/Looper/Looper /usr/bin/HV03" ;;
         *)          candidates="" ;;

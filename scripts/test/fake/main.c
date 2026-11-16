@@ -47,10 +47,10 @@
  *
  * MODULAR BY APPLICATION
  *
- * Probes are rows in PROBES below. Those marked engine_only run for --app
- * engine; the rest are what MPC and the other inMusic applications share with
- * it (the loader, the devicetree identity, /dev/mem), and run for any --app.
- * An MPC-specific probe is one more row and one more file.
+ * Probes are rows in PROBES below, each with the applications it is for. Those
+ * for any_app are what MPC and the other inMusic applications share with Engine
+ * (the loader, the devicetree identity, /dev/mem). An MPC-specific probe is one
+ * more row, one more file and one more applies function.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -65,19 +65,25 @@
 
 struct config cfg = {"engine", "", NULL, NULL};
 
+/* Which applications a probe is for. */
+static int any_app(void) { return 1; }
+static int engine(void) { return strcmp(cfg.app, "engine") == 0; }
+/* dtshim's RK3566 table exists for MPC Sample and HeadRush VX5, not Engine. */
+static int engine_or_rk3566(void) { return engine() || strcmp(cfg.soc, "rk3566") == 0; }
+
 static const struct probe PROBES[] = {
-    {"loader", "every LD_PRELOAD entry loaded and has its symbols", probe_loader, 0},
-    {"surface", "which shim exports the application imports (comments only)", probe_surface, 0},
-    {"identity", "product code and serial number from the devicetree", probe_identity, 0},
-    {"devmem", "/dev/mem opens and maps as zeros", probe_devmem, 0},
-    {"devicetree", "panel rotation and board properties for the SoC", probe_devicetree, 1},
-    {"interrupts", "/proc/interrupts names six IRQs and takes affinity writes", probe_interrupts, 1},
-    {"efuse", "RK3288 eFuse files, by stat, canonical path and read", probe_efuse, 1},
-    {"battery", "full battery on AC for JP11, JP11S and NH10", probe_battery, 1},
-    {"tee", "OP-TEE attestation, where the application links libteec", probe_tee, 1},
-    {"alsa", "card name, plug routing, ring depth and playback", probe_alsa, 1},
-    {"midi", "control surface found, numbered and answering the inquiry", probe_midi, 1},
-    {"quit", "SIGTERM becomes QCoreApplication::quit, and the splash client", probe_quit, 1},
+    {"loader", "every LD_PRELOAD entry loaded and has its symbols", probe_loader, any_app},
+    {"surface", "which shim exports the application imports (comments only)", probe_surface, any_app},
+    {"identity", "product code and serial number from the devicetree", probe_identity, any_app},
+    {"devmem", "/dev/mem opens and maps as zeros", probe_devmem, any_app},
+    {"devicetree", "panel rotation and board properties for the SoC", probe_devicetree, engine_or_rk3566},
+    {"interrupts", "/proc/interrupts names six IRQs and takes affinity writes", probe_interrupts, engine},
+    {"efuse", "RK3288 eFuse files, by stat, canonical path and read", probe_efuse, engine},
+    {"battery", "full battery on AC for JP11, JP11S and NH10", probe_battery, engine},
+    {"tee", "OP-TEE attestation, where the application links libteec", probe_tee, engine},
+    {"alsa", "card name, plug routing, ring depth and playback", probe_alsa, engine},
+    {"midi", "control surface found, numbered and answering the inquiry", probe_midi, engine},
+    {"quit", "SIGTERM becomes QCoreApplication::quit, and the splash client", probe_quit, engine},
 };
 #define NPROBES (sizeof(PROBES) / sizeof(PROBES[0]))
 
@@ -222,7 +228,8 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "--list")) {
             for (size_t p = 0; p < NPROBES; p++)
                 printf("%-11s %s%s\n", PROBES[p].name, PROBES[p].what,
-                       PROBES[p].engine_only ? " (Engine)" : "");
+                       PROBES[p].applies == engine ? " (Engine)"
+                       : PROBES[p].applies == engine_or_rk3566 ? " (Engine, RK3566)" : "");
             return 0;
         } else if (!strcmp(a, "--app") && v) { cfg.app = v; i++; }
         else if (!strcmp(a, "--soc") && v) { cfg.soc = v; i++; }
@@ -248,10 +255,9 @@ int main(int argc, char **argv) {
            cfg.soc[0] ? cfg.soc : "?", cfg.code ? cfg.code : "?",
            cfg.real ? cfg.real : "nothing in particular");
 
-    int engine = strcmp(cfg.app, "engine") == 0;
     for (size_t p = 0; p < NPROBES; p++) {
         if (!wanted(only, PROBES[p].name)) continue;
-        if (PROBES[p].engine_only && !engine && !only) continue;
+        if (!only && !PROBES[p].applies()) continue;
         current = PROBES[p].name;
         PROBES[p].run();
     }

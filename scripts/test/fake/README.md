@@ -51,7 +51,7 @@ Armv7 rootfs images run in a chroot on a 64-bit Pi 4 or Pi 5, and armv7 guests n
 | `midi` | Finds the surface, requires a card number, sends a Device Inquiry and takes a note | `alsashim`, `midisurface` |
 | `quit` | Gets `QCoreApplication::quit` on SIGTERM, and a splash client | `quitshim` |
 
-`loader`, `identity` and `devmem` run for every application. The rest run for Engine. `surface` prints, as comments, which of each shim's exports the real application imports.
+`loader`, `identity` and `devmem` run for every application, and `devicetree` also for the RK3566 ones, MPC Sample and HeadRush VX5. The rest run for Engine. `surface` prints, as comments, which of each shim's exports the real application imports.
 
 `drmatomic`, `cursorshim`, `qmlrotate`, MONTERO and the touch bridges are checked by `loader` only.
 
@@ -71,13 +71,16 @@ A single entry point that does not work shows as skipped, because Engine imports
 | `legacy-armv7` | Debian stretch, glibc 2.24 | Legacy Engine, with shims linked against the container's libc |
 | `mpc-armv7` | Debian bookworm | MPC 3.x |
 | `mpc2-armv7` | Debian buster, glibc 2.28 | MPC 2.x, with shims linked against the container's libc |
+| `mpc-arm64` | Ubuntu 24.04 | Gen 2 MPC |
+| `sample-arm64` | Ubuntu 24.04 | MPC Sample, with the RK3566 `dtshim` |
+| `vx5-arm64` | Ubuntu 24.04 | HeadRush VX5, with the RK3566 `dtshim` |
 
-It runs `loader`, `identity`, `devmem`, `devicetree`, `efuse`, `battery`, `tee` and `quit`. There is no sound card, sequencer or real application in a container, so `alsa`, `midi` and `interrupts` do not run, and every libc entry point counts as one the application might use. A distribution's glibc is close to the firmware's, not the same, so a pass here does not replace `check.sh` against instances.
+The Engine stand-ins run `loader`, `identity`, `devmem`, `devicetree`, `efuse`, `battery`, `tee` and `quit`, and the others what their application gets from `check.sh`. The glibc of the three arm64 non-Engine firmwares was not looked up, so 24.04 is a guess for them. There is no sound card, sequencer or real application in a container, so `alsa`, `midi` and `interrupts` do not run, and every libc entry point counts as one the application might use. A distribution's glibc is close to the firmware's, not the same, so a pass here does not replace `check.sh` against instances.
 
 Its baseline is tracked, in `standin/`, and holds statuses only. After a change that is meant to alter a result, run `standin.sh -b` and commit the difference.
 
 ## Other applications
-A probe is a row in `PROBES` in `main.c` and a function in a `probe_*.c` file. Rows not marked for Engine run for MPC, HeadRush and the drum module too, picked by the instance's `DEVICE`. An MPC probe, for `mpcsurface` or the cue output, is one more row.
+A probe is a row in `PROBES` in `main.c` and a function in a `probe_*.c` file. Each row names the applications it is for, picked by the instance's `DEVICE`, so the shared ones run for MPC, MPC Sample, HeadRush and the drum module too. An MPC probe, for `mpcsurface` or the cue output, is one more row.
 
 ## Files
 | File | What |

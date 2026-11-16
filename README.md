@@ -22,7 +22,7 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 |                         | Modern | Classic | Legacy |
 |-------------------------|--------|---------|--------|
 | Engine                  | Y      | Y       | Y      |
-| SoundSwitch             | Y      | Y       | ?      |
+| SoundSwitch             | Y      | Y       | Y      |
 | Display                 | Y      | Y       | Y      |
 | Virgl                   | Y      | Y       | N      |
 | Touch input             | Y      | Y       | Y      |
@@ -31,7 +31,7 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 | MIDI                    | Y      | Y       | ?      |
 | External media (USB/SD) | Y      | Y       | ?      |
 
-Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes, and under TCG on Apple Silicon over shorter runs, where Engine's audio thread takes most of a host core. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes, and under TCG on Apple Silicon over shorter runs, where Engine's audio thread takes most of a host core. Legacy SoundSwitch arrived in 2.0.0, so 1.x has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.

@@ -311,6 +311,14 @@ fi
 # KVM, measured at a 96 kHz capture so no host resampling was involved); without
 # it the same run kept exact pitch. 44.1 kHz products were clean either way.
 #
+# mixer=off leaves the codec without its emulated output amp. Linux brings that
+# amp up muted at zero gain and expects userspace to raise it, and Engine OS has
+# no mixer tool, so it stays muted. Backends that take the guest's volume pass the
+# mute on: under pipewire, the Linux default, QEMU's stream sat at volume 0 and
+# muted and Prime GO 5.3.0 and 4.3.0 (JP11, Pi 4) played silence, while wav and
+# coreaudio ignore it, which is how it went unseen. The real devices have no
+# such amp in front of Engine either.
+#
 # streams=1 is one playback stream and no capture, the virtio-sound equivalent
 # of hda-output rather than hda-duplex: QEMU makes the first half of the streams
 # outputs (hw/audio/virtio-snd.c), and a capture PCM would become Engine's default.
@@ -333,7 +341,13 @@ arch_audio_devices() {
     # new_instance.sh's legacy path writes it.
     if [ -z "${ENGINE_VNC_PORT:-}" ] && { [ "${ARCH:-}" != armhf ] ||
        grep -qx 'KERNEL_HDA=1' "${KERNEL_IMG:-}.info" 2>/dev/null; }; then
-        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s,use-timer=false' "$1"
+        # QEMU 11 dropped the use-timer property (11.1.3 has none) and refuses to
+        # start when given it, so it is passed only to a binary that lists it.
+        _hda_timer=""
+        case "$("${QEMU_BIN:-}" -device hda-output,help 2>/dev/null)" in
+            *use-timer*) _hda_timer=",use-timer=false" ;;
+        esac
+        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s%s,mixer=off' "$1" "$_hda_timer"
         return 0
     fi
 

@@ -195,7 +195,13 @@ fi
 # a device that stays at 48 kHz, as AirPods Pro 3 did, takes no error and plays
 # the stream too fast with gaps. MPC Sample 1.3.0 clicked through them that way.
 # At 48 kHz QEMU converts from the guest's rate itself.
+#
+# PipeWire gets a 20 ms audio timer. QEMU sizes its stream's quantum from the
+# timer period, and at the default 10 ms that is 330 frames, which it missed
+# about 20 times a minute, each one a click (Prime GO 5.3.0 and 4.3.0, JP11, Pi 4
+# under KVM, PipeWire 1.4.2). At 20 ms the quantum is 661 frames and the same runs
+# played clean. 2 ms made it far worse, and out.latency=100000 left gaps.
 case "$(uname -s)" in
     Darwin) AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-coreaudio,out.frequency=48000}"; AUDIODEV_ID="mac" ;;
-    *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire}";  AUDIODEV_ID="host" ;;
+    *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire,timer-period=20000}";  AUDIODEV_ID="host" ;;
 esac

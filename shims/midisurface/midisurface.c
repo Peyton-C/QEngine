@@ -652,6 +652,44 @@ static void toggle_motor(const struct motor_toggle *m, int deck_channel) {
     note_off(deck_channel, m->shift_note);
 }
 
+/* --reply PREFIX=REPLY: answer any SysEx that starts with PREFIX with REPLY,
+ * both as hex bytes. For panels that hold their app until they answer a query
+ * of their own, as HeadRush's Evil 2.7 polls its footswitch board with
+ * F0 00 01 05 00 <product> 41 ... and stays on LOADING until it hears back. */
+#define MAX_REPLIES 4
+static struct { unsigned char prefix[32], reply[64]; size_t prefix_len, reply_len; }
+    replies[MAX_REPLIES];
+static int reply_count = 0;
+
+static size_t parse_hex(const char *text, unsigned char *out, size_t max) {
+    size_t n = 0;
+    char *end;
+    while (*text && n < max) {
+        while (*text == ' ' || *text == ',') text++;
+        if (!*text) break;
+        long v = strtol(text, &end, 16);
+        if (end == text || v < 0 || v > 255) return 0;
+        out[n++] = (unsigned char)v;
+        text = end;
+    }
+    return n;
+}
+
+static int add_reply(const char *spec) {
+    const char *eq = strchr(spec, '=');
+    char prefix[256];
+    if (!eq || reply_count >= MAX_REPLIES || (size_t)(eq - spec) >= sizeof(prefix)) return -1;
+    memcpy(prefix, spec, eq - spec);
+    prefix[eq - spec] = 0;
+    replies[reply_count].prefix_len = parse_hex(prefix, replies[reply_count].prefix,
+                                                sizeof(replies[reply_count].prefix));
+    replies[reply_count].reply_len = parse_hex(eq + 1, replies[reply_count].reply,
+                                               sizeof(replies[reply_count].reply));
+    if (!replies[reply_count].prefix_len || !replies[reply_count].reply_len) return -1;
+    reply_count++;
+    return 0;
+}
+
 static void send_sysex(unsigned char *buf, size_t len) {
     snd_seq_event_t ev;
     snd_seq_ev_clear(&ev);
@@ -854,6 +892,12 @@ static void handle_incoming(void) {
                 fflush(stdout);
                 if (motor_off_enabled) motor_off_due_ms = now_ms() + MOTOR_OFF_DEBOUNCE_MS;
             }
+            for (int r = 0; r < reply_count; r++)
+                if (len >= replies[r].prefix_len &&
+                    memcmp(d, replies[r].prefix, replies[r].prefix_len) == 0) {
+                    send_sysex(replies[r].reply, replies[r].reply_len);
+                    if (verbose) fprintf(stderr, "[surface] --reply %d answered\n", r);
+                }
         }
         if (snd_seq_event_input_pending(seq, 0) <= 0) break;
     }
@@ -987,6 +1031,13 @@ int main(int argc, char **argv) {
             note_maps[note_map_count].to_ch = to_ch;
             note_maps[note_map_count].to = to;
             note_map_count++;
+        } else if (strcmp(argv[i], "--reply") == 0 && i + 1 < argc) {
+            if (add_reply(argv[++i]) < 0) {
+                fprintf(stderr, "--reply wants PREFIX=REPLY as hex bytes, e.g. "
+                                "'F0 00 01 05 00 1A 41=F0 00 01 05 00 1A 41 00 03 00 00 00 F7' "
+                                "(at most %d)\n", MAX_REPLIES);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--led-map") == 0 && i + 1 < argc) {
             if (load_led_map(argv[++i]) < 0) return 1;
         } else if (argv[i][0] != '-') {
@@ -998,7 +1049,7 @@ int main(int argc, char **argv) {
                     "[--pitchbend-cc <upper>,<lower>] "
                     "[--relative-cc <cc>=<upper>,<lower>]... "
                     "[--note-map <ch>:<from>=[<ch>:]<to>]... "
-                    "[--led-map <file>] [--echo-lamps]\n", argv[0]);
+                    "[--led-map <file>] [--echo-lamps] [--reply <prefix>=<reply>]...\n", argv[0]);
             return 1;
         }
     }

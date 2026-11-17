@@ -154,6 +154,20 @@ if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:
             tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; }; then
     LEGACY_ENGINE=1
 fi
+# Evil 2.7 (Pedalboard, Gigboard, MX5) and Looperboard 2.0.5 are Buildroot 2021
+# with glibc 2.32. As for
+# MPC 2.x in build_mpc_rootfs.sh, shims built on bookworm bind dlsym and pthread_*
+# to GLIBC_2.34 and the guest's loader refuses them, and so does the Mesa that
+# build_mali_mesa.sh builds there. So what runs in the guest is built on bullseye,
+# glibc 2.31, Mesa included.
+HR_OLD_LIBC=0
+if { "$DEBUGFS" -R 'stat /usr/Evil/Evil' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+     "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; } &&
+   "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
+        tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; then
+    HR_OLD_LIBC=1
+    echo "--- guest glibc predates 2.34: linking shims and Mesa for it ---"
+fi
 if [ "$LEGACY_ENGINE" = 1 ]; then
     MESA_LAYOUT=none
     MESA_VERSION=""
@@ -264,11 +278,19 @@ elif [ "$MESA_LAYOUT" = mali ]; then
     # 4.3.4 and earlier: a whole Mesa in place of the Mali blob, and the Qt eglfs
     # integration that can drive it, since this Qt was built with only the blob's.
     # See build_mali_mesa.sh and build_qt5_eglfs_kms.sh.
-    "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
-    cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
-    # Looper X 1.0.2 links Qt statically, including eglfs_mali and eglfs_emu.
-    # A dynamic Qt plugin cannot replace its built-in integration.
-    if "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; then
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        "$SCRIPT_DIR_SELF/build_mali_mesa.sh" --base bullseye
+        cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+bullseye" "$STAGE_DIR/mesa-mali"
+    else
+        "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
+        cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
+    fi
+    # Looper X 1.0.2 and Evil 2.7 (Pedalboard, Gigboard, MX5) link Qt statically,
+    # including eglfs_mali and eglfs_emu, and ship no /usr/qt. A dynamic Qt plugin
+    # cannot replace a built-in integration, so they get Mesa alone and maliwindow.
+    if ! "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.15.2' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' &&
+       { "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+         "$DEBUGFS" -R 'stat /usr/Evil/Evil' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; }; then
         touch "$STAGE_DIR/mesa-only"
     else
     # The plugin is checked against this rootfs's own Qt, read out of the image
@@ -317,6 +339,35 @@ elif [ "$MESA_LAYOUT" = mali ]; then
             echo "ERROR: qmlrotate did not build." >&2; exit 1; }
     fi
     fi # dynamically linked Qt
+
+    # Evil 2.7 and Looperboard: rebuild what runs in the guest on bullseye, whose
+    # glibc 2.31 is older than the guest's 2.32, over the bookworm builds above.
+    # maliwindow links the bullseye Mesa just staged, midisurface stands in for
+    # Evil's panel (see the evil.service section), and pcmhold holds Looper's
+    # loopback.
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        docker pull -q --platform linux/arm/v7 debian:bullseye >/dev/null
+        docker run --rm --platform linux/arm/v7 -e SHIM_ARCH="$SHIM_ARCH" \
+            -v "$SHIMS_DIR:/shims" -v "$STAGE_DIR:/stage" debian:bullseye bash -c '
+                set -e
+                export DEBIAN_FRONTEND=noninteractive
+                # See build_mali_mesa.sh: bullseye-security now lives on the archive.
+                sed -i "s|deb.debian.org/debian-security|archive.debian.org/debian-security|" /etc/apt/sources.list
+                apt-get update -qq
+                apt-get install -y -qq gcc libc6-dev libasound2-dev libegl-dev libgles-dev >/dev/null 2>&1
+                M=/stage/mesa-mali
+                gcc -shared -fPIC -O2 -Wall -DSOC_RK3288 \
+                    -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -ldl -lpthread
+                gcc -shared -fPIC -O2 -Wall -Wl,-rpath-link,$M \
+                    -o /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
+                    /shims/rk3288/maliwindow/maliwindow.c -ldl $M/libEGL.so.1 $M/libGLESv2.so.2
+                gcc -O2 -Wall \
+                    -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+                gcc -O2 -Wall \
+                    -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+                gcc -O2 -Wall \
+                    -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound'
+    fi
 else
     "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
         --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
@@ -417,15 +468,18 @@ if [ -d /mnt/rootfs/usr/Engine ]; then
     fi
 elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
-elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
-    # Evil is built per product and never reads the code (Prime's, run as HG12,
-    # still reports HG06), so default to the one the image's own devicetree names.
-    APP_UNIT=evil.service
-    DEFAULT_CODE="$(find /mnt/rootfs/boot -maxdepth 1 -name 'rk3288-az0?-*.dtb' -printf '%f\n' |
+elif [ -x /mnt/rootfs/usr/Evil/Evil ] || [ -x /mnt/rootfs/usr/Looper/Looper ]; then
+    # Evil and Looper are built per product and never read the code (Prime's
+    # Evil, run as HG12, still reports HG06), so default to the one the image's
+    # own devicetree names: HG08 for Looper X, HG03 for Looperboard.
+    if [ -x /mnt/rootfs/usr/Evil/Evil ]; then
+        APP_UNIT=evil.service; DEFAULT_CODE=HG06
+    else
+        APP_UNIT=looper.service; DEFAULT_CODE=HG08
+    fi
+    _dt_code="$(find /mnt/rootfs/boot -maxdepth 1 -name 'rk3288-az0?-*.dtb' -printf '%f\n' |
         sed -n 's/^rk3288-az0.-\([a-z]\{2\}[0-9]\{2\}\)\.dtb$/\1/p' | sed -n 1p | tr a-z A-Z)"
-    DEFAULT_CODE="${DEFAULT_CODE:-HG06}"
-elif [ -x /mnt/rootfs/usr/Looper/Looper ] && [ -f /mnt/rootfs/boot/rk3288-az05-hg08.dtb ]; then
-    APP_UNIT=looper.service; DEFAULT_CODE=HG08
+    DEFAULT_CODE="${_dt_code:-$DEFAULT_CODE}"
 else
     echo "ERROR: no Engine, Evil or Looper application in this rootfs." >&2
     exit 1
@@ -593,24 +647,78 @@ EOF
     fi
     ln -sf ../qengine-headrush-audio.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-audio.service
 
+    # Evil 2.7 waits on LOADING ("setAppLoaded() rerceived but midi still in
+    # progress") until its panel answers over MIDI. The panel is an ALSA
+    # sequencer port whose name picks the assignment files: HG04 Control Surface
+    # MIDI 1 on MX5, M-Audio Pass Through on Gigboard and Pedalboard. Its
+    # <port>_Device.qml polls the footswitch board with F0 00 01 05 00 <product>
+    # 41 00 00 F7, and on MX5 gives up after 2 s, on the others never. It then
+    # sends the universal identity request and reads the panel's firmware version
+    # from bytes 11-14 and a serial from 20-35. midisurface plays the panel under
+    # that name, with both answers. The version is the one the image bundles in
+    # firmware.json, under Firmware on MX5 and Scripts on Gigboard and Pedalboard:
+    # "10.065" reads as bytes 1 0 . 0 65. Given any other, Evil puts the panel in
+    # DFU mode to flash it and restarts. 5.x does not wait, and is left without.
+    #
+    # Looperboard 2.0.5 waits the same way, with product 17 on M-Audio Pass
+    # Through, from C++ rather than QML; its Device.qml keeps the old QML version
+    # commented out, which still names the port and product, so it is read alike.
+    _appdir=/mnt/rootfs/usr/Evil
+    [ "$APP_UNIT" = evil.service ] || _appdir=/mnt/rootfs/usr/Looper
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        _dev="$(grep -l 'sendSysEx("F0 00 01 05 00 [0-9A-F][0-9A-F] 41 ' "$_appdir"/Assignments/*_Device.qml | sed -n 1p)"
+        if [ -n "$_dev" ]; then
+            _port="$(basename "$_dev" _Device.qml | tr _ ' ')"
+            _prod="$(grep -o 'sendSysEx("F0 00 01 05 00 [0-9A-F][0-9A-F] 41 ' "$_dev" | sed -n 1p | cut -d' ' -f6)"
+            _ver="$(cat "$_appdir"/Firmware/firmware.json "$_appdir"/Scripts/firmware.json 2>/dev/null |
+                sed -n 's/.*"version" *: *"\([0-9]*\)\.\([0-9]*\)".*/\1 \2/p' | sed -n 1p || true)"
+            # shellcheck disable=SC2086 # two words, the version's halves
+            set -- ${_ver:-1 000}
+            _v="$(printf '%02X %02X %02X %02X' "${1%"${1#?}"}" "${1#?}" "${2%"${2#?}"}" "$((10#${2#?}))")"
+            _id="F0 7E 7F 06 02 00 01 05 00 $_prod 00 $_v 00 00 00 00 00"
+            _id="$_id 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 F7"
+            _fs="F0 00 01 05 00 $_prod 41 00 03 00 00 00 F7"
+            echo "--- panel \"$_port\", product $_prod, firmware ${_ver:-none} ---"
+            cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+            cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-panel.service <<EOF
+[Unit]
+Description=Stand in for $_port, the panel the app waits for
+Before=$APP_UNIT
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+Environment="MIDISURFACE_ID_RESPONSE=$_id"
+# Driveable by hand like Engine's surface: echo 'sysex F0 ...' > /run/midisurface.fifo
+ExecStartPre=/bin/sh -c '[ -p /run/midisurface.fifo ] || mkfifo /run/midisurface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface "$_port" --reply "F0 00 01 05 00 $_prod 41=$_fs" < /run/midisurface.fifo'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            ln -sf ../qengine-headrush-panel.service \
+                /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-panel.service
+        fi
+    fi
+
     # Evil turns its UI -90 degrees for HG06's portrait panel; qmlrotate turns it
     # back for QEngine's landscape screen. See qmlrotate.cpp.
     #
-    # Flex Prime 5.2.0 is built for a smaller panel: its Evil takes the is4Inch
-    # layout, an 800x480 UI turned +90 (hg04Transform), whatever product code it
-    # runs as, and Prime's image run as HG12 keeps Prime's 1280x800. So it goes by
-    # the image, through its devicetree, and the screen size is left in
+    # The 4-inch units are built for a smaller panel: Flex Prime's and MX5's Evil
+    # take the 800x480 layout turned +90 (hg04Transform), whatever product code
+    # they run as, and Prime's image run as HG12 keeps Prime's 1280x800. So it goes
+    # by the image, through its devicetree, and the screen size is left in
     # /etc/qengine/screen for new_instance.sh to record as SCREEN.
-    HR_ROTATE=90
+    HR_ROTATE=90 HR_PANEL=800x1280
     rm -f /mnt/rootfs/etc/qengine/screen
-    if [ "$APP_UNIT" = evil.service ]; then
-        cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
-        chmod 755 /mnt/rootfs/root/qmlrotate.so
-        if [ -f /mnt/rootfs/boot/rk3288-az05-hg12.dtb ]; then
-            HR_ROTATE=-90
-            mkdir -p /mnt/rootfs/etc/qengine
-            echo 800x480 > /mnt/rootfs/etc/qengine/screen
-        fi
+    if [ "$APP_UNIT" = evil.service ] &&
+       { [ -f /mnt/rootfs/boot/rk3288-az05-hg12.dtb ] || [ -f /mnt/rootfs/boot/rk3288-az05-hg04.dtb ]; }; then
+        HR_ROTATE=-90 HR_PANEL=480x800
+        mkdir -p /mnt/rootfs/etc/qengine
+        echo 800x480 > /mnt/rootfs/etc/qengine/screen
     fi
 
     # dtshim for the product code, serial and pcb-rev Evil reads, and drmatomic for
@@ -619,7 +727,10 @@ EOF
     # process runevil starts, from /bin/sh on, and qmlrotate links Qt, so
     # /usr/qt/lib has to be on the path from the unit, not only from Evil's own
     # script, which sets it later.
-    cat > "$OVERRIDE" <<'EOF'
+    if [ ! -f /stage/mesa-only ]; then
+        cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
+        chmod 755 /mnt/rootfs/root/qmlrotate.so
+        cat > "$OVERRIDE" <<EOF
 [Unit]
 After=touchbridge.service qengine-headrush-audio.service
 Requires=touchbridge.service qengine-headrush-audio.service
@@ -630,12 +741,28 @@ Environment=LD_LIBRARY_PATH=/usr/qt/lib
 Environment=QMLROTATE=$HR_ROTATE
 Environment=QMLROTATE_SWAP=1
 EOF
-    sed -i "s/\$HR_ROTATE/$HR_ROTATE/" "$OVERRIDE"
-    if [ "$APP_UNIT" = looper.service ]; then
-        # Looper X's DT declares the same 8-out/2-in shape as Prime; keep the
-        # loopback bounded before Looper opens it.
+    else
+        # Qt linked into the app, which qmlrotate cannot reach. maliwindow renders
+        # Qt's Mali window into a Mesa pbuffer and turns each frame into the
+        # landscape framebuffer instead, and Qt's own evdev handler turns touch to
+        # match; see maliwindow.c. Qt is told the portrait panel's size.
         cp -a /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so /mnt/rootfs/root/maliwindow.so
-        sed -i 's@/root/drmatomic.so:/root/qmlrotate.so@/root/maliwindow.so@; /QMLROTATE/d' "$OVERRIDE"
+        case "$HR_ROTATE" in
+            90) _mali=90 _touch=270 ;;
+            *)  _mali=270 _touch=90 ;;
+        esac
+        cat > "$OVERRIDE" <<EOF
+[Unit]
+After=touchbridge.service qengine-headrush-audio.service
+Requires=touchbridge.service qengine-headrush-audio.service
+
+[Service]
+Environment=LD_PRELOAD=/root/dtshim.so:/root/maliwindow.so
+Environment=QT_QPA_EGLFS_WIDTH=${HR_PANEL%x*}
+Environment=QT_QPA_EGLFS_HEIGHT=${HR_PANEL#*x}
+Environment=MALIWINDOW_ROTATE=$_mali
+Environment=QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS=rotate=$_touch
+EOF
     fi
 else
     cat > "$OVERRIDE" <<'EOF'
@@ -685,14 +812,16 @@ if [ "$APP_UNIT" = looper.service ]; then
 # they starve USB input processing; silent-loopback UI runs need normal scheduling.
 CapabilityBoundingSet=~CAP_SYS_NICE
 LimitRTPRIO=0
+EOF
+fi
+if [ -f /stage/mesa-only ] && { [ "$APP_UNIT" = looper.service ] || [ "$APP_UNIT" = evil.service ]; }; then
+    cat >> "$OVERRIDE" <<'EOF'
 Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_mali
-Environment=QT_QPA_EGLFS_WIDTH=800
-Environment=QT_QPA_EGLFS_HEIGHT=1280
-Environment=MALIWINDOW_ROTATE=90
-Environment=QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS=rotate=270
 # touchbridge already supplies the tablet as touch. Qt's raw mouse path would
 # also deliver each click, with coordinates for the unrotated portrait panel.
-Environment=QT_QPA_EVDEV_MOUSE_PARAMETERS=/dev/null
+# A path that does not exist, so Qt opens no mouse: given /dev/null, it reads
+# EOF in a loop, and Evil 2.7 logged that until journald suppressed everything.
+Environment=QT_QPA_EVDEV_MOUSE_PARAMETERS=/dev/qengine-no-mouse
 Environment=EGL_PLATFORM=surfaceless
 Environment=LIBGL_ALWAYS_SOFTWARE=1
 Environment=MESA_LOADER_DRIVER_OVERRIDE=swrast
@@ -810,6 +939,7 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e LEGACY_ENGINE="$LEGACY_ENGINE" \
+    -e HR_OLD_LIBC="$HR_OLD_LIBC" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-}" \
     -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \

@@ -17,10 +17,10 @@ Serves the devicetree and hardware sysfs files expected by Engine and other inMu
 A fake KMS device for apps that drive the display themselves, preloaded into MPC so it can run as a window under a Wayland compositor. `kmspresent`, beside it, runs on the host: it shows the app's frames as a window and gives the app a touchscreen from the window's input. Used by `chroot-mpc.sh` with `PLATFORM=wayland`.
 
 ## midisurface
-An emulated midi surface to control Engine.
+An emulated MIDI surface to control Engine. `--reply` answers a SysEx query of the app's own, which is how it stands in for the HeadRush 2.x footswitch board.
 
 ## maliwindow
-Renders Looper X's statically linked Mali backend through Mesa into QEMU's framebuffer, with a portrait-to-landscape rotation.
+Renders the statically linked Mali backend of Looper X, Looperboard and Evil 2.7 through Mesa into QEMU's framebuffer, turned 90 or 270 degrees from portrait to landscape.
 
 ## mpcsurface
 An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the dial, Q-Links and the Sample's knobs. Preloaded into the app, which finds it as its panel's USB MIDI card, or on MPC Sample as its serial "Control Surface" card, and driven through `/run/mpcsurface.fifo`. See [mpcsurface](mpcsurface/README.md) for commands.

@@ -36,19 +36,18 @@ Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.
 
-| Platform                   | Modern  | Classic     | Legacy  |
-|----------------------------|---------|-------------|---------|
-| Engine                     | 4.4.0+  | 2.4.0-4.3.4 | < 2.4.0 |
-| MPC                        | 3.4.1+  | –           | 2.x     |
-| MPC Force                  | 3.5.0+  | –           | < 3.5.0 |
-| MPC Sample                 | 1.x     | –           | –       |
-| Alesis drum module         | 1.5.2.3 | –           | –       |
-| HeadRush VX5               | 1.x     | –           | –       |
-| HeadRush Prime, Flex Prime | –       | 4.1.1-5.2.0 | –       |
-| HeadRush Core              | –       | 4.1.1-5.2.0 | –       |
-| Sheeran Looper X           | –       | 1.0.2       | –       |
-| HeadRush Pedalboard        | –       | –           | 2.x     |
-| HeadRush Looperboard       | –       | –           | 2.x     |
+| Platform                           | Modern  | Classic     | Legacy  |
+|------------------------------------|---------|-------------|---------|
+| Engine                             | 4.4.0+  | 2.4.0-4.3.4 | < 2.4.0 |
+| MPC                                | 3.4.1+  | –           | 2.x     |
+| MPC Force                          | 3.5.0+  | –           | < 3.5.0 |
+| MPC Sample                         | 1.x     | –           | –       |
+| Alesis drum module                 | 1.5.2.3 | –           | –       |
+| HeadRush VX5                       | 1.x     | –           | –       |
+| HeadRush Prime, Flex Prime, Core   | –       | 4.1.1-5.2.0 | –       |
+| Sheeran Looper X                   | –       | 1.0.2       | –       |
+| HeadRush Pedalboard, Gigboard, MX5 | –       | –           | 2.7     |
+| HeadRush Looperboard               | –       | –           | 2.0.5   |
 
 ## Emulated controllers
 Code selects the product identity with `--product-code`. Version cells list firmware booted; ranges summarize checked releases. ? means unverified or unresolved, and – means no release in that major. ! marks Prime GO firmware booted as `JC11` rather than its native `JP11` identity.
@@ -110,10 +109,10 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | HeadRush Core | `HV01` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch; silent audio |
 | HeadRush VX5 | `HV03` | arm64, RK3566 | 1.2.2, 1.3.1 | Host audio and virtual panel; input from a WAV file |
 | Sheeran Looper X | `HG08` | armv7, RK3288 | 1.0.2 | Four-track UI; factory content absent; silent loopback audio |
-| HeadRush Gigboard | `HG02` | ? | ? | Untested |
-| HeadRush Looperboard | `HG03` | ? | ? | Untested |
-| HeadRush MX5 | `HG04` | ? | ? | Untested |
-| HeadRush Pedalboard | `MG01` | ? | ? | Untested |
+| HeadRush Pedalboard | `MG01` | armv7, RK3288 | 2.7 | Touch; silent audio; no footswitches |
+| HeadRush Gigboard | `HG02` | armv7, RK3288 | 2.7 | Touch; silent audio; no footswitches |
+| HeadRush MX5 | `HG04` | armv7, RK3288 | 2.7 | Touch, 800×480; silent audio; no footswitches |
+| HeadRush Looperboard | `HG03` | armv7, RK3288 | 2.0.5 | Four-track UI; factory content absent; silent audio |
 
 Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](scripts/build_scripts/BUILD_ALESIS.md) and [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) guides for target-specific setup and limits. The VX5 audio and control checks cover 1.2.2; 1.3.1 is listed as booted.
 

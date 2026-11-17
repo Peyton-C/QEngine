@@ -1,11 +1,15 @@
 # HeadRush
-QEngine boots HeadRush Prime, Flex Prime, Core, VX5 and Sheeran Looper X with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
+QEngine boots HeadRush Prime, Flex Prime, Core, Pedalboard, Gigboard, MX5, Looperboard, VX5 and Sheeran Looper X with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
 
 | Device | Code | Firmware tried | Architecture | Display | Limits |
 | --- | --- | --- | --- | --- | --- |
 | Prime | `HG06` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 1280×800 with touch | Silent audio |
 | Flex Prime | `HG12` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 800×480 with touch | Silent audio |
 | Core | `HV01` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 1280×800 with touch | Silent audio |
+| Pedalboard | `MG01` | 2.7 | armv7, RK3288 | 1280×800 with touch, software rendering | Silent audio; no footswitches |
+| Gigboard | `HG02` | 2.7 | armv7, RK3288 | 1280×800 with touch, software rendering | Silent audio; no footswitches |
+| MX5 | `HG04` | 2.7 | armv7, RK3288 | 800×480 with touch, software rendering | Silent audio; no footswitches |
+| Looperboard | `HG03` | 2.0.5 | armv7, RK3288 | 1280×800 with touch, software rendering | Factory content absent; silent audio; no footswitches |
 | VX5 | `HV03` | 1.2.2 | arm64, RK3566 | 160×128, landscape | Input from a WAV file, no LEDs or phantom power |
 | Sheeran Looper X | `HG08` | 1.0.2 | armv7, RK3288 | 1280×800, software rendering | Factory content absent; silent loopback audio; no virtual footswitches |
 
@@ -19,7 +23,7 @@ Use a different instance name for each device and firmware version. `--force` re
 
 Each HeadRush update image runs as one product. Evil, the app on Prime, Flex Prime and Core, is built separately for each and never reads the product code, so Prime's image built as `HG12` is still Prime. QEngine takes the code from the image's devicetree; `--product-code` changes nothing Evil sees.
 
-VX5 uses the shared JUCE builder, `build_mpc_rootfs.sh`, and `HV03.service`. Prime, Flex Prime and Core use the armv7 Engine builder and `evil.service`. VX5 needs no Qt or EGL replacement and no rotation shim. Both use QEngine's generic kernel, not the device kernel in the updater.
+VX5 uses the shared JUCE builder, `build_mpc_rootfs.sh`, and `HV03.service`. Prime, Flex Prime, Core and the 2.7 boards use the armv7 Engine builder and `evil.service`, Looper X and Looperboard `looper.service`. VX5 needs no Qt or EGL replacement and no rotation shim. Both use QEngine's generic kernel, not the device kernel in the updater.
 
 ## Looper X
 ```sh
@@ -29,10 +33,21 @@ scripts/qemu/run_instance.sh --name sheeran-looper-x-1.0.2 --display vnc
 
 Looper X uses the armv7 builder and `looper.service`. Its Qt is statically linked, so `maliwindow` adapts the built-in Mali backend to Mesa and rotates the framebuffer into landscape. QEngine keeps its DSP threads on normal scheduling to reduce USB input starvation. Startup and rendering are slow under TCG, and touch input can miss taps.
 
-The updater omits the factory content partition. Looper creates a database and reaches its four-track screen without it, but the factory library is absent. Menu and Global Settings navigation have been checked. QEngine supplies a silent 8-out/2-in loopback card at 96000 Hz. Recording, playback and physical controls remain unverified. Looperboard firmware has not been tried with this path.
+The updater omits the factory content partition. Looper creates a database and reaches its four-track screen without it, but the factory library is absent. Menu and Global Settings navigation have been checked. QEngine supplies a silent 8-out/2-in loopback card at 96000 Hz. Recording, playback and physical controls remain unverified.
+
+## Older boards
+Pedalboard, Gigboard and MX5 2.7 and Looperboard 2.0.5 build like the others, from their desktop updaters:
+
+```sh
+scripts/build_scripts/new_instance.sh --name headrush-mx5-2.7 --firmware 'HeadRush MX5 2.7 Firmware Updater - Mac.zip'
+```
+
+Their Buildroot ships glibc 2.32, older than what QEngine's bookworm builds need, so QEngine builds their shims and Mesa on Debian bullseye: `build_mali_mesa.sh --base bullseye`, cached as `mesa-<version>-armhf-mali+bullseye`. Their Qt is linked into the app, so they render through `maliwindow` in software, as Looper X does.
+
+The app stays on LOADING until its footswitch board answers over MIDI. QEngine stands in for it with `midisurface`, as `qengine-headrush-panel.service`, under the port name the image's assignment files expect. It reports the panel firmware version the image bundles, so the app never offers to flash the panel. The footswitches themselves are not driven yet.
 
 ## Audio
-Evil opens a card whose name is built into each image: `HV01` on Prime and Core, `HG04` on Flex Prime. The builder reads it from the app and loads `snd-dummy` under that name, as 8 channels out and 2 in at 96000 Hz. Capture is silent and playback is discarded, so none of them makes a sound on the host. Looper X gets a kernel loopback card renamed `HG08`, which `pcmhold` keeps at the same shape.
+Evil opens a card whose name is built into each image: `HV01` on Prime and Core, `HG04` on Flex Prime and MX5, `HG02` on Gigboard and `MG01` on Pedalboard. The builder reads it from the app and loads `snd-dummy` under that name, as 8 channels out and 2 in at 96000 Hz. Capture is silent and playback is discarded, so none of them makes a sound on the host. Looper X and Looperboard get a kernel loopback card renamed `HG08` or `HG03`, which `pcmhold` keeps at the same shape.
 
 Flex Prime runs 0.5 ms periods. The `qengine-hg` model of `snd-dummy` that serves them is built by `get_kernel.sh`, so an armhf kernel built before it needs rebuilding:
 

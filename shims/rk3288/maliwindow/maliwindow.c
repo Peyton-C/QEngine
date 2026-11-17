@@ -1,8 +1,9 @@
-/* Looper X 1.0.2 links Qt and eglfs_mali statically, so an eglfs_kms plugin
- * cannot replace its Mali integration. Keep the app's fbdev_window ABI and
- * render into a Mesa pbuffer, then copy each frame to the kernel framebuffer.
- * MALIWINDOW_ROTATE=90 undoes HG08's fixed portrait-panel rotation. This is
- * software rendering; it does not provide Mali acceleration or host audio.
+/* Looper X 1.0.2 and Evil 2.7 link Qt and eglfs_mali statically, so an eglfs_kms
+ * plugin cannot replace their Mali integration. Keep the app's fbdev_window ABI
+ * and render into a Mesa pbuffer, then copy each frame to the kernel framebuffer.
+ * MALIWINDOW_ROTATE=90 undoes the -90 turn HG08, MG01 and HG02 give their UI for
+ * a portrait panel, and 270 the +90 turn of HG04's. This is software rendering;
+ * it does not provide Mali acceleration or host audio.
  */
 #define _GNU_SOURCE
 #include <EGL/egl.h>
@@ -86,13 +87,19 @@ EGLBoolean eglSwapBuffers(EGLDisplay d, EGLSurface s) {
     EGLBoolean (*real)(EGLDisplay, EGLSurface) = dlsym(RTLD_NEXT, "eglSwapBuffers");
     if (s == window_surface && fb && pixels && vi.bits_per_pixel == 32) {
         glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        int rotate = getenv("MALIWINDOW_ROTATE") && atoi(getenv("MALIWINDOW_ROTATE")) == 90;
+        // 90 or 270, the quarter turn that undoes the app's own; anything else is
+        // copied upright. glReadPixels rows run bottom-up.
+        int rotate = getenv("MALIWINDOW_ROTATE") ? atoi(getenv("MALIWINDOW_ROTATE")) : 0;
+        if (rotate != 90 && rotate != 270)
+            rotate = 0;
         unsigned rw = rotate ? height : width, rh = rotate ? width : height;
         unsigned w = rw < vi.xres ? rw : vi.xres, h = rh < vi.yres ? rh : vi.yres;
         for (unsigned y = 0; y < h; y++)
             for (unsigned x = 0; x < w; x++) {
-                unsigned char *p =
-                    pixels + (rotate ? (x * width + y) : ((height - 1 - y) * width + x)) * 4;
+                size_t i = rotate == 90    ? (size_t)x * width + y
+                           : rotate == 270 ? (size_t)(height - 1 - x) * width + (width - 1 - y)
+                                           : (size_t)(height - 1 - y) * width + x;
+                unsigned char *p = pixels + i * 4;
                 uint32_t color = ((uint32_t)p[0] << vi.red.offset) |
                                  ((uint32_t)p[1] << vi.green.offset) |
                                  ((uint32_t)p[2] << vi.blue.offset);

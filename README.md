@@ -71,7 +71,7 @@ Code selects the product identity with `--product-code`. Version cells list firm
 | Numark Mixstream Pro GO | NH10  | RK3288 | Y      | armv7 | –           | –     | ?     | ?             | 5.3.0 |
 | RANE SYSTEM ONE         | RMZ2  | RK3588 | Y      | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
 
-QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0, Prime GO's also on 4.3.0 and 5.0.4, Prime GO+'s on 4.3.4 and Mixstream Pro GO's on 5.1.0b8; other older releases remain unverified with the fake battery. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
+QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0, Prime GO's also on 4.3.0 and 5.0.4, Prime GO+'s on 4.3.4 and Mixstream Pro GO's on 5.1.0; other older releases remain unverified with the fake battery. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
 
 ## MPC
 Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x has been booted as `ACV5` only.

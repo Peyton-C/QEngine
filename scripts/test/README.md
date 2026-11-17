@@ -17,6 +17,7 @@ Engine's audio is captured with QEMU's wav backend instead of played, so a run n
 | `wavcheck.py FILE [--tone] [--last SECONDS]` | Reports gaps, and with `--tone` the pitch per second and any discontinuities |
 | `serial.py PORT 'command' [TIMEOUT]` | Runs one command on a guest's serial console and returns its output and exit code |
 | `common.sh` | Paths, ports and the `guest`, `vnc` and `instance_var` helpers, sourced by the rest |
+| `fake/check.sh [-H HOST] [NAME ...]` | Runs a stand-in for Engine against the shims inside instances, a few seconds each. See [fake](fake/README.md). |
 
 ## A run on the Mac
 ```

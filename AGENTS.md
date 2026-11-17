@@ -71,7 +71,7 @@ A rootfs step is sourced, never run on its own, and must be safe to run twice ov
 
 On the Pi, settings come from `pi.env`. A new one is documented in `chroot-engine.sh` and added to `pi.env.example`, commented out. Nothing written for a session, such as an sshd config or keys, goes into the rootfs; it lives under `/run` or `/srv/engine/run`.
 
-There is no test suite. `scripts/test/` boots an instance and measures its audio, which covers playback changes. Run `shellcheck` over changed scripts and `bash -n` at least. Python, such as the FLX10 bridge, runs with `uv run`. The Pi used for chroot runs is `pi-engine.local`, with the staged files in `~/qengine`. Nothing replaces booting Engine, so say which architecture, product code and firmware version a change was tried on, and which it was not.
+There is no test suite. `scripts/test/` boots an instance and measures its audio, which covers playback changes. `scripts/test/fake/` runs a stand-in for Engine against the shims inside every instance on a test host, in seconds, so run `check.sh -s` there before and after a shim change. A call the fake Engine does not make yet is a new probe. Run `shellcheck` over changed scripts and `bash -n` at least. Python, such as the FLX10 bridge, runs with `uv run`. The Pi used for chroot runs is `pi-engine.local`, with the staged files in `~/qengine`. Nothing replaces booting Engine, so say which architecture, product code and firmware version a change was tried on, and which it was not.
 
 Code comments are the place for the reasoning the docs leave out. Explain why something is done a particular way, especially where the obvious approach fails, and cite the firmware version or device that shows it. The long header comments on the build scripts are the model.
 

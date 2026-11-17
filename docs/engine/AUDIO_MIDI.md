@@ -62,9 +62,14 @@ Prime 4 (`JC11`) 5.3.0 ignores `load` while `play` works; load a track by touch 
 Keep the surface identity consistent with Engine's selected product. A mismatched response can bind the wrong assignments or no surface at all. Settings may show a controller firmware version of zero because virtual-surface version bytes are unused when update checks are skipped.
 
 ## Motorized decks
-RANE SYSTEM ONE starts in motorized mode and waits for platter timecode on the capture channels. Without that signal, play can wait while cue still previews audio. QEngine starts `midisurface --motor-off` for RMZ2 and sends the toggle when Engine binds the surface, including after Engine restarts.
+RANE SYSTEM ONE, SC5000M and SC6000M start in motorized mode and wait for platter timecode. Without that signal, play does nothing while cue still previews audio. `midisurface --motor-off` sends each product's own toggle when Engine binds the surface, including after Engine restarts, and does nothing on products without a motor.
 
-The mode is not persisted, so it must be disabled at each launch. Automatic motor-off is restricted to `RMZ2`; SC5000M and SC6000M need their own mappings. Do not assume the RMZ2 Shift + Slip sequence applies to another product.
+| Code | Toggle |
+| --- | --- |
+| `RMZ2` | Shift + Slip on each deck |
+| `JP08`, `JP14` | The motor button, note 19 |
+
+The mode is not persisted, so it is disabled at each launch.
 
 ## Controller mappings
 `controllermap` selects assignments for a connected USB controller and installs them where Engine loads the selected product's QML map. `midisurface --forward` relays its MIDI while answering Engine's identity inquiry. One mapping is active at a time, and the controller's LEDs and displays need their own protocol support. The [FLX10 guide](../../scripts/pi/flx10/README.md) covers that controller and its jog-screen bridge.

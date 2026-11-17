@@ -1,9 +1,11 @@
 # HeadRush
-QEngine boots HeadRush Prime, VX5 and Sheeran Looper X with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
+QEngine boots HeadRush Prime, Flex Prime, Core, VX5 and Sheeran Looper X with Docker, QEMU, Python 3 and e2fsprogs. Point `--firmware` at the update image or desktop updater; QEngine selects the architecture and builder from its contents.
 
 | Device | Code | Firmware tried | Architecture | Display | Limits |
 | --- | --- | --- | --- | --- | --- |
-| Prime | `HG06` | 5.2.0 | armv7, RK3288 | Landscape with touch | Silent loopback audio |
+| Prime | `HG06` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 1280×800 with touch | Silent audio |
+| Flex Prime | `HG12` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 800×480 with touch | Silent audio |
+| Core | `HV01` | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | armv7, RK3288 | 1280×800 with touch | Silent audio |
 | VX5 | `HV03` | 1.2.2 | arm64, RK3566 | 160×128, landscape | Input from a WAV file, no LEDs or phantom power |
 | Sheeran Looper X | `HG08` | 1.0.2 | armv7, RK3288 | 1280×800, software rendering | Factory content absent; silent loopback audio; no virtual footswitches |
 
@@ -15,7 +17,9 @@ scripts/qemu/run_instance.sh --name headrush-vx5-1.2.2 --display vnc
 
 Use a different instance name for each device and firmware version. `--force` rebuilds the rootfs and keeps the data disk. See [INSTANCES.md](INSTANCES.md) for display options and host ports.
 
-VX5 uses the shared JUCE builder, `build_mpc_rootfs.sh`, and `HV03.service`. Prime uses the armv7 Engine builder and `evil.service`. VX5 needs no Qt or EGL replacement and no rotation shim. Both use QEngine's generic kernel, not the device kernel in the updater.
+Each HeadRush update image runs as one product. Evil, the app on Prime, Flex Prime and Core, is built separately for each and never reads the product code, so Prime's image built as `HG12` is still Prime. QEngine takes the code from the image's devicetree; `--product-code` changes nothing Evil sees.
+
+VX5 uses the shared JUCE builder, `build_mpc_rootfs.sh`, and `HV03.service`. Prime, Flex Prime and Core use the armv7 Engine builder and `evil.service`. VX5 needs no Qt or EGL replacement and no rotation shim. Both use QEngine's generic kernel, not the device kernel in the updater.
 
 ## Looper X
 ```sh
@@ -28,7 +32,13 @@ Looper X uses the armv7 builder and `looper.service`. Its Qt is statically linke
 The updater omits the factory content partition. Looper creates a database and reaches its four-track screen without it, but the factory library is absent. Menu and Global Settings navigation have been checked. QEngine supplies a silent 8-out/2-in loopback card at 96000 Hz. Recording, playback and physical controls remain unverified. Looperboard firmware has not been tried with this path.
 
 ## Audio
-Prime gets a kernel loopback card, renamed `HV01`, which `pcmhold` keeps at 8 channels out and 2 in at 96000 Hz. Capture is silent and playback is discarded, so Prime makes no sound on the host.
+Evil opens a card whose name is built into each image: `HV01` on Prime and Core, `HG04` on Flex Prime. The builder reads it from the app and loads `snd-dummy` under that name, as 8 channels out and 2 in at 96000 Hz. Capture is silent and playback is discarded, so none of them makes a sound on the host. Looper X gets a kernel loopback card renamed `HG08`, which `pcmhold` keeps at the same shape.
+
+Flex Prime runs 0.5 ms periods. The `qengine-hg` model of `snd-dummy` that serves them is built by `get_kernel.sh`, so an armhf kernel built before it needs rebuilding:
+
+```sh
+scripts/build_scripts/get_kernel.sh --arch armhf
+```
 
 VX5 plays through the host. It opens `/dev/snd/by-path/platform-sound` as stereo S32_LE at 48000 Hz in 128-frame periods, which a QEngine udev rule points at `snd-dummy`, loaded by `qengine-vx5-audio.service` with the `qengine-ac50` model. `alsashim`, preloaded into `HV03.service`, copies VX5's output onto QEMU's sound card and unmutes it. QEMU on macOS cannot record, so `alsashim` replaces what VX5 hears with `/data/input.wav`, looped and resampled to 48000 Hz, or silence when there is none. Copy a WAV there, for instance over SSH as in [REMOTE_ACCESS.md](../../docs/REMOTE_ACCESS.md), and run `systemctl restart HV03` in the guest.
 
@@ -41,7 +51,7 @@ scripts/build_scripts/get_kernel.sh --arch arm64
 ```
 
 ## Controls
-Prime is driven by touch. VX5 reads its panel as input devices, which `vx5surface` creates, along with the USB MIDI port `f_midi` that VX5 binds by name. Drive both from the guest:
+Prime, Flex Prime and Core are driven by touch. Evil turns its UI for each panel, which is mounted sideways, and `qmlrotate` turns it back to landscape. Flex Prime draws the smaller 800×480 UI, so its instance records `SCREEN=800x480` in `instance.env`. VX5 reads its panel as input devices, which `vx5surface` creates, along with the USB MIDI port `f_midi` that VX5 binds by name. Drive both from the guest:
 
 ```sh
 echo 'press autotune' > /run/vx5surface.fifo

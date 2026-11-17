@@ -418,7 +418,12 @@ if [ -d /mnt/rootfs/usr/Engine ]; then
 elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
 elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
-    APP_UNIT=evil.service; DEFAULT_CODE=HG06
+    # Evil is built per product and never reads the code (Prime's, run as HG12,
+    # still reports HG06), so default to the one the image's own devicetree names.
+    APP_UNIT=evil.service
+    DEFAULT_CODE="$(find /mnt/rootfs/boot -maxdepth 1 -name 'rk3288-az0?-*.dtb' -printf '%f\n' |
+        sed -n 's/^rk3288-az0.-\([a-z]\{2\}[0-9]\{2\}\)\.dtb$/\1/p' | sed -n 1p | tr a-z A-Z)"
+    DEFAULT_CODE="${DEFAULT_CODE:-HG06}"
 elif [ -x /mnt/rootfs/usr/Looper/Looper ] && [ -f /mnt/rootfs/boot/rk3288-az05-hg08.dtb ]; then
     APP_UNIT=looper.service; DEFAULT_CODE=HG08
 else
@@ -518,42 +523,94 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 OVERRIDE="/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf"
 mkdir -p "$(dirname "$OVERRIDE")"
 if [ "$APP_UNIT" = evil.service ] || [ "$APP_UNIT" = looper.service ]; then
-    # Evil opens its own card by name, hw:HV01, and Prime 5.2.0 segfaults a few
-    # seconds after startup when there is none. The kernel's loopback card stands
-    # in: it needs no host audio, and get_kernel.sh loads it from the initrd, which
-    # is too early for a modprobe.d id= option on the rootfs to reach it, so its
-    # id is renamed through sysfs instead before Evil starts. $$ is systemd's
-    # escape for a literal $.
-    #
-    # The name alone is not enough. A loopback offers 32 channels each way, Evil
-    # takes them all and then segfaults in its audio thread overrunning buffers
-    # sized for the real card, which HG06's devicetree gives 8 playback and 2
-    # capture channels. pcmhold pins the loopback to that shape; see pcmhold.c.
-    cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
-    chmod 755 /mnt/rootfs/root/pcmhold
-    cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<'EOF'
+    # Evil and Looper open their own card by name and segfault a few seconds after
+    # startup when there is none. The card is built into each image, not chosen by
+    # product code: Prime 5.2.0 and Core 4.1.1 open hw:HV01, Flex Prime 5.2.0
+    # hw:HG04 (its devicetree's inmusic,hg04-audio), Looper X 1.0.2 hw:HG08. So it
+    # is read from the app, whatever code the instance is built as.
+    case "$APP_UNIT" in
+        evil.service) _app=/mnt/rootfs/usr/Evil/Evil; HR_CARD=HV01 ;;
+        *) _app=/mnt/rootfs/usr/Looper/Looper; HR_CARD=HG08 ;;
+    esac
+    _cards="$(grep -ao 'hw:[A-Z][A-Z][0-9][0-9]' "$_app" | sort -u | cut -c4-)"
+    if [ "$(printf '%s\n' "$_cards" | grep -c .)" = 1 ]; then
+        HR_CARD="$_cards"
+    else
+        echo "WARNING: no single card name in $_app ($_cards), using $HR_CARD." >&2
+    fi
+    echo "--- app opens hw:$HR_CARD ---"
+
+    if [ "$APP_UNIT" = evil.service ]; then
+        # Evil gets snd-dummy's qengine-hg model, built by get_kernel.sh: 8 out and
+        # 2 in at 96000 Hz, the real card's shape, kept on hrtimers. Flex Prime
+        # 5.2.0 runs 48-frame periods in a 144-frame ring, 1.5 ms, which snd-aloop's
+        # 4 ms jiffies cannot serve: its reads and writes fail with EIO and Evil
+        # exits 42 every half minute with a black screen. Playback is discarded
+        # and capture is silent, as on the loopback.
+        cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<EOF
 [Unit]
-Description=Stand the loopback sound card in for HV01, the card Evil opens
+Description=Stand a dummy sound card in for $HR_CARD, the card Evil opens
+After=systemd-udevd.service
 Before=evil.service
 
 [Service]
-Type=simple
-ExecStart=/root/pcmhold HV01 8 2
-# Evil must not open the card before pcmhold has pinned it.
-ExecStartPost=/bin/sleep 1
-Restart=on-failure
-ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "$$(cat $$c/id)" = Loopback ] && printf HV01 > $$c/id; done; grep -q "\\[HV01" /proc/asound/cards'
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe snd-dummy model=qengine-hg id=$HR_CARD
+ExecStart=/bin/grep -qF "[$HR_CARD" /proc/asound/cards
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    else
+        # Looper stays on the kernel's loopback card, the path Looper X 1.0.2 was
+        # checked on. get_kernel.sh loads it from the initrd, too early for a
+        # modprobe.d id= option on the rootfs to reach it, so its id is renamed
+        # through sysfs before Looper starts. $$ is systemd's escape for a literal $.
+        #
+        # A loopback offers 32 channels each way, and the app takes them all and
+        # then segfaults overrunning buffers sized for the real card's 8 playback
+        # and 2 capture channels. pcmhold pins the loopback to that shape; see
+        # pcmhold.c.
+        cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
+        chmod 755 /mnt/rootfs/root/pcmhold
+        cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<EOF
+[Unit]
+Description=Stand the loopback sound card in for $HR_CARD, the card Looper opens
+Before=looper.service
+
+[Service]
+Type=simple
+ExecStart=/root/pcmhold $HR_CARD 8 2
+# Looper must not open the card before pcmhold has pinned it.
+ExecStartPost=/bin/sleep 1
+Restart=on-failure
+ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "\$\$(cat \$\$c/id)" = Loopback ] && printf $HR_CARD > \$\$c/id; done; grep -q "\\\\[$HR_CARD" /proc/asound/cards'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
     ln -sf ../qengine-headrush-audio.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-audio.service
 
     # Evil turns its UI -90 degrees for HG06's portrait panel; qmlrotate turns it
     # back for QEngine's landscape screen. See qmlrotate.cpp.
+    #
+    # Flex Prime 5.2.0 is built for a smaller panel: its Evil takes the is4Inch
+    # layout, an 800x480 UI turned +90 (hg04Transform), whatever product code it
+    # runs as, and Prime's image run as HG12 keeps Prime's 1280x800. So it goes by
+    # the image, through its devicetree, and the screen size is left in
+    # /etc/qengine/screen for new_instance.sh to record as SCREEN.
+    HR_ROTATE=90
+    rm -f /mnt/rootfs/etc/qengine/screen
     if [ "$APP_UNIT" = evil.service ]; then
         cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
         chmod 755 /mnt/rootfs/root/qmlrotate.so
+        if [ -f /mnt/rootfs/boot/rk3288-az05-hg12.dtb ]; then
+            HR_ROTATE=-90
+            mkdir -p /mnt/rootfs/etc/qengine
+            echo 800x480 > /mnt/rootfs/etc/qengine/screen
+        fi
     fi
 
     # dtshim for the product code, serial and pcb-rev Evil reads, and drmatomic for
@@ -570,13 +627,13 @@ Requires=touchbridge.service qengine-headrush-audio.service
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/qmlrotate.so
 Environment=LD_LIBRARY_PATH=/usr/qt/lib
-Environment=QMLROTATE=90
+Environment=QMLROTATE=$HR_ROTATE
+Environment=QMLROTATE_SWAP=1
 EOF
+    sed -i "s/\$HR_ROTATE/$HR_ROTATE/" "$OVERRIDE"
     if [ "$APP_UNIT" = looper.service ]; then
-        # Looper X 1.0.2 opens hw:HG08. Its DT declares the same 8-out/2-in
-        # shape as Prime; keep the loopback bounded before Looper opens it.
-        sed -i 's/HV01/HG08/g; s/evil.service/looper.service/g; s/Evil/Looper/g' \
-            /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service
+        # Looper X's DT declares the same 8-out/2-in shape as Prime; keep the
+        # loopback bounded before Looper opens it.
         cp -a /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so /mnt/rootfs/root/maliwindow.so
         sed -i 's@/root/drmatomic.so:/root/qmlrotate.so@/root/maliwindow.so@; /QMLROTATE/d' "$OVERRIDE"
     fi

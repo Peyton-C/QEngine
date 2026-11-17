@@ -559,6 +559,12 @@ EOF
 if [ -n "$ENGINE_VNC_PORT" ]; then
     printf 'ENGINE_VNC_PORT=%s\nSMP=4\n' "$ENGINE_VNC_PORT" >> "$INSTANCE_DIR/instance.env"
 fi
+# A builder that knows the app's screen better than run_qemu.sh's per-family
+# default leaves it in the rootfs, as the armv7 builder does for Flex Prime.
+SCREEN_SIZE="$("$DEBUGFS" -R 'cat /etc/qengine/screen' "$ROOTFS_IMG" 2>/dev/null | tr -d '[:space:]')"
+case "$SCREEN_SIZE" in
+    [0-9]*x[0-9]*) printf 'SCREEN=%s\n' "$SCREEN_SIZE" >> "$INSTANCE_DIR/instance.env" ;;
+esac
 
 echo ""
 echo "Created instance $NAME"

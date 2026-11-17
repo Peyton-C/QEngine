@@ -37,7 +37,8 @@ DEVICE="${DEVICE:-engine}"
 # The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush Prime included:
 # its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
 # SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
-# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs.
+# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs, and
+# HeadRush Flex Prime an 800x480 one, which its instance.env sets as SCREEN.
 # Match that mode so the framebuffer does not surround it with unused space.
 case "$DEVICE:${ARCH:-arm64}" in
     mpc-sample:*) SCREEN="${SCREEN:-320x240}" ;;

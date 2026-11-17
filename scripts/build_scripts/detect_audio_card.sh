@@ -67,6 +67,8 @@ _audio_card_known() {
         JP08|JP13|JP14) printf '%s' JP07 ;;
         JP11S)          printf '%s' JP11 ;;
         NH08S)          printf '%s' NH08 ;;
+        # HeadRush Flex Prime 5.2.0 binds inmusic,hg04-audio, MX5's driver.
+        HG12)           printf '%s' HG04 ;;
         *)              printf '%s' "$1" ;;
     esac
 }

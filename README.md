@@ -44,7 +44,8 @@ QEngine primarly targets Modern and Classic inMusic firmware versions, but there
 | MPC Sample                 | 1.x     | –           | –       |
 | Alesis drum module         | 1.5.2.3 | –           | –       |
 | HeadRush VX5               | 1.x     | –           | –       |
-| HeadRush Prime, Flex Prime | –       | 5.2.0       | –       |
+| HeadRush Prime, Flex Prime | –       | 4.1.1-5.2.0 | –       |
+| HeadRush Core              | –       | 4.1.1-5.2.0 | –       |
 | Sheeran Looper X           | –       | 1.0.2       | –       |
 | HeadRush Pedalboard        | –       | –           | 2.x     |
 | HeadRush Looperboard       | –       | –           | 2.x     |
@@ -104,14 +105,14 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | Akai MPC Sample | `AC50` | arm64, RK3566 | 1.3.0 | Host audio and virtual panel; factory library absent |
 | Alesis Prime Drum Module | `LDMD` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or full sample library |
 | Alesis Core Drum Module | `LDMF` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or factory samples |
-| HeadRush Prime | `HG06` | armv7, RK3288 | 5.2.0 | Touch; silent loopback audio |
+| HeadRush Prime | `HG06` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch; silent audio |
+| HeadRush Flex Prime | `HG12` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch, 800×480; silent audio |
+| HeadRush Core | `HV01` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch; silent audio |
 | HeadRush VX5 | `HV03` | arm64, RK3566 | 1.2.2, 1.3.1 | Host audio and virtual panel; input from a WAV file |
 | Sheeran Looper X | `HG08` | armv7, RK3288 | 1.0.2 | Four-track UI; factory content absent; silent loopback audio |
-| HeadRush Core | `HV01` | ? | ? | Untested |
 | HeadRush Gigboard | `HG02` | ? | ? | Untested |
 | HeadRush Looperboard | `HG03` | ? | ? | Untested |
 | HeadRush MX5 | `HG04` | ? | ? | Untested |
-| HeadRush Flex Prime | `HG12` | ? | ? | Untested |
 | HeadRush Pedalboard | `MG01` | ? | ? | Untested |
 
 Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](scripts/build_scripts/BUILD_ALESIS.md) and [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) guides for target-specific setup and limits. The VX5 audio and control checks cover 1.2.2; 1.3.1 is listed as booted.

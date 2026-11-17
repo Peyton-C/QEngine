@@ -213,16 +213,42 @@ static const struct dummy_model model_qengine_ac50 = {
 	.rate_max = 48000,
 };
 
+/* HeadRush's Evil, as the 8-out/2-in S32_LE I2S card its devicetrees give it, at
+ * the 96000 Hz it runs. Evil takes every channel a card offers and overruns its
+ * buffers past the real count, so each direction is pinned. Flex Prime 5.2.0 runs
+ * 48-frame periods, 0.5 ms, which snd-aloop's 4 ms jiffies cannot serve. */
+static int qengine_hg_playback(struct snd_pcm_runtime *runtime)
+{
+	return snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_CHANNELS, 8, 8);
+}
+
+static int qengine_hg_capture(struct snd_pcm_runtime *runtime)
+{
+	return snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_CHANNELS, 2, 2);
+}
+
+static const struct dummy_model model_qengine_hg = {
+	.name = "qengine-hg",
+	.playback_constraints = qengine_hg_playback,
+	.capture_constraints = qengine_hg_capture,
+	.formats = SNDRV_PCM_FMTBIT_S32_LE,
+	.channels_min = 2,
+	.channels_max = 8,
+	.rates = SNDRV_PCM_RATE_96000,
+	.rate_min = 96000,
+	.rate_max = 96000,
+};
+
 EOF
 awk -v models=/tmp/snd-dummy/qengine_models.c '
     index(\$0, "static const struct dummy_model *dummy_models[] = {") == 1 {
         while ((getline line < models) > 0) print line
-        print; print "\t&model_qengine_ac50,"; next
+        print; print "\t&model_qengine_ac50,"; print "\t&model_qengine_hg,"; next
     }
     { print }' /tmp/snd-dummy/dummy.c > /tmp/snd-dummy/dummy.c.new
 mv /tmp/snd-dummy/dummy.c.new /tmp/snd-dummy/dummy.c
-grep -q '&model_qengine_ac50,' /tmp/snd-dummy/dummy.c || {
-    echo "ERROR: could not add the qengine-ac50 model to this dummy.c." >&2; exit 1; }
+grep -q '&model_qengine_hg,' /tmp/snd-dummy/dummy.c || {
+    echo "ERROR: could not add the qengine models to this dummy.c." >&2; exit 1; }
 printf 'obj-m := snd-dummy.o\nsnd-dummy-y := dummy.o\n' > /tmp/snd-dummy/Kbuild
 make -s -C /usr/src/linux-headers-"\$KVER" M=/tmp/snd-dummy modules
 install -D -m 644 /tmp/snd-dummy/snd-dummy.ko /lib/modules/"\$KVER"/updates/snd-dummy.ko

@@ -727,6 +727,14 @@ Environment="ALSASHIM_AS=$AUDIO_CARD_NAME"
 Environment=ALSASHIM_CARD=0
 Environment=ALSASHIM_BUFFER_SCALE=8
 EOF
+    # SC LIVE 4 takes its mic and aux as one stereo input it splits itself, and
+    # on 5.1.0 and 5.3.0 starts its audio as though that input is always there:
+    # against the playback-only card above it dereferences the missing input and
+    # segfaults a second after opening the card. ALSA's null PCM stands in as the
+    # input, read as fast as Engine asks, so the output keeps the time.
+    if [ "$PRODUCT_CODE" = JP21 ]; then
+        echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
+    fi
 fi
 
 fi # modern rootfs installation

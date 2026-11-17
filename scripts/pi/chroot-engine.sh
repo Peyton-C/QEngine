@@ -254,6 +254,9 @@ ENVV=("${BASE[@]}"
 [ -n "${ALSASHIM_DEBUG:-}" ] && ENVV+=("ALSASHIM_DEBUG=1")
 [ -n "${ALSASHIM_METER:-}" ] && ENVV+=("ALSASHIM_METER=1")
 [ -n "${ALSASHIM_MAX_CHANNELS:-}" ] && ENVV+=("ALSASHIM_MAX_CHANNELS=$ALSASHIM_MAX_CHANNELS")
+# SC LIVE 4 segfaults starting audio without an input, which NO_CAPTURE above
+# takes away; null stands in for it. See build_armv7_engine_rootfs.sh.
+[ "$PRODUCT" = JP21 ] && ENVV+=("ALSASHIM_CAPTURE_PCM=${ALSASHIM_CAPTURE_PCM:-null}")
 [ -n "${CURSORSHIM_DEBUG:-}" ] && ENVV+=("CURSORSHIM_DEBUG=1")
 [ -n "${MONTERO_DUMP:-}" ] && ENVV+=("MONTERO_DUMP=1")
 [ -n "${MONTERO_EXTRACT:-}" ] && ENVV+=("MONTERO_EXTRACT=$MONTERO_EXTRACT")

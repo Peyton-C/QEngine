@@ -217,6 +217,12 @@
  *                   runs input and output as one combined device, and an input
  *                   that fails to start takes playback down with it -- the
  *                   stream opens, then sits in XRUN while decks never load.
+ *   ALSASHIM_CAPTURE_PCM  PCM to record from when the card has playback but no
+ *                   capture, or ALSASHIM_NO_CAPTURE hides it, e.g. "null", which
+ *                   reads silence as fast as it is asked, so the output keeps the
+ *                   time. Unset for none. SC LIVE 4 (JP21) needs it on such a card:
+ *                   it treats its input as always present and segfaults starting
+ *                   audio without one.
  *   ALSASHIM_BUFFER_SCALE  multiplier for the PCM ring depth (default 8);
  *                   1 disables the resizing and the sw_params follow-up
  *                   entirely, leaving Engine's own buffering untouched
@@ -405,19 +411,44 @@ static int no_capture(void) {
     return v && *v;
 }
 
+/* The PCM to record from when the card has no capture stream, or ALSASHIM_NO_CAPTURE
+ * hides it; NULL for none. */
+static const char *capture_pcm(void) {
+    const char *v = getenv("ALSASHIM_CAPTURE_PCM");
+    return (v && *v) ? v : NULL;
+}
+
 /* How Engine asks whether a device has a given direction at all. A card with no
- * capture answers -ENOENT here, so that is what a hidden one answers too. */
+ * capture answers -ENOENT here, so that is what a hidden one answers too.
+ *
+ * With ALSASHIM_CAPTURE_PCM, a device with playback and no capture, or a hidden
+ * one, is reported as having both, by answering the capture query with the
+ * playback stream's info and putting the direction back. Engine then opens hw:N
+ * for capture, which snd_pcm_open() below sends to the stand-in. */
 int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
+    typedef void (*set_stream_t)(snd_pcm_info_t *, int);
+    static set_stream_t set_stream;
     RESOLVE(real_ctl_pcm_info, "snd_ctl_pcm_info");
     RESOLVE(real_pcm_info_stream, "snd_pcm_info_get_stream");
+    RESOLVE(set_stream, "snd_pcm_info_set_stream");
     if (!real_ctl_pcm_info) return -ENOENT;
 
-    if (no_capture() && real_pcm_info_stream &&
-        real_pcm_info_stream(info) == ALSASHIM_STREAM_CAPTURE) {
+    int capture = real_pcm_info_stream &&
+                  real_pcm_info_stream(info) == ALSASHIM_STREAM_CAPTURE;
+    if (no_capture() && capture && !capture_pcm()) {
         if (debug_on()) fprintf(stderr, "[alsashim] hiding a capture stream\n");
         return -ENOENT;
     }
-    return real_ctl_pcm_info(ctl, info);
+    int ret = (no_capture() && capture) ? -ENOENT : real_ctl_pcm_info(ctl, info);
+    if (ret < 0 && capture && capture_pcm() && set_stream) {
+        set_stream(info, ALSASHIM_STREAM_PLAYBACK);
+        ret = real_ctl_pcm_info(ctl, info);
+        set_stream(info, ALSASHIM_STREAM_CAPTURE);
+        if (ret >= 0 && debug_on())
+            fprintf(stderr, "[alsashim] reporting a capture stream backed by \"%s\"\n",
+                    capture_pcm());
+    }
+    return ret;
 }
 
 /* The channel count the hardware really has, per direction, as probed just
@@ -437,7 +468,12 @@ int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
  * (master, booth, cue, ...) and needs room for all of them: told a stereo
  * headset has 2 channels it ran cleanly and silently, and told 16 it played,
  * with plug handing the first pair to the card exactly as it did at 10000.
- * Sixteen is enough for every layout seen so far and costs nothing to render. */
+ * Sixteen is enough for every layout seen so far and costs nothing to render.
+ *
+ * The floor is for outputs only. Capture reports the card's own maximum, since
+ * SC LIVE 4 (JP21, 5.1.0 and 5.3.0) takes its mic and aux as one 32-bit stereo
+ * pair it splits itself, and throws "Number of input channels must equal 2 if
+ * setting deinterleave32BitMicAndAux to true" and aborts given 16. */
 #define ALSASHIM_MIN_REPORTED_CHANNELS 16
 static unsigned int g_real_ch_max[2];
 /* The playback device Engine has open, as last opened through the rewrite below. */
@@ -488,8 +524,34 @@ static int probe_real_hw(const char *hw_name, int stream) {
     return iec958_only;
 }
 
-/* Has no pcm argument, so the direction is taken from the most recent open --
- * Engine queries each device straight after opening it. */
+/* Which direction each params object was last filled for, by snd_pcm_hw_params_any.
+ * Engine keeps one per device, so a handful of slots is plenty. */
+#define PARAMS_SLOTS 16
+static struct { const snd_pcm_hw_params_t *p; int stream; } g_params[PARAMS_SLOTS];
+static pthread_mutex_t g_params_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned int g_params_next;
+
+int snd_pcm_hw_params_any(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
+    RESOLVE(real_hw_any, "snd_pcm_hw_params_any");
+    if (!real_hw_any) return -ENOSYS;
+    int ret = real_hw_any(pcm, params);
+    RESOLVE(real_pcm_stream, "snd_pcm_stream");
+    if (ret < 0 || !real_pcm_stream) return ret;
+    int stream = real_pcm_stream(pcm);
+    pthread_mutex_lock(&g_params_lock);
+    unsigned int i;
+    for (i = 0; i < PARAMS_SLOTS && g_params[i].p != params; i++) {}
+    if (i == PARAMS_SLOTS) i = g_params_next++ % PARAMS_SLOTS;
+    g_params[i].p = params;
+    g_params[i].stream = stream;
+    pthread_mutex_unlock(&g_params_lock);
+    return ret;
+}
+
+/* Has no pcm argument, so the direction comes from the snd_pcm_hw_params_any that
+ * filled the params, or failing that from the most recent open. The open alone was
+ * enough while a card had only playback; with a capture stream too, Engine opens
+ * both and then configures playback, and capture's figure would be applied. */
 int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *params,
                                        unsigned int *val) {
     RESOLVE(real_get_ch_max, "snd_pcm_hw_params_get_channels_max");
@@ -497,8 +559,18 @@ int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *params,
     int ret = real_get_ch_max(params, val);
     if (ret < 0 || !val) return ret;
 
-    unsigned int cap = g_real_ch_max[g_last_stream];
-    if (cap > 0 && cap < ALSASHIM_MIN_REPORTED_CHANNELS)
+    int stream = g_last_stream;
+    pthread_mutex_lock(&g_params_lock);
+    for (unsigned int i = 0; i < PARAMS_SLOTS; i++)
+        if (g_params[i].p == params &&
+            (g_params[i].stream == ALSASHIM_STREAM_PLAYBACK ||
+             g_params[i].stream == ALSASHIM_STREAM_CAPTURE))
+            stream = g_params[i].stream;
+    pthread_mutex_unlock(&g_params_lock);
+
+    unsigned int cap = g_real_ch_max[stream];
+    if (stream == ALSASHIM_STREAM_PLAYBACK && cap > 0 &&
+        cap < ALSASHIM_MIN_REPORTED_CHANNELS)
         cap = ALSASHIM_MIN_REPORTED_CHANNELS;
     const char *v = getenv("ALSASHIM_MAX_CHANNELS");
     if (v && *v) cap = (unsigned int)atoi(v);
@@ -517,7 +589,30 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
 
     /* Belt and braces for ALSASHIM_NO_CAPTURE: an open that did not go through
      * the query above still finds nothing there. */
-    if (no_capture() && stream == ALSASHIM_STREAM_CAPTURE) return -ENOENT;
+    if (no_capture() && stream == ALSASHIM_STREAM_CAPTURE && !capture_pcm())
+        return -ENOENT;
+
+    /* The capture snd_ctl_pcm_info() reported for a card that has none, or whose
+     * own is hidden. The stand-in is reported as stereo, the layout JP21 insists on. */
+    if (name && strncmp(name, "hw:", 3) == 0 && stream == ALSASHIM_STREAM_CAPTURE &&
+        capture_pcm()) {
+        snd_pcm_t *probe = NULL;
+        if (no_capture() ||
+            real_pcm_open(&probe, name, stream, ALSASHIM_PCM_NONBLOCK) < 0) {
+            int ret = real_pcm_open(pcmp, capture_pcm(), stream, mode);
+            if (debug_on())
+                fprintf(stderr, "[alsashim] \"%s\" has no capture; opening \"%s\": %d\n",
+                        name, capture_pcm(), ret);
+            if (ret >= 0 && pcmp) {
+                g_last_stream = stream;
+                g_real_ch_max[stream] = 2;
+                atomic_store(&g_capture_pcm, *pcmp);
+            }
+            return ret;
+        }
+        RESOLVE(real_pcm_close, "snd_pcm_close");
+        if (real_pcm_close) real_pcm_close(probe);
+    }
 
     if (name && strncmp(name, "hw:", 3) == 0 && !getenv("ALSASHIM_NOPLUG")) {
         char plugged[128];

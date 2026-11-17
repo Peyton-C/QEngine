@@ -31,7 +31,7 @@ Y means supported in the builds tried, N means unavailable, and ? means unverifi
 | MIDI                    | Y      | Y       | ?      |
 | External media (USB/SD) | Y      | Y       | ?      |
 
-Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes. Under TCG on Apple Silicon Engine's audio thread takes most of a host core, and CoreAudio playback cuts out about once a second, so listen under KVM. SC LIVE 4 has no audio, as Engine crashes once it accepts a sound card. Legacy SoundSwitch was checked on Mixstream Pro 2.3.2; SC5000 1.0.1 has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes. Under TCG on Apple Silicon Engine's audio thread takes most of a host core, and CoreAudio playback cuts out about once a second, so listen under KVM. Legacy SoundSwitch was checked on Mixstream Pro 2.3.2; SC5000 1.0.1 has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.

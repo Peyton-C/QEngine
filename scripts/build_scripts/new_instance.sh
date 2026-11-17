@@ -30,6 +30,9 @@
 #               --force rebuild keeps it instead of silently reverting to the
 #               builder's default. Omit to keep what this instance already has, or
 #               to take the builder's default on a new instance.
+#   --audio-card-name  the sound card name Engine is shown, e.g. "JP07", in place of
+#               the one detect_audio_card.sh works out. armv7 Engine only. Recorded
+#               in instance.env and kept by --force until the product code changes.
 #   --montero   build MONTERO (the QML mod loader) and every mod in shims/montero/mods
 #               into the rootfs, and preload it into Engine. Engine only, on
 #               either architecture.
@@ -63,6 +66,7 @@ SIZE=""
 FORCE=0
 PRODUCT_CODE_ARG=""
 MONTERO_ARG=""
+AUDIO_CARD_NAME_ARG=""
 BINWALK="${BINWALK:-0}"
 
 
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
         --firmware) FIRMWARE="$2"; shift 2 ;;
         --size) SIZE="$2"; shift 2 ;;
         --product-code) PRODUCT_CODE_ARG="$2"; shift 2 ;;
+        --audio-card-name) AUDIO_CARD_NAME_ARG="$2"; shift 2 ;;
         --montero) MONTERO_ARG=1; shift ;;
         --no-montero) MONTERO_ARG=0; shift ;;
         --binwalk) BINWALK=1; shift ;;
@@ -358,6 +363,30 @@ if [ "$MONTERO" = 1 ]; then
 fi
 export MONTERO
 
+# The sound card name alsashim presents, normally detected by the armv7 builder
+# (detect_audio_card.sh). Kept across --force like the product code, but only while
+# the product code stays the same: a name chosen for one product is wrong for the
+# next, and a changed code should go back to detection.
+if [ -n "$AUDIO_CARD_NAME_ARG" ]; then
+    AUDIO_CARD_NAME="$AUDIO_CARD_NAME_ARG"
+elif [ -f "$INSTANCE_DIR/instance.env" ] &&
+     { [ -z "$PRODUCT_CODE_ARG" ] ||
+       [ "$PRODUCT_CODE_ARG" = "$(sed -n 's/^PRODUCT_CODE=//p' "$INSTANCE_DIR/instance.env")" ]; }; then
+    # Sourced, as run_instance.sh reads it, because the value is written quoted:
+    # "PRIME 4 Audio" has spaces.
+    # shellcheck disable=SC1091
+    AUDIO_CARD_NAME="$(. "$INSTANCE_DIR/instance.env"; printf '%s' "${AUDIO_CARD_NAME:-}")"
+else
+    AUDIO_CARD_NAME=""
+fi
+if [ -n "$AUDIO_CARD_NAME" ]; then
+    [ "$ROOTFS_BUILDER" = build_armv7_engine_rootfs.sh ] || {
+        echo "ERROR: --audio-card-name applies to armv7 Engine, and this firmware" >&2
+        echo "       builds with $ROOTFS_BUILDER." >&2
+        exit 1; }
+    export AUDIO_CARD_NAME
+fi
+
 STAMP="$INSTANCE_DIR/.rootfs.complete"
 
 if [ -e "$ROOTFS_IMG" ] && [ -e "$STAMP" ] && [ "$FORCE" -ne 1 ]; then
@@ -515,6 +544,7 @@ ROOT_UUID=$ROOT_UUID
 ARCH=$ARCH
 PRODUCT_CODE=$PRODUCT_CODE
 MONTERO=$MONTERO
+AUDIO_CARD_NAME=$(printf '%q' "$AUDIO_CARD_NAME")
 KERNEL_IMG=$KERNEL_IMG
 INITRD_IMG=$INITRD_IMG
 SSH_PORT=$(( 2200 + OFFSET ))

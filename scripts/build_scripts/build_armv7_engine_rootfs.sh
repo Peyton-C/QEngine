@@ -35,6 +35,8 @@
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07,
 #                 or HG06 for a HeadRush image.
+#   AUDIO_CARD_NAME  the sound card name alsashim presents, in place of the one
+#                 detect_audio_card.sh works out.
 #   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
 #                 shims/montero/mods, install them in /root, and preload MONTERO
 #                 into Engine. Off by default: it is the one shim that needs Qt to
@@ -160,7 +162,9 @@ else
     detect_mesa "$OUT_PATH"
 fi
 # Set even where it goes unused, because docker run below passes it under set -u.
-AUDIO_CARD_NAME=""
+# A name from the environment (new_instance.sh --audio-card-name) wins over
+# detection, which detect_audio_card reports.
+AUDIO_CARD_NAME="${AUDIO_CARD_NAME:-}"
 if [ "$LEGACY_ENGINE" != 1 ]; then
     detect_audio_card "$OUT_PATH" "${PRODUCT_CODE:-JP07}" "$FIRMWARE_IMG"
 fi

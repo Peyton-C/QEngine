@@ -8,6 +8,9 @@
 #   detect_audio_card <rootfs image> <product code> [firmware image]
 #
 # The firmware is read only when the rootfs has no devicetree for the product.
+# Where neither has one, the name comes from the table in _audio_card_known below.
+# A name already in AUDIO_CARD_NAME (new_instance.sh --audio-card-name) is kept and
+# nothing is detected.
 #
 # On success AUDIO_CARD_NAME is set.
 #
@@ -42,11 +45,43 @@
 # does not call this.
 _DETECT_AUDIO_CARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The card name each product is known to get, for when its devicetree is not in the
+# image being built. inMusic splits each release into images by family, and each
+# carries only its own family's devicetrees: the 5.3.0 Prime 4 image has JC11, JC16
+# and NH08's, the SC6000 image JP13 and JP14's, while Engine itself is identical in
+# all of them. So building SC5000M from an SC6000 image boots, but finds no JP08
+# devicetree, and without this would spoof "JP08" and be refused in silence.
+#
+# Only the products whose name is not their code are listed. Every entry was read by
+# detect_audio_card itself from every armv7 update image from 2.4.0 to 5.3.0 that
+# carries the product's devicetree, and none changed across them. Detection still
+# wins wherever it can run, and a detected name that disagrees with this table is
+# reported, so a rename in a later firmware shows up at build time rather than as
+# an instance with no sound.
+_audio_card_known() {
+    case "$1" in
+        # The XMOS USB interface; see the JC11 case in detect_audio_card.
+        JC11|JC11S)     printf '%s' "PRIME 4 Audio" ;;
+        # Their devicetrees list their own -audio compatible first, which no
+        # driver claims, then the one the shared driver binds.
+        JP08|JP13|JP14) printf '%s' JP07 ;;
+        JP11S)          printf '%s' JP11 ;;
+        NH08S)          printf '%s' NH08 ;;
+        *)              printf '%s' "$1" ;;
+    esac
+}
+
 detect_audio_card() {
     _img="$1"
     _product="$2"
     _firmware="${3:-}"
+
+    if [ -n "${AUDIO_CARD_NAME:-}" ]; then
+        echo "--- audio card name: $AUDIO_CARD_NAME (given, not detected) ---"
+        return 0
+    fi
     AUDIO_CARD_NAME=""
+    _known="$(_audio_card_known "$_product")"
 
     # Prime 4 and Prime 4+ are the exception to all of the above: their audio is
     # an XMOS USB interface rather than an ASoC card, the devicetree has no
@@ -56,7 +91,7 @@ detect_audio_card() {
     # its PCMs under this name in QEMU.
     case "$_product" in
         JC11|JC11S)
-            AUDIO_CARD_NAME="PRIME 4 Audio"
+            AUDIO_CARD_NAME="$_known"
             echo "--- audio card name: $AUDIO_CARD_NAME (XMOS USB interface) ---"
             return 0 ;;
     esac
@@ -74,15 +109,13 @@ detect_audio_card() {
     [ -n "$_dbg" ] || {
         echo "ERROR: no debugfs found; install e2fsprogs." >&2; return 1; }
 
-    # Falling back to the product code rather than failing the build: it is the
-    # right answer for every RK3288 product whose devicetree names its own code
-    # (all of them except JP08), it is what alsashim would have to be told by hand
-    # anyway, and a firmware laid out differently enough to get here is not a
-    # reason to refuse to produce a rootfs. Each path below says which check it
-    # was that could not be made, so the guess is never silent.
+    # Falling back to the table, and past it to the product code, rather than
+    # failing the build: a firmware laid out differently enough to get here is not
+    # a reason to refuse to produce a rootfs. Each path below says which check it
+    # was that could not be made, so the fallback is never silent.
     _audio_card_giveup() {
-        echo "--- audio card name: assuming \"$_product\" ($1) ---" >&2
-        AUDIO_CARD_NAME="$_product"
+        echo "--- audio card name: taking \"$_known\" from the table ($1) ---" >&2
+        AUDIO_CARD_NAME="$_known"
         return 0
     }
 
@@ -175,6 +208,11 @@ detect_audio_card() {
     else
         echo "--- audio card name: $AUDIO_CARD_NAME — $_product shares" \
              "$_match with it (from $_dtb) ---"
+    fi
+    if [ "$AUDIO_CARD_NAME" != "$_known" ]; then
+        echo "WARNING: detected \"$AUDIO_CARD_NAME\" for $_product, but _audio_card_known" \
+             "in detect_audio_card.sh has \"$_known\". Using the detected name; update" \
+             "the table, or a build of $_product from another image will be wrong." >&2
     fi
     return 0
 }

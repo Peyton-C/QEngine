@@ -70,6 +70,7 @@ static int any_app(void) { return 1; }
 static int engine(void) { return strcmp(cfg.app, "engine") == 0; }
 /* dtshim's RK3566 table exists for MPC Sample and HeadRush VX5, not Engine. */
 static int engine_or_rk3566(void) { return engine() || strcmp(cfg.soc, "rk3566") == 0; }
+static int rk3288(void) { return strcmp(cfg.soc, "rk3288") == 0; }
 
 static const struct probe PROBES[] = {
     {"loader", "every LD_PRELOAD entry loaded and has its symbols", probe_loader, any_app},
@@ -77,6 +78,7 @@ static const struct probe PROBES[] = {
     {"identity", "product code and serial number from the devicetree", probe_identity, any_app},
     {"devmem", "/dev/mem opens and maps as zeros", probe_devmem, any_app},
     {"devicetree", "panel rotation and board properties for the SoC", probe_devicetree, engine_or_rk3566},
+    {"drumcontent", "Core Drum Module content flag, for LDMF only", probe_drumcontent, rk3288},
     {"interrupts", "/proc/interrupts names six IRQs and takes affinity writes", probe_interrupts, engine},
     {"efuse", "RK3288 eFuse files, by stat, canonical path and read", probe_efuse, engine},
     {"battery", "full battery on AC for JP11, JP11S and NH10", probe_battery, engine},

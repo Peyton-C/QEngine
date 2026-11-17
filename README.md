@@ -103,7 +103,7 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | --- | --- | --- | --- | --- |
 | Akai MPC Sample | `AC50` | arm64, RK3566 | 1.3.0 | Host audio and virtual panel; factory library absent |
 | Alesis Prime Drum Module | `LDMD` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or full sample library |
-| Alesis Core Drum Module | `LDMF` | armv7, RK3288 | ? | Build refused, content partition missing |
+| Alesis Core Drum Module | `LDMF` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or factory samples |
 | HeadRush Prime | `HG06` | armv7, RK3288 | 5.2.0 | Touch; silent loopback audio |
 | HeadRush VX5 | `HV03` | arm64, RK3566 | 1.2.2, 1.3.1 | Host audio and virtual panel; input from a WAV file |
 | Sheeran Looper X | `HG08` | armv7, RK3288 | 1.0.2 | Four-track UI; factory content absent; silent loopback audio |

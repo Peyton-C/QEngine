@@ -610,6 +610,12 @@ static const struct dt_remap DT_REMAPS[] = {
     {"/sys/firmware/devicetree/base/mipi@ff960000/panel@0/rotation", NULL, DT_U32_ZERO, 4},
     {"/sys/firmware/devicetree/base/chosen/inmusic,internal-sd-fitted",
                                                           NULL, DT_U32_ZERO, 4},
+    /* The Core Drum Module's flag for its eMMC content partition. A boolean
+     * property, so presence is the value: the drum module builder writes the file
+     * for LDMF only, and on every other product the read fails with ENOENT exactly
+     * as it does on hardware without the property. */
+    {"/sys/firmware/devicetree/base/chosen/inmusic,emmc-drum-content",
+                                    "/root/fake-dt/chosen/inmusic,emmc-drum-content", NULL, 0},
 #else
 # error "define SOC_RK3288, SOC_RK3566 or SOC_RK3588 so dtshim knows which properties to serve"
 #endif

@@ -70,6 +70,25 @@ void probe_devicetree(void) {
                    check_rev, "A");
 }
 
+/* --- drum content ------------------------------------------------------------
+ * A boolean the Core Drum Module's app and units check for, so presence is the
+ * value: there for LDMF, and absent everywhere else, where an LDMD app reading it
+ * would take the Core's storage layout. Every RK3288 app gets the same dtshim. */
+void probe_drumcontent(void) {
+    const char *path = DT "chosen/inmusic,emmc-drum-content";
+    const char *name = "drumcontent.chosen/inmusic,emmc-drum-content";
+    if (cfg.code && strcmp(cfg.code, "LDMF") == 0) {
+        run_family(name, ACCESS_VARIANTS, path, NULL, NULL);
+        return;
+    }
+    int (*acc)(const char *, int) = entry("access");
+    if (acc && acc(path, F_OK) == 0)
+        t_fail(name, "present on %s, which has no eMMC drum content",
+               cfg.code ? cfg.code : "this product");
+    else
+        t_ok(name, "absent: %s", strerror(errno));
+}
+
 /* --- /dev/mem ---------------------------------------------------------------
  * The anti-clone check maps physical memory. It has to get a mapping, and zeros
  * from it: an empty stand-in file maps fine and then raises SIGBUS on the first

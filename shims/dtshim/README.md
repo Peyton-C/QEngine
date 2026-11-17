@@ -22,6 +22,8 @@ without it Engine starts fine but the screen stays black. See [Display and input
   RK3588 answers four panel node paths and RK3288 one; see the audit below for why that
   covers every device and why 0 rather than the real value.
 - `inmusic,az01-pcb-rev` (`B`) and `chosen/inmusic,internal-sd-fitted` — RK3288 only.
+- `chosen/inmusic,emmc-drum-content` — RK3288, from `/root/fake-dt`, which the drum module
+  builder writes for `LDMF` only; everywhere else the read fails as it does on hardware.
   No devicetree declares `pcb-rev` at all; it is u-boot-injected on `az01` boards, and
   `az04` has neither the pins nor the property. Again, see the audit.
 - `FALLBACK_INTERRUPTS` — see below.

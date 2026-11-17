@@ -93,7 +93,8 @@ Kernel modules need the running kernel's exact build and symbol versions, indepe
 | --- | --- | --- |
 | `engine` | `data_disk.img` | `/data` and `/factory`, for RK3588 Engine, Gen 2 MPC, MPC Sample and VX5 |
 | `mpc` | `emmc.img` | `az01-internal`, for RK3288 targets, including Engine |
-| `internal-sd` | `sdcard.img` | Extra internal SD storage for the Alesis drum module |
+| `internal-sd` | `sdcard.img` | Internal SD storage for the Prime Drum Module |
+| `drum-content` | `content.img` | eMMC content partition for the Core Drum Module |
 
 Disk-layout names describe platform conventions. Armv7 Engine uses the `mpc` layout. On RK3288, the writable disk also backs `/etc` and `/var` overlays; on RK3588, `/etc` lives on the rootfs. See [Storage](engine/STORAGE.md).
 

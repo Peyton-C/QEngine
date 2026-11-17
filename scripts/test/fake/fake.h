@@ -86,6 +86,7 @@ void probe_loader(void);
 void probe_surface(void);
 void probe_identity(void);
 void probe_devicetree(void);
+void probe_drumcontent(void);
 void probe_devmem(void);
 void probe_interrupts(void);
 void probe_efuse(void);

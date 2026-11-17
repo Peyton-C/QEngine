@@ -67,7 +67,7 @@ Edit `build/instances/<name>/instance.env` to keep launch settings between runs.
 | `MONTERO` | Recorded MONTERO build choice |
 | `ROOTFS_IMG` | Application rootfs image |
 | `DATA_IMG` | Writable data disk |
-| `SD_IMG` | Extra internal SD image, empty for families without one |
+| `SD_IMG` | Extra drum module disk, `sdcard.img` or `content.img`, empty for families without one |
 | `ROOT_UUID` | Recorded filesystem UUID; the launcher rereads it from the image |
 | `KERNEL_IMG`, `INITRD_IMG` | Shared kernel and initrd paths |
 | `DISPLAY_MODE` | Persistent display choice |
@@ -108,7 +108,7 @@ scripts/build_scripts/new_instance.sh --name rmz2-5.0.4 \
     --firmware /path/to/SYSTEMONE-5.0.4-Update.img --force
 ```
 
-QEngine keeps the recorded product-code and MONTERO choices unless you override them. It keeps `data_disk.img`, `emmc.img` and `sdcard.img`, so guest settings and writable overlays survive. Pass `--size` again if you need a non-default rootfs size.
+QEngine keeps the recorded product-code and MONTERO choices unless you override them. It keeps `data_disk.img`, `emmc.img`, `sdcard.img` and `content.img`, so guest settings and writable overlays survive. Pass `--size` again if you need a non-default rootfs size.
 
 Every creation run rewrites `instance.env`, even when it reuses a completed rootfs. Save custom ports, display settings and other overrides before running it, then reapply them. Without `--force`, changed firmware or build options do not replace an existing completed rootfs. Failed rootfs builds lack `.rootfs.complete` and are rebuilt on the next attempt.
 
@@ -118,7 +118,8 @@ Every creation run rewrites `instance.env`, even when it reuses a completed root
 | `build/instances/<name>/rootfs.img` | Built rootfs |
 | `build/instances/<name>/data_disk.img` | Data/factory disk on newer platforms |
 | `build/instances/<name>/emmc.img` | Single-partition data disk on RK3288 platforms |
-| `build/instances/<name>/sdcard.img` | Alesis drum module's internal SD |
+| `build/instances/<name>/sdcard.img` | Prime Drum Module's internal SD |
+| `build/instances/<name>/content.img` | Core Drum Module's content partition |
 | `build/instances/<name>/instance.env` | Instance configuration |
 | `build/instances/<name>/.rootfs.complete` | Successful rootfs-build marker |
 | `build/vmlinuz-generic-<arch>`, `build/initrd-generic-<arch>` | Kernel and initrd shared by architecture |

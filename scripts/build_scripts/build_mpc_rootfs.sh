@@ -348,14 +348,14 @@ fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
 IS_MPC=0
 case "$APP_UNIT" in acvs.service|inmusic-mpc.service) IS_MPC=1 ;; esac
-# LDMF keeps its kit content on an eMMC partition (content.mount, PARTUUID
-# 4054a70b-...) that no QEngine disk provides, so its overlay on /sdcard/bfd has no
-# lower layer and the app comes up without storage. Refused rather than built into
-# an instance that boots and looks fine until it is used.
-if [ "$APP_UNIT" = alesis-drummodule.service ] && [ "$PRODUCT_CODE" != LDMD ]; then
-    echo "ERROR: only LDMD builds as a drum module; $PRODUCT_CODE needs a content" >&2
-    echo "       partition QEngine does not provide yet." >&2
-    exit 1
+# The drum module image carries two products. LDMD keeps its content on an internal
+# SD card; LDMF on an eMMC partition, content.mount by PARTUUID, which a separate
+# drum-content disk supplies. Anything else in the image is unknown.
+if [ "$APP_UNIT" = alesis-drummodule.service ]; then
+    case "$PRODUCT_CODE" in LDMD|LDMF) ;; *)
+        echo "ERROR: drum module images carry LDMD and LDMF, not $PRODUCT_CODE." >&2
+        exit 1 ;;
+    esac
 fi
 echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
@@ -646,6 +646,15 @@ if [ "$APP_UNIT" = alesis-drummodule.service ]; then
     # The SD card's units are gated on chosen/inmusic,internal-sd-fitted, which
     # systemd tests itself, again without dtshim. An empty ConditionPathExists=
     # clears the list. media-az01-internal-sd.mount ships its own such drop-in.
+    # LDMF's content.mount, and the sdcard.mount and sdcard-bfd.mount its generators
+    # write, are gated on chosen/inmusic,emmc-drum-content instead. The app reads
+    # that flag too, through dtshim, so it is written as a file for LDMF only.
+    if [ "$PRODUCT_CODE" = LDMF ]; then
+        mkdir -p /mnt/rootfs/root/fake-dt/chosen
+        : > /mnt/rootfs/root/fake-dt/chosen/inmusic,emmc-drum-content
+        mkdir -p /mnt/rootfs/etc/systemd/system/content.mount.d
+        printf '[Unit]\nConditionPathExists=\n' > /mnt/rootfs/etc/systemd/system/content.mount.d/qengine.conf
+    fi
     _sd_dev='dev-disk-by\x2dpath-platform\x2dff0c0000.dwmmc\x2dpart1'
     for _unit in sdcard.mount sdcard-bfd.mount "$_sd_dev.device" \
                  "systemd-fsck@$_sd_dev.service"; do

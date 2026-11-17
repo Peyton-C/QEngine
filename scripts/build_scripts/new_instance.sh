@@ -440,6 +440,12 @@ else
     "$SCRIPT_DIR/make_disk.sh" --family "$DISK_LAYOUT" "$DATA_IMG"
 fi
 
+# The drum module row's extra disk is LDMD's SD card. LDMF has none and keeps its
+# content on an eMMC partition instead, which this disk stands in for.
+if [ "$DEVICE" = drummodule ] && [ "${PRODUCT_CODE:-}" = LDMF ]; then
+    EXTRA_DISK="drum-content:content.img"
+fi
+
 # Kept the same way as /data, since it holds what the guest writes.
 SD_IMG=""
 if [ "$EXTRA_DISK" != - ]; then

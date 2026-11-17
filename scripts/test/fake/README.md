@@ -43,6 +43,7 @@ Armv7 rootfs images run in a chroot on a 64-bit Pi 4 or Pi 5, and armv7 guests n
 | `identity` | Reads the product code and serial number, by open and by `access()` | `dtshim` |
 | `devmem` | Opens `/dev/mem`, maps it and reads zeros | `dtshim` |
 | `devicetree` | Reads panel rotation and the board properties for its SoC | `dtshim` |
+| `drumcontent` | Finds the Core Drum Module's content flag as `LDMF`, and no other RK3288 product does | `dtshim` |
 | `interrupts` | Finds six IRQs by name, then sets their affinity from a shell | `dtshim` |
 | `efuse` | Stats, canonicalises and reads the RK3288 eFuse files | `dtshim` |
 | `battery` | Reads a full battery on AC, on `JP11`, `JP11S` and `NH10` | `dtshim` |
@@ -51,7 +52,7 @@ Armv7 rootfs images run in a chroot on a 64-bit Pi 4 or Pi 5, and armv7 guests n
 | `midi` | Finds the surface, requires a card number, sends a Device Inquiry and takes a note | `alsashim`, `midisurface` |
 | `quit` | Gets `QCoreApplication::quit` on SIGTERM, and a splash client | `quitshim` |
 
-`loader`, `identity` and `devmem` run for every application, and `devicetree` also for the RK3566 ones, MPC Sample and HeadRush VX5. The rest run for Engine. `surface` prints, as comments, which of each shim's exports the real application imports.
+`loader`, `identity` and `devmem` run for every application, `devicetree` also for the RK3566 ones, MPC Sample and HeadRush VX5, and `drumcontent` for every RK3288 one. The rest run for Engine. `surface` prints, as comments, which of each shim's exports the real application imports.
 
 `drmatomic`, `cursorshim`, `qmlrotate`, MONTERO and the touch bridges are checked by `loader` only.
 

@@ -361,6 +361,7 @@ echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+hide_internal_disks /mnt/rootfs
 
 echo "--- inserting shims into /root ---"
 cp -a /shims/dtshim/dtshim_$SHIM_ARCH.so /mnt/rootfs/root/dtshim.so

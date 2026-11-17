@@ -276,6 +276,7 @@ fi
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+hide_internal_disks /mnt/rootfs
 skip_firmware_update /mnt/rootfs
 
 install_virgl_mesa "$MESA_LAYOUT" "$MESA_VERSION" /mnt/rootfs /stage

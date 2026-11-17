@@ -430,6 +430,7 @@ echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+hide_internal_disks /mnt/rootfs
 if [ "$LEGACY_ENGINE" = 1 ]; then
     # -skipFirmwareUpdate does not exist in 1.x. Do not inject it into the old
     # launchers or install contemporary ALSA/MIDI/EGLFS preloads into this libc.

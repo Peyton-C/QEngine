@@ -106,7 +106,7 @@ for name in "$@"; do
             cp "/built/$shim.so" "/root/$shim.so"
             list="$list${list:+:}/root/$shim.so"
         done
-        echo "# stand-in: $(ldd --version | head -n 1), $(uname -m)"
+        echo "# stand-in: $(ldd --version | head -n 1), $(dpkg --print-architecture 2>/dev/null || uname -m)"
         LD_PRELOAD="$list" /run/qengine-fake/Engine --app "$DEVICE" --soc "$SOC" \
             --code "$CODE" --probes "$PROBES"
     ' > "$results/$name.tap" 2> "$results/$name.log" || true

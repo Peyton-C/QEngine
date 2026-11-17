@@ -31,21 +31,23 @@ if [ -f "$out/.built" ] &&
 fi
 
 build() {
-    local platform=$1 machine=$2
-    echo "--- building shims from the working tree for $platform ---" >/dev/tty 2>/dev/null || true
+    local platform=$1 want=$2
+    { echo "--- building shims from the working tree for $platform ---" >/dev/tty; } 2>/dev/null || true
     docker pull -q --platform "$platform" debian:bookworm >/dev/null
-    docker run --rm --platform "$platform" -e MACHINE="$machine" \
+    docker run --rm --platform "$platform" -e WANT="$want" \
         -v "$ROOT/shims:/shims:ro" -v "$libs:/guestlib:ro" -v "$out:/out" \
         debian:bookworm bash -c '
         set -e
-        uname -m | grep -qxE "$MACHINE" || {
-            echo "ERROR: shim container is $(uname -m), expected $MACHINE." >&2; exit 1; }
+        # Not uname -m: an armhf container on an arm64 kernel runs natively,
+        # as on the arm64 CI runners, and reports aarch64 there.
+        arch=$(dpkg --print-architecture)
+        [ "$arch" = "$WANT" ] || {
+            echo "ERROR: shim container is $arch, expected $WANT." >&2; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
         apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
 
-        if [ "$(uname -m)" = aarch64 ]; then arch=arm64; socs="RK3588 RK3566"
-        else arch=armhf; socs=RK3288; fi
+        if [ $arch = arm64 ]; then socs="RK3588 RK3566"; else socs=RK3288; fi
         for soc in $socs; do
             o=/out/$arch-$(echo $soc | tr A-Z a-z); mkdir -p $o
             gcc -shared -fPIC -O2 -Wall -o $o/dtshim.so /shims/dtshim/dtshim.c -DSOC_$soc -ldl -lpthread
@@ -89,8 +91,8 @@ build() {
 }
 # The builders' -Wall output is long and the same every time, so it is kept in
 # a log and shown only when a build fails.
-for target in 'linux/arm64 aarch64' 'linux/arm/v7 armv7l|armv8l|armhf'; do
-    # shellcheck disable=SC2086  # two words: the platform and the machine pattern
+for target in 'linux/arm64 arm64' 'linux/arm/v7 armhf'; do
+    # shellcheck disable=SC2086  # two words: the platform and the Debian architecture
     build $target > "$out/build.log" 2>&1 || { cat "$out/build.log" >&2; exit 1; }
 done
 touch "$out/.built"

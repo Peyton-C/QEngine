@@ -61,6 +61,9 @@
 #   ALSASHIM_CAPTURE_PCM  PCM Engine records from in place of the card's
 #                 input. Default: none, or null for JP21, whose Engine
 #                 segfaults starting audio without an input.
+#   ALSASHIM_LAYER_MIX  1 adds Layer B (channels 3/4) into the master pair on
+#                 a stereo card. Default 1 for JP07, JP08, JP13 and JP14, 0 to
+#                 hear Layer A alone.
 #   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, QT_SCALE_FACTOR, ALSASHIM_*, MONTERO_*   passed through.
 set -uo pipefail
 
@@ -260,6 +263,11 @@ ENVV=("${BASE[@]}"
 # SC LIVE 4 segfaults starting audio without an input, which NO_CAPTURE above
 # takes away; null stands in for it. See build_armv7_engine_rootfs.sh.
 [ "$PRODUCT" = JP21 ] && ENVV+=("ALSASHIM_CAPTURE_PCM=${ALSASHIM_CAPTURE_PCM:-null}")
+# The SC players put Layer B on 3/4. alsashim adds it into 1/2 on a stereo card,
+# and leaves it alone on a 4-channel card or when CUE_CARD plays 3/4.
+case "$PRODUCT" in
+    JP07|JP08|JP13|JP14) ENVV+=("ALSASHIM_LAYER_MIX=${ALSASHIM_LAYER_MIX:-1}") ;;
+esac
 [ -n "${CURSORSHIM_DEBUG:-}" ] && ENVV+=("CURSORSHIM_DEBUG=1")
 [ -n "${MONTERO_DUMP:-}" ] && ENVV+=("MONTERO_DUMP=1")
 [ -n "${MONTERO_EXTRACT:-}" ] && ENVV+=("MONTERO_EXTRACT=$MONTERO_EXTRACT")

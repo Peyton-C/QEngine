@@ -921,6 +921,12 @@ EOF
     if [ "$PRODUCT_CODE" = JP21 ]; then
         echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
     fi
+    # The SC players give Layer B its own output pair, channels 3/4, which the
+    # stereo card above drops: measured silent on SC6000 5.0.4 and 5.3.0. The
+    # shim adds it into 1/2 so both layers are heard.
+    case "$PRODUCT_CODE" in
+        JP07|JP08|JP13|JP14) echo 'Environment=ALSASHIM_LAYER_MIX=1' >> "$OVERRIDE" ;;
+    esac
 fi
 
 fi # modern rootfs installation

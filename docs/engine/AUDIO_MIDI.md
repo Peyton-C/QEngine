@@ -29,6 +29,7 @@ Use the instance launcher so the sound device and preload configuration stay tog
 | `ALSASHIM_NO_CAPTURE` | Hides capture devices |
 | `ALSASHIM_CAPTURE_PCM` | Records from this PCM when the card has no capture or it is hidden; SC LIVE 4 builds use `null` |
 | `ALSASHIM_MAX_CHANNELS` | Limits advertised channels; the legacy SC/Prime GO configuration uses 4 |
+| `ALSASHIM_LAYER_MIX` | Adds channels 3/4 into 1/2 on a card with fewer than four channels, unless a cue card is set; SC5000, SC5000M, SC6000 and SC6000M builds use it, since their Layer B plays on 3/4 |
 | `ALSASHIM_METER` | Logs per-channel levels |
 
 QEngine scales the buffer, period count and playback start/stop thresholds together. Raising buffer size alone can leave the stream underrunning. These settings adapt the output device; they do not supply hardware mixer inputs or motorized-platter timecode.

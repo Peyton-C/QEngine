@@ -182,7 +182,23 @@
  * glitch in the headphones every several minutes. The second output runs
  * about 30-80ms behind the first.
  *
- * 6. AN INPUT FROM A FILE (optional)
+ * 6. TWO LAYERS ON ONE PAIR (optional)
+ *
+ * The SC5000, SC5000M, SC6000 and SC6000M are one deck with two layers, and
+ * the hardware gives each layer its own RCA pair: Layer A on channels 1/2 and
+ * Layer B on 3/4, for a DJ mixer to bring together. On a stereo card the plug
+ * layer keeps only the first pair, so Layer B plays into nothing -- measured on
+ * SC6000 (JP13) 5.0.4 and 5.3.0 with ALSASHIM_METER, Layer B alone reading
+ * 0 on 1/2 and full on 3/4. This is what PR 13 (erhan-) first pointed out.
+ *
+ * With ALSASHIM_LAYER_MIX set, every snd_pcm_writei() to Engine's device has
+ * channels 3/4 added into 1/2, clipped, before it goes to the card. Engine's
+ * own buffer is left alone -- the sum is made in a copy -- so the meter and the
+ * second output still see each layer on its own pair. It stands down by itself
+ * where the layers can be heard apart: when the card has four channels or more,
+ * and when ALSASHIM_CUE_PCM already plays 3/4 on a second card.
+ *
+ * 7. AN INPUT FROM A FILE (optional)
  *
  * QEMU on macOS can play but not record: its coreaudio backend has no input,
  * and it is built without SDL audio. An app that processes what it hears, as
@@ -240,6 +256,10 @@
  *                   unset for none
  *   ALSASHIM_CUE_CHANNEL  first channel of that pair in Engine's frame, counting
  *                   from 1 (default 3)
+ *   ALSASHIM_LAYER_MIX  non-empty (and not "0") to add channels 3/4 into 1/2
+ *                   on a card with fewer than four channels, unless
+ *                   ALSASHIM_CUE_PCM is set: both layers of an SC player on one
+ *                   stereo output
  *   ALSASHIM_MAIN_PCM  one more PCM name to treat as the app's own device, as a
  *                   hw: name is, for the cue, the input and the meter. MPC 2.7.0
  *                   plays to "default" rather than to a hw: name.
@@ -860,18 +880,75 @@ static void meter(const void *buf, int format, unsigned int channels, long frame
     seen = 0;
 }
 
+static int layer_mix_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("ALSASHIM_LAYER_MIX");
+        on = v && *v && strcmp(v, "0") != 0;
+    }
+    return on;
+}
+
+/* A copy of buf with channels 3/4 added into 1/2, for ALSASHIM_LAYER_MIX, or
+ * buf itself where the mix does not apply or the copy cannot be made. The copy
+ * is kept per thread and only grows, so after Engine's first write the audio
+ * thread allocates nothing. */
+static const void *layer_mix(const void *buf, int format, unsigned int channels,
+                             snd_pcm_uframes_t frames) {
+    static __thread void *mixed;
+    static __thread size_t cap;
+    unsigned int real = g_real_ch_max[ALSASHIM_STREAM_PLAYBACK];
+    if (!layer_mix_on() || cue_pcm_name() || channels < 4 || real == 0 || real >= 4)
+        return buf;
+    size_t bytes = format == ALSASHIM_FORMAT_S16_LE ? 2 : 4;
+    size_t len = (size_t)frames * channels * bytes;
+    if (len > cap) {
+        void *grown = realloc(mixed, len);
+        if (!grown) return buf;
+        mixed = grown;
+        cap = len;
+    }
+    memcpy(mixed, buf, len);
+    for (snd_pcm_uframes_t f = 0; f < frames; f++)
+        for (unsigned int c = 0; c < 2; c++) {
+            size_t to = (size_t)f * channels + c, from = to + 2;
+            switch (format) {
+            case ALSASHIM_FORMAT_S16_LE: {
+                int16_t *s = mixed;
+                int32_t v = (int32_t)s[to] + s[from];
+                s[to] = (int16_t)(v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : v);
+                break;
+            }
+            case ALSASHIM_FORMAT_S32_LE: {
+                int32_t *s = mixed;
+                int64_t v = (int64_t)s[to] + s[from];
+                s[to] = (int32_t)(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v);
+                break;
+            }
+            case ALSASHIM_FORMAT_FLOAT_LE: {
+                float *s = mixed;
+                float v = s[to] + s[from];
+                s[to] = v > 1.0f ? 1.0f : v < -1.0f ? -1.0f : v;
+                break;
+            }
+            }
+        }
+    return mixed;
+}
+
 /* The only call Engine writes audio with. */
 long snd_pcm_writei(snd_pcm_t *pcm, const void *buf, snd_pcm_uframes_t frames) {
     RESOLVE(real_writei, "snd_pcm_writei");
     if (!real_writei) return -ENOSYS;
-    long done = real_writei(pcm, buf, frames);
-    if (done <= 0 || pcm != atomic_load(&g_main_pcm)) return done;
-
+    int is_main = pcm == atomic_load(&g_main_pcm);
     int format = atomic_load(&g_fmt_format);
     unsigned int channels = atomic_load(&g_fmt_channels);
-    if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
-        format != ALSASHIM_FORMAT_FLOAT_LE)
-        return done;
+    int known = format == ALSASHIM_FORMAT_S16_LE || format == ALSASHIM_FORMAT_S32_LE ||
+                format == ALSASHIM_FORMAT_FLOAT_LE;
+    long done = real_writei(pcm, is_main && known
+                                     ? layer_mix(buf, format, channels, frames) : buf,
+                            frames);
+    if (done <= 0 || !is_main || !known) return done;
     if (meter_on()) meter(buf, format, channels, done);
 
     unsigned int first = cue_channel();

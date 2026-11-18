@@ -76,7 +76,7 @@ build() {
                 gcc -shared -nostdlib -Wl,-z,defs -o $o/dtshim.so /tmp/dtshim.o /tmp/compat.o -lgcc \
                     $G/libc.so $G/libdl.so $G/libpthread.so $G/ld.so
                 gcc -shared -nostdlib -Wl,-z,defs -o $o/alsashim.so /tmp/alsashim.o \
-                    $G/libc.so $G/libdl.so $G/libpthread.so $rt -lgcc
+                    $G/libc.so $G/libdl.so $G/libpthread.so $rt $G/ld.so -lgcc
             else
                 gcc -fPIC -O2 -Wall -c /shims/mpcsurface/mpcsurface.c -o /tmp/mpcsurface.o
                 gcc -fPIC -O2 -Wall -c /shims/mpcsurface/legacy_compat.c -o /tmp/mpcsurface_compat.o

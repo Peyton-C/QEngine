@@ -101,7 +101,7 @@ docker run --rm --platform linux/arm/v7 \
         gcc -shared -nostdlib -Wl,-z,defs -o /stage/legacy/alsashim.so \
             /stage/legacy/alsashim.o /stage/legacy/lib/libc.so \
             /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so \
-            /stage/legacy/lib/librt.so -lgcc
+            /stage/legacy/lib/librt.so /stage/legacy/lib/ld.so -lgcc
     fi
     '
 

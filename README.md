@@ -122,6 +122,7 @@ Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](script
 | [Build](docs/BUILDING.md) | Requirements, firmware extraction, toolchains, disks and kernels |
 | [Instances](scripts/build_scripts/INSTANCES.md) | Instance settings, ports and launch options |
 | [Engine OS](docs/engine/README.md) | Modern, classic and legacy runtimes; shared internals |
+| [Firmware versions](docs/engine/FIRMWARE_VERSIONS.md) | Every Engine OS release, the devices it shipped for and when QEngine last booted it |
 | [arm64 Engine](scripts/build_scripts/BUILD_ARM64.md) / [armv7 Engine](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) | Target build instructions |
 | [MPC](scripts/build_scripts/BUILD_MPC.md) / [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md) / [Alesis](scripts/build_scripts/BUILD_ALESIS.md) / [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) | Other target instructions |
 | [Raspberry Pi](scripts/pi/README.md) / [FLX10](scripts/pi/flx10/README.md) | Chroot setup and controller integration |

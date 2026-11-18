@@ -58,6 +58,9 @@
 #                 manifest for it and for this product. Default: none.
 #   MIDI_FORWARD_ARGS  extra midisurface options that mapping calls for; its
 #                 header lists them.
+#   ALSASHIM_CAPTURE_PCM  PCM Engine records from in place of the card's
+#                 input. Default: none, or null for JP21, whose Engine
+#                 segfaults starting audio without an input.
 #   TB_ARGS, SHIMS_EXTRA, QT_LOGGING_RULES, QT_SCALE_FACTOR, ALSASHIM_*, MONTERO_*   passed through.
 set -uo pipefail
 

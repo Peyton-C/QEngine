@@ -48,8 +48,8 @@ QEngine supplies a full battery on AC for `JP11`, `JP11S` and `NH10`. `dtshim` r
 
 | Device | Product code | Native UI boot |
 | --- | --- | --- |
-| Prime GO | `JP11` | 4.3.0, 5.0.4, 5.3.0, armv7 |
+| Prime GO | `JP11` | 1.5.1-2.0.0, 4.3.0, 5.0.4, 5.3.0, armv7 |
 | Prime GO+ | `JP11S` | 5.3.0, armv7 |
 | Mixstream Pro GO | `NH10` | 5.3.0, armv7 |
 
-Older releases have not been booted with the fake battery. The earlier Prime GO boots marked `!` used `JC11`; 1.5.2 still quit on its battery check with that identity. Audio and the full control map remain unverified on these three native identities.
+Other older releases have not been booted with the fake battery. Audio and the full control map remain unverified on these three native identities.

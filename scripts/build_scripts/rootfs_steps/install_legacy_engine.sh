@@ -77,8 +77,10 @@ EOF
 Environment=ALSASHIM_AS=Loopback
 Environment=ALSASHIM_MAX_CHANNELS=4
 Environment=ALSASHIM_NO_CAPTURE=1
-# Engine 1.5.2 corrupts its heap with the modern shim's enlarged buffers.
-Environment=ALSASHIM_BUFFER_SCALE=1
+# 1.5.1, 1.5.2 and 1.6.0 beta 2 ask for a 512-frame ring, and at the shim's
+# scale 1 the audio threads Engine waits on before drawing never start (KVM
+# and TCG alike). Scale 8 corrupted 1.5.2's heap; 4 boots every 1.x tried.
+Environment=ALSASHIM_BUFFER_SCALE=4
 EOF
     else
         rm -f "$rootfs/etc/systemd/system/$unit.service.d/legacy-alsa.conf"

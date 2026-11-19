@@ -16,7 +16,7 @@ The name to report is the one the product's own audio driver registers. On RK358
 
 Each update image carries only its own family's devicetrees, so a product built from another family's image, SC5000M from the SC6000 image for instance, has none to read. `detect_audio_card.sh` then takes the name from its own table of the exceptions above, and warns at build time if a devicetree it can read disagrees with that table. Pass `new_instance.sh --audio-card-name NAME` to set the name yourself; the instance keeps it across `--force` until its product code changes.
 
-QEngine gives both architectures QEMU's HDA card when the guest kernel has its driver, as Ubuntu's does, with `use-timer=false` so the card moves samples when the host asks for them. With QEMU's own timer, 96 kHz products such as the SC6000 lose a few samples several times a second. The card also has no emulated mixer, because Linux brings the codec's output amp up muted and Engine OS has nothing to raise it, and PipeWire, the default on Linux hosts, would carry that mute to the host. WirePlumber remembers it, so on a host that ran an instance before the mixer was removed, unmute QEMU's stream once with `wpctl`. PipeWire runs with a 20 ms audio timer; at QEMU's default 10 ms its stream clicks about 20 times a minute. Debian's armv7 kernel has no HDA driver, so on it QEngine falls back to virtio-sound, which stops for good once Engine falls behind and never starts with a ring under about 30 ms. Legacy Engine stays on virtio-sound on either kernel: Prime 4 and Prime 2 1.x open the card without `alsashim` and need a 32-bit format, which HDA does not offer, so on it Engine exits before drawing.
+QEngine gives both architectures QEMU's HDA card when the guest kernel has its driver, as Ubuntu's does, with `use-timer=false` so the card moves samples when the host asks for them. With QEMU's own timer, 96 kHz products such as the SC6000 lose a few samples several times a second. The card also has no emulated mixer, because Linux brings the codec's output amp up muted and Engine OS has nothing to raise it, and PipeWire, the default on Linux hosts, would carry that mute to the host. WirePlumber remembers it, so on a host that ran an instance before the mixer was removed, unmute QEMU's stream once with `wpctl`. PipeWire runs with a 20 ms audio timer; at QEMU's default 10 ms its stream clicks about 20 times a minute. Debian's armv7 kernel has no HDA driver, so on it QEngine falls back to virtio-sound, which stops for good once Engine falls behind and never starts with a ring under about 30 ms. Legacy Engine stays on virtio-sound on either kernel: Prime 4 and Prime 2 up to 1.4.1 open the card without `alsashim` and need a 32-bit format, which HDA does not offer, so on it Engine exits before drawing.
 
 Use the instance launcher so the sound device and preload configuration stay together. A capture PCM can take Engine's default-device slot and leave playback unused; adding `hda-duplex` is not a way to add working inputs.
 
@@ -24,11 +24,11 @@ Use the instance launcher so the sound device and preload configuration stay tog
 | --- | --- |
 | `ALSASHIM_AS` | Overrides the reported card name |
 | `ALSASHIM_CARD` | Limits that override to one card index; Engine builds use 0, QEMU's card, so a USB interface keeps its own name |
-| `ALSASHIM_BUFFER_SCALE` | Scales ring depth; default 8, which armv7 Engine builds also set, while the Pi and guest-linked legacy configuration use 1 |
+| `ALSASHIM_BUFFER_SCALE` | Scales ring depth; default 8, which armv7 Engine builds also set, while the Pi uses 1 and the guest-linked legacy configuration 4 |
 | `ALSASHIM_XRUN_FREE_RUN` | Keeps playback running through an underrun instead of stopping it, which Engine never recovers from; off by default |
 | `ALSASHIM_NO_CAPTURE` | Hides capture devices |
 | `ALSASHIM_CAPTURE_PCM` | Records from this PCM when the card has no capture or it is hidden; SC LIVE 4 builds use `null` |
-| `ALSASHIM_MAX_CHANNELS` | Limits advertised channels; the legacy SC/Prime GO configuration uses 4 |
+| `ALSASHIM_MAX_CHANNELS` | Limits advertised channels; the legacy configuration uses 4 |
 | `ALSASHIM_LAYER_MIX` | Adds channels 3/4 into 1/2 on a card with fewer than four channels, unless a cue card is set; SC5000, SC5000M, SC6000 and SC6000M builds use it, since their Layer B plays on 3/4 |
 | `ALSASHIM_METER` | Logs per-channel levels |
 

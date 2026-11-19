@@ -30,20 +30,19 @@ Connect your VNC viewer to the `Engine VNC` address printed by `run_instance.sh`
 | SC5000 1.2.0 | JP07 | `/usr/JP07/JP07` | Landscape UI and touch taps |
 | SC5000 1.2.2 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
 | SC5000 1.3.1 | JP07 | `/usr/Engine/JP07` | Landscape UI and touch taps |
-| SC5000 1.4.1 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
-| SC5000 1.5.2, 1.6.0, 1.6.2 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
-| SC5000M 1.3.1, 1.4.1, 1.5.2, 1.6.0 | JP08 | `/usr/Engine/JP08` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
-| SC6000 1.5.2, 1.5.3, 1.6.2 | JP13 | `/usr/Engine/JP13` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.6.2 boot stalled before the UI appeared |
-| SC6000M 1.5.2, 1.6.0 | JP14 | `/usr/Engine/JP14` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.5.2 boot stalled before the UI appeared |
-| Prime 2 1.5.2, 1.6.2 | JC16 | `/usr/Engine/JC16` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| SC5000 1.4.0, 1.4.1 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| SC5000 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JP07 | `/usr/Engine/JP07` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot |
+| SC5000M 1.3.1, 1.3.2, 1.4.0, 1.4.1, 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JP08 | `/usr/Engine/JP08` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.6.1 boot stalled before the UI appeared |
+| SC6000 1.5.1, 1.5.2, 1.5.3, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JP13 | `/usr/Engine/JP13` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.6.2 boot stalled before the UI appeared |
+| SC6000M 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JP14 | `/usr/Engine/JP14` | Landscape UI; startup notice dismissed and Source closed with single taps after cold boot; one 1.5.2 boot stalled before the UI appeared |
+| Prime 2 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JC16 | `/usr/Engine/JC16` | Landscape UI; startup notice dismissed and Source closed with single taps |
 | Mixstream Pro 2.0.1, 2.1.0-2.1.2, 2.2.0-2.2.2, 2.3.0-2.3.2 | NH08 | `/usr/Engine/NH08` | Landscape UI with demo library; update notice dismissed with single taps after cold boot |
-| Prime GO 1.5.2 | JC11 | `/usr/Engine/JP11` | Renders the startup notice, then quits on its battery check about 10 seconds later |
-| Prime GO 1.6.2 | JC11 | `/usr/Engine/JP11` | Landscape UI as Prime 4; startup notice dismissed and Source closed with single taps |
+| Prime GO 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JP11 | `/usr/Engine/JP11` | Prime GO layout on a full battery; startup notice dismissed and Source closed with single taps |
 | Prime 4 1.3.2, 1.3.3 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup-notice touch verified, source browser stays open |
 | Prime 4 1.4.1 | JC11 | `/usr/Engine/JC11` | Landscape UI; settings touch navigation worked once, but the shortcut did not reopen settings after a cold boot |
-| Prime 4 1.5.2, 1.6.0, 1.6.2 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup notice dismissed and Source closed with single taps |
+| Prime 4 1.4.0, 1.5.1, 1.5.2, 1.6.0, 1.6.1, 1.6.2, 2.0.0 | JC11 | `/usr/Engine/JC11` | Landscape UI; startup notice dismissed and Source closed with single taps |
 
-Pass the product code the application is named after, such as `JP08` for SC5000M or `JC16` for Prime 2. Build Prime GO as `JC11`: as `JP11`, Engine shows a blank screen and quits on its battery check about 20 seconds after starting. Prime GO 1.5.2 runs its own binary, which keeps the check even as `JC11`, so it does not stay up. Its Qt 5.9 runtime needs a 270-degree correction; Qt 5.12 already renders in landscape on both products. Earlier SC5000 firmware needs the 90-degree correction.
+Pass the product code the application is named after, such as `JP08` for SC5000M or `JC16` for Prime 2. From 1.6.0 every device runs the same `Engine` binary and takes its identity from the devicetree, so any image of 1.6.0 or later builds as any of these codes. Build Prime GO as `JP11`; the fake battery keeps it up. Prime 4 1.3.x's Qt 5.9 runtime needs a 270-degree correction, and Qt 5.12 already renders in landscape. Earlier SC5000 firmware needs the 90-degree correction.
 
 Firmware 1.5.2 and later omit Qt development headers. Extract the headers from an SC5000 1.4.1 instance, then set `LEGACY_QT_HEADERS` when building either version. QEngine checks the Qt minor version and links against the target firmware's libraries.
 
@@ -57,7 +56,7 @@ LEGACY_QT_HEADERS="$PWD/build/qt512-headers/include" \
 
 On macOS, use `/opt/homebrew/opt/e2fsprogs/sbin/debugfs` if `debugfs` is outside your `PATH`.
 
-QEngine builds `alsashim` against the guest libraries for the Qt 5.12.6 runtime of the SC media players and Prime GO, `JP07`, `JP08`, `JP11`, `JP13` and `JP14`. Prime 2 and Prime 4 start without it. It converts PCM formats and rates, exposes four playback channels, hides loopback capture and keeps Engine's original buffer sizes. This configuration is automatic; `QEMU_AUDIO=off` is not required.
+QEngine builds `alsashim` against the guest libraries for every product on the Qt 5.12.6 runtime, 1.5.1 to 2.0.0. It converts PCM formats and rates, exposes four playback channels, hides loopback capture and runs at buffer scale 4. At Engine's own 512-frame ring the 1.5.x builds, Prime 2 and Prime 4 included, never start their audio threads and stop before drawing. This configuration is automatic; `QEMU_AUDIO=off` is not required.
 
 | Legacy `instance.env` setting | Default |
 | --- | --- |

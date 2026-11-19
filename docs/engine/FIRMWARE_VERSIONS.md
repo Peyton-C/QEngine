@@ -38,37 +38,41 @@ Each update image carries one family. Engine 1.6.0+ use a single binary for unsi
 ## 1.x
 | Version | Release date | JP07 | JP08 | JP11 | JC11 | JC16 | JP13 | JP14 | Last tested |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1.0.0 | By Jun 2017  | F | - | - | - | - | - | - | - |
-| 1.0.1 | Unknown      | Y | - | - | - | - | - | - | 2026-11-09 |
-| 1.0.2 | 2017-09-28   | Y | - | - | - | - | - | - | 2026-11-09 |
-| 1.0.3 | 2017-11-02   | Y | - | - | - | - | - | - | 2026-11-09 |
-| 1.2.0 | 2018-06-18   | Y | ! | - | - | - | - | - | 2026-11-09 |
-| 1.2.1 | 2018-09-12   | ! | ! | - | - | - | - | - | - |
-| 1.2.2 | 2018-09-14   | Y | ? | - | - | - | - | - | 2026-11-09 |
-| 1.3.1 | May 2019     | Y | Y | - | F | - | - | - | 2026-11-10 |
-| 1.3.2 | Jun–Jul 2019 | - | ? | - | Y | - | - | - | 2026-11-10 |
-| 1.3.3 | 2019-10-30   | - | - | - | Y | - | - | - | 2026-11-09 |
-| 1.4.0 | 2019-12-17   | ? | ? | - | ? | - | - | - | - |
-| 1.4.1 | By Feb 2020  | Y | Y | F | Y | F | - | - | 2026-11-10 |
-| 1.5.0 | By Aug 2020  | - | - | F | - | - | - | - | - |
-| 1.5.1 | 2020-08-03   | ? | ? | ? | ? | ? | ? | ? | - |
-| 1.5.2 | Aug 2020     | Y | Y | N | Y | Y | Y | Y | 2026-11-10 |
-| 1.5.3 | By Sep 2020  | - | - | - | - | - | Y | - | 2026-11-10 |
-| 1.5.4 | By Feb 2021  | ! | ! | - | F | - | ! | - | - |
-| 1.6.0 | 2021-02-23   | Y | Y | ? | Y | ? | ? | Y | 2026-11-10 |
-| 1.6.1 | 2021-04-13   | ? | ? | ? | ? | ? | ? | ? | - |
-| 1.6.2 | 2021-06-08   | Y | ? | N | Y | Y | Y | ? | 2026-11-15 |
+| 1.0.0        | By Jun 2017  | F | - | - | - | - | - | - | - |
+| 1.0.1        | Unknown      | Y | - | - | - | - | - | - | 2026-11-09 |
+| 1.0.2        | 2017-09-28   | Y | - | - | - | - | - | - | 2026-11-09 |
+| 1.0.3        | 2017-11-02   | Y | - | - | - | - | - | - | 2026-11-09 |
+| 1.2.0        | 2018-06-18   | Y | ! | - | - | - | - | - | 2026-11-09 |
+| 1.2.1        | 2018-09-12   | ! | ! | - | - | - | - | - | - |
+| 1.2.2        | 2018-09-14   | Y | ? | - | - | - | - | - | 2026-11-09 |
+| 1.3.1        | May 2019     | Y | Y | - | F | - | - | - | 2026-11-10 |
+| 1.3.2        | Jun–Jul 2019 | - | Y | - | Y | - | - | - | 2026-11-18 |
+| 1.3.3        | 2019-10-30   | - | - | - | Y | - | - | - | 2026-11-09 |
+| 1.4.0 Beta 1 | Sept 2019    | - | - | - | N | - | - | - | 2026-11-18 |
+| 1.4.0 Beta 2 | Oct 2019     | ! | ! | - | ! | - | - | - | 2026-11-18 |
+| 1.4.0        | 2019-12-17   | Y | Y | - | Y | - | - | - | 2026-11-18 |
+| 1.4.1        | By Feb 2020  | Y | Y | F | Y | F | - | - | 2026-11-10 |
+| 1.5.0        | By Aug 2020  | - | - | F | - | - | - | - | - |
+| 1.5.1        | 2020-08-03   | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
+| 1.5.2        | Aug 2020     | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
+| 1.5.3        | By Sep 2020  | - | - | - | - | - | Y | - | 2026-11-10 |
+| 1.5.4        | By Feb 2021  | ! | ! | - | F | - | ! | - | - |
+| 1.6.0 Beta 2 | Sept 2020     | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
+| 1.6.0        | 2021-02-23   | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
+| 1.6.1        | 2021-04-13   | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
+| 1.6.2        | 2021-06-08   | Y | Y | Y | Y | Y | Y | Y | 2026-11-18 |
 
-Prime GO 1.5.2 quits on its battery check, even built as `JC11`.
-Prime GO 1.6.2 stays up only when built as `JC11`; as `JP11` it was tried before the fake battery.
+Most 1.6.x cells were booted from the SC5000 image built as each product code, since every device runs the same binary.
 1.2.1 was briefly public and pulled. Contemporary coverage lists both models but the M-specific package is unverified.
 1.2.0 on SC5000M is owner-reported. The package and distribution are unresolved.
 1.5.4 is confirmed for PRIME 4. Denon mentioned possible SC5000/M shipments, and a separate SC6000 owner was unsure of the version.
+1.4.0 and 1.6.0 are public betas.
+Prime 4 1.4.0 Beta 1 still runs the Qt 5.9 of 1.3.x. It boots upright and identifies as Prime 4, but its startup peripherals notice takes no touch, so the UI behind it cannot be reached.
 
 ## 2.x
 | Version | Release date | JP07 | JP08 | JP11 | JC11 | JC16 | NH08 | JP13 | JP14 | JP20 | JP21 | NH08S | Last tested |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2.0.0 | 2021-10-06 | ? | ? | ? | ? | ? | - | ? | ? | - | - | - | - |
+| 2.0.0 | 2021-10-06 | Y | Y | Y | Y | Y | - | Y | Y | - | - | - | 2026-11-18 |
 | 2.0.1 | 2021-10-22 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
 | 2.0.2 | 2021-11-10 | ? | ? | ? | ? | ? | ? | ? | ? | - | - | - | - |
 | 2.1.0 | 2021-12-16 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
@@ -83,6 +87,7 @@ Prime GO 1.6.2 stays up only when built as `JC11`; as `JP11` it was tried before
 | 2.3.3 | 2022-11-04 | - | - | - | - | - | - | - | - | Y | ? | - | 2026-11-11 |
 | 2.4.0 | 2022-12-13 | ? | ? | ? | Y | ? | ? | ? | ? | ? | ? | ? | 2026-11-08 |
 
+2.0.0 was booted from the SC5000 image built as each product code, and Prime GO's also from its own.
 Mixstream Pro 2.0.1 was reported at first boot and also had a public updater.
 
 ## 3.x

@@ -10,6 +10,7 @@ Every Engine OS release, the devices it shipped for, whether QEngine boots it on
 | `!` | Not tried, no build available |
 | `F` | Factory build, preinstalled only and not tried |
 | `-` | Not released for that device |
+| `U` | Not released for that device but Engine can boot using other images. |
 
 A build counts as available when QEngine has that device's image or a known download for it, or, from 1.6.0, either of those for any device of the same signing at that version, since from 1.6.0 inMusic ships one Engine binary per architecture and signing.
 

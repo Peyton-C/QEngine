@@ -37,12 +37,12 @@ done
 # hardware-rate requests need the normal ALSA shim, linked to this guest's
 # older libc rather than the modern builder's ABI; without it 1.6.x aborts on
 # snd_pcm_state and Prime GO 1.5.2 on a double free. Prime 2 and Prime 4 (JC)
-# start without it on 1.5.2 and on the 1.6.x binary every product shares.
-# Prime GO 1.6.x is built as JC11 but still ships a JP11 symlink, and starts
-# with the shim as well.
+# get it too: on their own 1.5.1 binaries and on 1.6.0 beta 2 they open the
+# Loopback card with a 512-frame ring, and the audio threads Engine waits for
+# before drawing never start without the shim's larger buffers.
 LEGACY_ALSA=0
 if "$DEBUGFS" -R 'ls /usr/Engine' "$IMG" 2>/dev/null |
-        tr -s ' ' '\n' | grep -Eq '^JP(07|08|11|13|14)$' &&
+        tr -s ' ' '\n' | grep -Eq '^(JP(07|08|11|13|14)|JC1[16])$' &&
         "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.12.6' "$IMG" 2>/dev/null | grep -q 'Inode:'; then
     LEGACY_ALSA=1
     dump_library /usr/lib '^librt-[0-9.]+\.so$' "$STAGE/legacy/lib/librt.so"
@@ -101,7 +101,7 @@ docker run --rm --platform linux/arm/v7 \
         gcc -shared -nostdlib -Wl,-z,defs -o /stage/legacy/alsashim.so \
             /stage/legacy/alsashim.o /stage/legacy/lib/libc.so \
             /stage/legacy/lib/libdl.so /stage/legacy/lib/libpthread.so \
-            /stage/legacy/lib/librt.so -lgcc
+            /stage/legacy/lib/librt.so /stage/legacy/lib/ld.so -lgcc
     fi
     '
 

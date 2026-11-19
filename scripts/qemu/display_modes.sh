@@ -149,9 +149,10 @@ fi
 
 # Whether this QEMU can serve a GL mode at all. Asking for one it cannot used to
 # fail at startup with QEMU's own message about an unknown device, which does not
-# say that the *binary* is the problem: Debian's arm64 package has neither
-# virtio-gpu-gl-pci nor egl-headless, so the GL modes are simply unavailable on such
-# a host however the instance is configured. Rather than stop, drop to the
+# say that the *binary* is the problem: Debian builds both virtio-gpu-gl-pci and
+# egl-headless as modules in qemu-system-modules-opengl, and an install without
+# Recommends has neither, so the GL modes are unavailable on such a host however the
+# instance is configured. Rather than stop, drop to the
 # equivalent non-GL mode and say so -- loudly, because this project has lost enough
 # time to software rendering that looked like hardware rendering.
 #
@@ -175,7 +176,8 @@ if [ "$NEEDS_GL" -eq 1 ] && [ -n "${QEMU_BIN:-}" ] && ! _qemu_serves_gl "$GL_BAC
             echo "         Build one with:  scripts/build_scripts/build_virgl_qemu_macos.sh" >&2
             echo "         (see docs/MACOS_VIRGL.md). Pass --no-gl to silence this." >&2 ;;
         *)
-            echo "         Build QEMU with virglrenderer and OpenGL to get GL here; see" >&2
+            echo "         On Debian, install qemu-system-modules-opengl and libegl1;" >&2
+            echo "         elsewhere, a QEMU built with virglrenderer and OpenGL. See" >&2
             echo "         docs/BUILDING.md. Pass --no-gl to silence this." >&2 ;;
     esac
     DISPLAY_MODE="$NOGL_MODE"
@@ -193,7 +195,13 @@ fi
 # a device that stays at 48 kHz, as AirPods Pro 3 did, takes no error and plays
 # the stream too fast with gaps. MPC Sample 1.3.0 clicked through them that way.
 # At 48 kHz QEMU converts from the guest's rate itself.
+#
+# PipeWire gets a 20 ms audio timer. QEMU sizes its stream's quantum from the
+# timer period, and at the default 10 ms that is 330 frames, which it missed
+# about 20 times a minute, each one a click (Prime GO 5.3.0 and 4.3.0, JP11, Pi 4
+# under KVM, PipeWire 1.4.2). At 20 ms the quantum is 661 frames and the same runs
+# played clean. 2 ms made it far worse, and out.latency=100000 left gaps.
 case "$(uname -s)" in
     Darwin) AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-coreaudio,out.frequency=48000}"; AUDIODEV_ID="mac" ;;
-    *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire}";  AUDIODEV_ID="host" ;;
+    *)      AUDIODEV_BACKEND="${AUDIODEV_BACKEND:-pipewire,timer-period=20000}";  AUDIODEV_ID="host" ;;
 esac

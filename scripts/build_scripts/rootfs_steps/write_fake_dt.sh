@@ -36,7 +36,7 @@ write_fake_dt() {
     #   ffb40000.efuse  "rockchip,rk3288-efuse" -- byte-addressed CPU id nvmem
     #                   cell at offset 7 (16 bytes) plus cpu_leakage at 23.
     # QEMU's generic virt machine models neither, so write stand-in files and
-    # let dtshim advertise + redirect them (remap_secure_efuse / readdir64).
+    # let dtshim advertise + redirect them (remap_rk3288_sysfs / readdir64).
     if [ "$_soc" = "rk3288" ]; then
         mkdir -p "$_rootfs/root/fake-dt/ffb10000.efuse/rockchip-efuse"
         _secure_efuse="$_rootfs/root/fake-dt/ffb10000.efuse/rockchip-efuse/nvmem"
@@ -45,12 +45,12 @@ write_fake_dt() {
         printf '%s' "$_code" | dd of="$_secure_efuse" conv=notrunc status=none
 
         # The CPU-id cell holds "RK3288" + board + product. The board is product-
-        # specific: az05 for the JP11S/JP20/JP21 generation, az01 for everything
+        # specific: az05 for HG08 and the JP11S/JP20/JP21 generation, az01 for everything
         # else (JC11S, JC11, JC16, JP11, JP13, JP14, JP07, JP08, NH08). Derived
         # here rather than hardcoded so a JP11S/JP20/JP21 image gets the right
         # platform in its CPU id too.
         case "$_code" in
-            JP11S|JP20|JP21) _board="AZ05" ;;
+            JP11S|JP20|JP21|HG08) _board="AZ05" ;;
             *)               _board="AZ01" ;;
         esac
         mkdir -p "$_rootfs/root/fake-dt/ffb40000.efuse/rockchip-efuse"
@@ -59,6 +59,24 @@ write_fake_dt() {
         truncate -s 128 "$_cpuid_efuse"
         printf '%s' "RK3288${_board}${_code}" |
             dd of="$_cpuid_efuse" bs=1 seek=7 conv=notrunc status=none
+    fi
+
+    # Engine 5.3.0's battery products poll the SBS presence/capacity/status and the
+    # az01 AC supply's online flag. QEMU has neither device. Serve a full
+    # battery on AC through dtshim instead of changing the product identity.
+    # Recreating an instance's identity must also remove old battery fixtures.
+    rm -rf "$_rootfs/root/fake-power"
+    if [ "$_soc" = "rk3288" ]; then
+        case "$_code" in
+            JP11|JP11S|NH10)
+                mkdir -p "$_rootfs/root/fake-power/sbs-3-000b" \
+                    "$_rootfs/root/fake-power/az01-ac-power"
+                printf '1\n' > "$_rootfs/root/fake-power/sbs-3-000b/present"
+                printf '100\n' > "$_rootfs/root/fake-power/sbs-3-000b/capacity"
+                printf 'Full\n' > "$_rootfs/root/fake-power/sbs-3-000b/status"
+                printf '1\n' > "$_rootfs/root/fake-power/az01-ac-power/online"
+                ;;
+        esac
     fi
 
     # /dev/mem is remapped here so a probe of physical memory reads zeros instead of

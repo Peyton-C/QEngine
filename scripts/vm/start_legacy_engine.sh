@@ -33,6 +33,17 @@ else
     export QT_QUICK_BACKEND=software
 fi
 export QT_QPA_GENERIC_PLUGINS="evdevtouch:$touch_dev"
+# Engine 1.x keeps one instance with a System V shared-memory segment. A copy
+# that exits without detaching it, killed by a stop or a crash, leaves the
+# segment with nothing attached, and the next start prints "A version of Engine
+# Prime is already running" and exits 255, so `systemctl restart engine` fails
+# until a reboot (Prime 4 1.6.2, JC11). A segment no process has attached can
+# belong to no running Engine, and Engine is the only thing here that makes them.
+if command -v ipcs >/dev/null 2>&1 && command -v ipcrm >/dev/null 2>&1; then
+    ipcs -m | awk '$2 ~ /^[0-9]+$/ && $6 == 0 {print $2}' | while read -r shmid; do
+        ipcrm -m "$shmid" 2>/dev/null || true
+    done
+fi
 if [ -x /usr/JP07/JP07 ]; then
     /usr/JP07/JP07 -d0 -card hw:Loopback,0 &
 else

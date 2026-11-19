@@ -15,6 +15,9 @@
 #   together on the Pi, since a DRI driver has to come from the same build as the
 #   libglapi beside it.
 #
+#   --base bullseye builds on Debian 11, for a guest whose glibc predates 2.34:
+#   HeadRush's Evil 2.7 ships 2.32. Cached with a +bullseye suffix.
+#
 #   --platforms wayland builds libEGL with the Wayland platform, for Engine as a
 #   window (build_qt5_qtwayland.sh), cached with a +wayland suffix. It also
 #   copies out the libwayland and libffi the rootfs lacks, into wayland/.
@@ -47,10 +50,12 @@ mkdir -p "$OUT_DIR"
 FORCE=0
 EXTRA_DRIVERS=""
 PLATFORMS=""
+BASE=bookworm
 while [ $# -gt 0 ]; do
     case "$1" in
         --extra-drivers) EXTRA_DRIVERS="$2"; shift 2 ;;
         --platforms) PLATFORMS="$2"; shift 2 ;;
+        --base) BASE="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
         *) echo "ERROR: unrecognized argument: $1" >&2; exit 1 ;;
     esac
@@ -71,6 +76,12 @@ case "$PLATFORMS" in
     wayland) OUT="$OUT+wayland" ;;
     *) echo "ERROR: --platforms takes only wayland." >&2; exit 1 ;;
 esac
+# The newest glibc symbol version the build may import, the oldest guest's glibc.
+case "$BASE" in
+    bookworm) GLIBC_MAX=2.34 GLIBC_WHO="Prime GO 2.4.0's" ;;
+    bullseye) GLIBC_MAX=2.31 GLIBC_WHO="bullseye's"; OUT="$OUT+bullseye" ;;
+    *) echo "ERROR: --base takes bookworm or bullseye." >&2; exit 1 ;;
+esac
 
 if [ -s "$OUT/libmali.so.14.0" ] && [ "$FORCE" -ne 1 ]; then
     echo "--- $(basename "$OUT") exists, keeping it (pass --force to rebuild) ---"
@@ -85,14 +96,17 @@ case "$(uname -m)" in
     *)             PLATFORM=linux/amd64 ;;
 esac
 echo "--- building Mesa $MESA_VER (in place of libmali) for armhf ---"
-docker pull -q --platform "$PLATFORM" debian:bookworm >/dev/null
+docker pull -q --platform "$PLATFORM" "debian:$BASE" >/dev/null
 
 STAGE="$(mktemp -d /tmp/build-mali-mesa.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 
-docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -e PLATFORMS="$PLATFORMS" -v "$STAGE:/out" \
-    debian:bookworm bash -euo pipefail -c '
+docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -e GALLIUM_DRIVERS="$GALLIUM_DRIVERS" -e PLATFORMS="$PLATFORMS" -e BASE="$BASE" -v "$STAGE:/out" \
+    "debian:$BASE" bash -euo pipefail -c '
         export DEBIAN_FRONTEND=noninteractive
+        # Bullseye'"'"'s security pool, past its LTS, has served indexes naming
+        # files it no longer holds; archive.debian.org has them.
+        [ "$BASE" != bullseye ] || sed -i "s|deb.debian.org/debian-security|archive.debian.org/debian-security|" /etc/apt/sources.list
         dpkg --add-architecture armhf
         apt-get update -qq
         # build-essential as well as the cross toolchain: Mesa builds and runs
@@ -103,6 +117,11 @@ docker run --rm --platform "$PLATFORM" -e MESA_VER="$MESA_VER" -e GALLIUM_DRIVER
             flex bison xz-utils ca-certificates curl \
             libdrm-dev:armhf libexpat1-dev:armhf zlib1g-dev:armhf >/dev/null
         # wayland-scanner runs on the builder, the library on the target.
+        # Bullseye'"'"'s meson is 0.56, older than Mesa 24 accepts; pip has a newer one.
+        if [ "$BASE" = bullseye ]; then
+            apt-get install -y -qq --no-install-recommends python3-pip >/dev/null
+            pip3 install -q "meson==1.3.2"
+        fi
         [ -z "$PLATFORMS" ] || apt-get install -y -qq --no-install-recommends \
             libwayland-bin wayland-protocols libwayland-dev:armhf \
             libwayland-egl-backend-dev:armhf >/dev/null
@@ -130,6 +149,23 @@ EOF
         sed -i "s/\"/\x27/g" /cross.txt
         export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
         export PKG_CONFIG_SYSROOT_DIR=/
+
+        # Bullseye'"'"'s libdrm is 2.4.104 and Mesa 24 needs 2.4.109. A newer one is
+        # built static and linked into Mesa, so nothing depends on the guest'"'"'s own
+        # libdrm.so.2, which is older again (Evil 2.7'"'"'s Buildroot 2021).
+        if [ "$BASE" = bullseye ]; then
+            curl -fsSL https://dri.freedesktop.org/libdrm/libdrm-2.4.120.tar.xz -o /drm.tar.xz
+            mkdir /drm && tar xf /drm.tar.xz -C /drm --strip-components=1
+            (cd /drm && meson setup build --cross-file /cross.txt --prefix=/opt/drm --libdir=lib \
+                -Ddefault_library=static -Db_staticpic=true -Dintel=disabled -Dradeon=disabled \
+                -Damdgpu=disabled -Dnouveau=disabled -Dvmwgfx=disabled -Domap=disabled \
+                -Dexynos=disabled -Dfreedreno=disabled -Dtegra=disabled -Dvc4=disabled \
+                -Detnaviv=disabled -Dcairo-tests=disabled -Dman-pages=disabled \
+                -Dvalgrind=disabled -Dtests=false > /out/drm.log 2>&1 &&
+             ninja -C build install >> /out/drm.log 2>&1) || {
+                echo "ERROR: libdrm build failed" >&2; tail -30 /out/drm.log >&2; exit 1; }
+            export PKG_CONFIG_LIBDIR=/opt/drm/lib/pkgconfig:$PKG_CONFIG_LIBDIR
+        fi
 
         # --prefix /usr --libdir lib, because the paths are compiled in: libgbm
         # and libEGL look for drivers in /usr/lib/dri. No platforms unless asked:
@@ -223,8 +259,8 @@ if printf '%s\n' "$_syms" | grep 'GLIBCXX_' >/dev/null; then
 fi
 _newest="$(printf '%s\n' "$_syms" | grep -oE 'GLIBC_[0-9][0-9.]*' |
     sed 's/^GLIBC_//' | sort -uV | awk 'END {print}')"
-[ "$(printf '%s\n%s\n' "$_newest" 2.34 | sort -V | awk 'END {print}')" = 2.34 ] || {
-    echo "ERROR: needs GLIBC_$_newest, newer than Prime GO 2.4.0's 2.34." >&2
+[ "$(printf '%s\n%s\n' "$_newest" "$GLIBC_MAX" | sort -V | awk 'END {print}')" = "$GLIBC_MAX" ] || {
+    echo "ERROR: needs GLIBC_$_newest, newer than $GLIBC_WHO $GLIBC_MAX." >&2
     exit 1; }
 
 rm -rf "$OUT" && mv "$M" "$OUT"

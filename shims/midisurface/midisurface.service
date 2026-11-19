@@ -25,8 +25,8 @@ Type=simple
 # an interactive writer disconnects.
 ExecStartPre=/bin/sh -c 'rm -f /run/midisurface.fifo && mkfifo /run/midisurface.fifo'
 # No client name is passed: the surface names itself after the guest's own
-# product code. --motor-off is safe to pass on every product -- it refuses to
-# fire anywhere but RMZ2, whose Shift + Slip chord is the only thing it sends.
+# product code. --motor-off is safe to pass on every product -- it fires only on
+# the motorized ones (RMZ2, JP08, JP14), each with its own toggle.
 ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface --motor-off < /run/midisurface.fifo'
 Restart=on-failure
 RestartSec=2

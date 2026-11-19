@@ -3,11 +3,11 @@
 # by the guest itself on first boot, so this only lays down the GPT partitions with the
 # names and GUIDs the guest's own mount units look for.
 #
-# Usage: make_disk.sh --family <engine|mpc|internal-sd> [output-path] [--force]
+# Usage: make_disk.sh --family <engine|mpc|internal-sd|drum-content> [output-path] [--force]
 #
-# internal-sd is the exception to the above: the Alesis drum module's internal SD
-# card, which no guest unit formats, so it is made as a filesystem rather than a
-# partition table. See the case below.
+# internal-sd and drum-content are the exceptions to the above: the Alesis drum
+# modules' content storage, which no guest unit formats, so both are made with a
+# filesystem on them. See the cases below.
 #
 # This was two scripts, make_data_disk.sh and make_emmc_disk.sh, differing in 24 lines
 # of 216: the partition table and the wording around it. That table is now the
@@ -60,8 +60,21 @@ case "$FAMILY" in
         DEFAULT_NAME="sdcard.img"
         FS_UUID="5d2a1e5c-0a1b-4c2d-9e3f-51d0c0a1e5d0"
         ;;
+    drum-content)
+        # The Core Drum Module's eMMC content partition, mounted read-only on /content
+        # by the guest's content.mount, which names it by PARTUUID, and bound over
+        # /sdcard. Its bfd directory is the lower layer of the /sdcard/bfd overlay,
+        # which fails to mount without it; the 75 Core kits come from the rootfs's
+        # own ldmf-content-update layer. The factory sample library is in no update
+        # image, so the partition is otherwise empty and 1.5.2.3 boots regardless.
+        PARTITIONS=(
+            "content:1MiB:100%:4054a70b-cc6a-4ac8-9a97-2a716b05bbb4"
+        )
+        DEFAULT_NAME="content.img"
+        MKFS_SERVICES=""
+        ;;
     *)
-        echo "ERROR: --family must be 'engine', 'mpc' or 'internal-sd' (got '${FAMILY:-}')." >&2
+        echo "ERROR: --family must be 'engine', 'mpc', 'internal-sd' or 'drum-content' (got '${FAMILY:-}')." >&2
         exit 1 ;;
 esac
 
@@ -120,6 +133,20 @@ EOF
     PART_DESC="${PART_DESC:+$PART_DESC, }$_name ($_start-$_end)"
 done
 
+# drum-content is formatted here, since nothing in the guest does. mke2fs writes
+# the filesystem at the partition's offset, with the empty bfd directory in it.
+FORMAT_LINES=""
+if [ "$FAMILY" = drum-content ]; then
+    # Single-quoted on purpose: these lines run in the container, not here.
+    # shellcheck disable=SC2016
+    FORMAT_LINES='echo "--- formatting the content partition ext4, with an empty bfd ---"
+mkdir -p /tmp/content/bfd
+_start=$(sgdisk -i 1 "$IMG" | awk "/First sector/{print \$3}")
+_end=$(sgdisk -i 1 "$IMG" | awk "/Last sector/{print \$3}")
+mke2fs -q -t ext4 -L content -d /tmp/content -E offset=$((_start * 512)) "$IMG" $(( (_end - _start + 1) / 2 ))k
+'
+fi
+
 INNER_SCRIPT="$(mktemp /tmp/make-disk-inner.XXXXXX)"
 trap 'rm -f "$INNER_SCRIPT"' EXIT
 
@@ -130,7 +157,7 @@ cat > "$INNER_SCRIPT" <<DOCKER_SCRIPT
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq parted gdisk >/dev/null 2>&1
+apt-get install -y -qq parted gdisk e2fsprogs >/dev/null 2>&1
 
 IMG=/out/$OUT_NAME
 truncate -s 4G "\$IMG"
@@ -144,7 +171,7 @@ parted -s "\$IMG" mklabel gpt 2> >(grep -v udevadm >&2 || true)
 ${PARTED_LINES}
 echo "--- setting partition GUIDs to match the guest's mount units ---"
 sgdisk$SGDISK_ARGS "\$IMG" >/dev/null
-
+${FORMAT_LINES}
 echo "--- resulting partition table ---"
 sgdisk -p "\$IMG"
 
@@ -179,6 +206,8 @@ fi
 echo ""
 echo "Built: $OUT_PATH"
 echo ""
-echo "The partitions are left unformatted on purpose — the guest's"
-echo "$MKFS_SERVICES mkfs.ext4 them on first boot."
+if [ -n "$MKFS_SERVICES" ]; then
+    echo "The partitions are left unformatted on purpose — the guest's"
+    echo "$MKFS_SERVICES mkfs.ext4 them on first boot."
+fi
 echo "Use this as the data disk when launching QEMU; see docs/BUILDING.md, Disks."

@@ -4,7 +4,7 @@
  *   pcmhold <card> <playback ch> <capture ch> [rate]
  *
  * An app that insists on its own sound card gets the kernel's loopback card,
- * renamed to that card's id (see qengine-hv01.service in
+ * renamed to that card's id (see qengine-headrush-audio.service in
  * build_armv7_engine_rootfs.sh). A bare loopback offers 1 to 32 channels each
  * way, and HeadRush Prime 5.2.0's Evil takes all 32: it reported
  * "IN: 0 [hw:HV01,0] ch: 32 / OUT: ... ch: 32" and then segfaulted in its own

@@ -19,66 +19,66 @@ See [Build](docs/BUILDING.md) for requirements, rebuilds and display options. On
 ## Engine OS support matrix
 Y means supported in the builds tried, N means unavailable, and ? means unverified or unresolved. Results do not cover every device and firmware combination. The [era guides](docs/engine/README.md) describe the runtime limits.
 
-|                         | Modern arm64 | Modern armv7    | Classic         | Legacy |
-|-------------------------|--------------|-----------------|-----------------|--------|
-| Engine                  | Y            | Y               | Y               | Y      |
-| SoundSwitch             | Y            | ?               | ?               | ?      |
-| Display                 | Y            | Y               | Y               | Y      |
-| Virgl                   | Y            | Y               | Y               | N      |
-| Touch input             | Y            | Y               | Y               | Y      |
-| Keyboard navigation     | Y            | Y               | Y               | ?      |
-| Audio playback          | Y            | Y (chroot only) | Y (chroot only) | ?      |
-| MIDI                    | Y            | Y               | Y               | ?      |
-| External media (USB/SD) | Y            | Y               | Y               | ?      |
+|                         | Modern | Classic | Legacy |
+|-------------------------|--------|---------|--------|
+| Engine                  | Y      | Y       | Y      |
+| SoundSwitch             | Y      | Y       | Y      |
+| Display                 | Y      | Y       | Y      |
+| Virgl                   | Y      | Y       | N      |
+| Touch input             | Y      | Y       | Y      |
+| Keyboard navigation     | Y      | Y       | ?      |
+| Audio playback          | Y      | Y       | ?      |
+| MIDI                    | Y      | Y       | ?      |
+| External media (USB/SD) | Y      | Y       | ?      |
 
-Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
+Armv7 audio was recorded without dropouts under KVM on a Raspberry Pi 4 over 30 minutes. Under TCG on Apple Silicon Engine's audio thread takes most of a host core, and CoreAudio playback cuts out about once a second, so listen under KVM. Legacy SoundSwitch was checked on Mixstream Pro 2.3.2; SC5000 1.0.1 has none. Legacy input checks cover single taps, playback and MIDI remain unverified. SoundSwitch does not work in the [Pi chroot](scripts/pi/README.md#known-limits).
 
 ## OS Eras
 QEngine primarly targets Modern and Classic inMusic firmware versions, but there is basic support for some Legacy era firmware versions.
 
-| Platform                   | Modern  | Classic     | Legacy  |
-|----------------------------|---------|-------------|---------|
-| Engine                     | 4.4.0+  | 2.4.0-4.3.4 | < 2.4.0 |
-| MPC                        | 3.4.1+  | –           | 2.x     |
-| MPC Force                  | 3.5.0+  | –           | < 3.5.0 |
-| MPC Sample                 | 1.x     | –           | –       |
-| Alesis drum module         | 1.5.2.3 | –           | –       |
-| HeadRush VX5               | 1.x     | –           | –       |
-| HeadRush Prime, Flex Prime | –       | 5.2.0       | –       |
-| Sheeran Looper X           | –       | 1.0.2       | –       |
-| HeadRush Pedalboard        | –       | –           | 2.x     |
-| HeadRush Looperboard       | –       | –           | 2.x     |
+| Platform                           | Modern  | Classic     | Legacy  |
+|------------------------------------|---------|-------------|---------|
+| Engine                             | 4.4.0+  | 2.4.0-4.3.4 | < 2.4.0 |
+| MPC                                | 3.4.1+  | –           | 2.x     |
+| MPC Force                          | 3.5.0+  | –           | < 3.5.0 |
+| MPC Sample                         | 1.x     | –           | –       |
+| Alesis drum module                 | 1.5.2.3 | –           | –       |
+| HeadRush VX5                       | 1.x     | –           | –       |
+| HeadRush Prime, Flex Prime, Core   | –       | 4.1.1-5.2.0 | –       |
+| Sheeran Looper X                   | –       | 1.0.2       | –       |
+| HeadRush Pedalboard, Gigboard, MX5 | –       | –           | 2.7     |
+| HeadRush Looperboard               | –       | –           | 2.0.5   |
 
 ## Emulated controllers
-Code selects the product identity with `--product-code`. Version cells list firmware booted; ranges summarize checked releases. ? means unverified or unresolved, and – means no release in that major. ! marks Prime GO firmware booted as `JC11` rather than its native `JP11` identity.
+Code selects the product identity with `--product-code`. Version cells list firmware booted; ranges summarize checked releases. ? means unverified or unresolved, and – means no release in that major.
 
 |                         | Code  | SoC    | Signed | Arch  | 1.x         | 2.x   | 3.x   | 4.x           | 5.x         |
-|-------------------------|-------|--------|-----------|-------|-------------|-------|-------|---------------|-------------|
-| Denon DJ Prime 2        | JC16  | RK3288 | N         | armv7 | 1.5.2, 1.6.2 | ?     | ?     | ?             | 5.3.0       |
-| Denon DJ Prime 4        | JC11  | RK3288 | N         | armv7 | 1.3.2-1.4.1, 1.5.2-1.6.2 | 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | 5.3.0       |
-| Denon DJ Prime 4+       | JC11S | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | 5.3.0       |
-| Denon DJ Prime 4 G2     | JP24  | RK3588 | Y         | arm64 | –           | –     | –     | –             | 5.1.0-5.3.0 |
-| Denon DJ Prime GO       | JP11  | RK3288 | N         | armv7 | 1.6.2 !     | ?     | ?     | 4.3.0 !       | 5.3.0 !     |
-| Denon DJ Prime GO+      | JP11S | RK3288 | Y         | armv7 | –           | –     | –     | ?             | ?           |
-| Denon DJ SC5000 Prime   | JP07  | RK3288 | N         | armv7 | 1.0.1-1.3.1, 1.4.1-1.6.2 | ?     | ?     | ?             | 5.0.4-5.3.0 |
-| Denon DJ SC5000M Prime  | JP08  | RK3288 | N         | armv7 | 1.3.1-1.6.0 | ?     | ?     | ?             | 5.3.0       |
-| Denon DJ SC6000 Prime   | JP13  | RK3288 | N         | armv7 | 1.5.2, 1.5.3, 1.6.2 | ?     | ?     | ?             | 5.3.0       |
-| Denon DJ SC6000M Prime  | JP14  | RK3288 | N         | armv7 | 1.5.2, 1.6.0 | ?     | ?     | ?             | 5.3.0       |
-| Denon DJ SC Live 2      | JP20  | RK3288 | Y         | armv7 | –           | 2.3.3 | ?     | ?             | 5.3.0       |
-| Denon DJ SC Live 4      | JP21  | RK3288 | Y         | armv7 | –           | ?     | ?     | 4.3.4         | 5.3.0       |
-| Numark Mixstream Pro    | NH08  | RK3288 | N         | armv7 | –           | 2.0.1-2.3.2 | ?     | ?             | 5.3.0       |
-| Numark Mixstream Pro+   | NH08S | RK3288 | Y         | armv7 | –           | ?     | ?     | ?             | 5.3.0       |
-| Numark Mixstream Pro GO | NH10  | RK3288 | Y         | armv7 | –           | –     | ?     | ?             | ?           |
-| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y         | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
+|-------------------------|-------|--------|--------|-------|-------------|-------|-------|---------------|-------------|
+| Denon DJ Prime 2        | JC16  | RK3288 | N      | armv7 | 1.5.1-1.6.2 | 2.0.0 | ?     | ?             | 5.3.0 |
+| Denon DJ Prime 4        | JC11  | RK3288 | N      | armv7 | 1.3.2-1.6.2 | 2.0.0, 2.4.0 | 3.4.0 | 4.0.0-4.3.0   | 5.3.0       |
+| Denon DJ Prime 4+       | JC11S | RK3288 | Y      | armv7 | –           | –     | ?     | ?             | 5.0.4-5.3.0 |
+| Denon DJ Prime 4 G2     | JP24  | RK3588 | Y      | arm64 | –           | –     | –     | –             | 5.1.0-5.3.0 |
+| Denon DJ Prime GO       | JP11  | RK3288 | N      | armv7 | 1.5.1-1.6.2 | 2.0.0 | ?     | 4.3.0         | 5.0.4-5.3.0 |
+| Denon DJ Prime GO+      | JP11S | RK3288 | Y      | armv7 | –           | –     | –     | 4.3.4         | 5.3.0       |
+| Denon DJ SC5000 Prime   | JP07  | RK3288 | N      | armv7 | 1.0.1-1.6.2 | 2.0.0 | ?     | ?             | 5.0.4-5.3.0 |
+| Denon DJ SC5000M Prime  | JP08  | RK3288 | N      | armv7 | 1.3.1-1.6.2 | 2.0.0 | ?     | ?             | 5.3.0       |
+| Denon DJ SC6000 Prime   | JP13  | RK3288 | N      | armv7 | 1.5.1-1.6.2 | 2.0.0 | ?     | ?             | 5.0.4-5.3.0 |
+| Denon DJ SC6000M Prime  | JP14  | RK3288 | N      | armv7 | 1.5.1-1.6.2 | 2.0.0 | ?     | ?             | 5.3.0       |
+| Denon DJ SC Live 2      | JP20  | RK3288 | Y      | armv7 | –           | 2.3.3 | 3.0.1 | ?             | 5.3.0 |
+| Denon DJ SC Live 4      | JP21  | RK3288 | Y      | armv7 | –           | ?     | 3.0.1 | 4.3.4         | 5.3.0 |
+| Numark Mixstream Pro    | NH08  | RK3288 | N      | armv7 | –           | 2.0.1-2.3.2 | 3.0.0 | ?             | 5.3.0 |
+| Numark Mixstream Pro+   | NH08S | RK3288 | Y      | armv7 | –           | 2.4.0 | 3.0.1 | ?             | 5.3.0 |
+| Numark Mixstream Pro GO | NH10  | RK3288 | Y      | armv7 | –           | –     | 3.0.0-3.1.0 | ?       | 5.3.0 |
+| RANE SYSTEM ONE         | RMZ2  | RK3588 | Y      | arm64 | –           | –     | –     | 4.5.0-4.6.0   | 5.0.4-5.3.0 |
 
-Prime GO's native identity can quit on its battery check. Prime GO+ and Mixstream Pro GO remain unresolved under their native identities. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
+QEngine supplies a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO. Their native identities boot on 5.3.0, Prime GO's also on 1.5.1 to 2.0.0, 4.3.0 and 5.0.4, Prime GO+'s on 4.3.4 and Mixstream Pro GO's on 3.0.0 to 3.1.0 and 5.1.0; other older releases remain unverified with the fake battery. Mixstream Pro, Pro+ and Pro GO on 2.4.0 to 3.0.1 boot but play corrupt audio, and segfault once audio starts unless `ALSASHIM_CAPTURE_PCM=null` is set; 3.1.0 and 5.3.0 play cleanly. Early Prime 4 builds have input limits. See [Identity](docs/engine/IDENTITY.md#battery-identities) and the [armv7 guide](scripts/build_scripts/BUILD_ARMV7_ENGINE.md#legacy-firmware) before choosing those targets.
 
 ## MPC
-Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x remains untested.
+Gen 1 and Gen 2 firmware use the same build command, with architecture detected from the image. The table lists booted versions, not full hardware support; MPC 2.x has been booted as `ACV5` only.
 
 |                    | Code  | SoC    | Signed | Arch  | 2.x | 3.x          |
 |--------------------|-------|--------|-----------|-------|-----|--------------|
-| MPC X              | ACV5  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
+| MPC X              | ACV5  | RK3288 | 3.x only  | armv7 | 2.7.0, 2.9.1, 2.11.7 | 3.9.1-3.10.0 |
 | MPC X SE           | ACV5S | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
 | MPC XL             | ACVC  | RK3588 | Y         | arm64 | –   | 3.10.0       |
 | MPC Live           | ACV8  | RK3288 | 3.x only  | armv7 | ?   | 3.9.1-3.10.0 |
@@ -103,15 +103,16 @@ QEngine supplies a virtual panel and host audio with silent inputs. Audio was he
 | --- | --- | --- | --- | --- |
 | Akai MPC Sample | `AC50` | arm64, RK3566 | 1.3.0 | Host audio and virtual panel; factory library absent |
 | Alesis Prime Drum Module | `LDMD` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or full sample library |
-| Alesis Core Drum Module | `LDMF` | armv7, RK3288 | ? | Build refused, content partition missing |
-| HeadRush Prime | `HG06` | armv7, RK3288 | 5.2.0 | Touch; silent loopback audio |
+| Alesis Core Drum Module | `LDMF` | armv7, RK3288 | 1.5.2.3 | Kit screen and touch; no audio device or factory samples |
+| HeadRush Prime | `HG06` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch; silent audio |
+| HeadRush Flex Prime | `HG12` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch, 800×480; silent audio |
+| HeadRush Core | `HV01` | armv7, RK3288 | 4.1.1, 5.0.0, 5.0.1, 5.1.0, 5.2.0 | Touch; silent audio |
 | HeadRush VX5 | `HV03` | arm64, RK3566 | 1.2.2, 1.3.1 | Host audio and virtual panel; input from a WAV file |
-| HeadRush Core | `HV01` | ? | ? | Untested |
-| HeadRush Gigboard | `HG02` | ? | ? | Untested |
-| HeadRush Looperboard | `HG03` | ? | ? | Untested |
-| HeadRush MX5 | `HG04` | ? | ? | Untested |
-| HeadRush Flex Prime | `HG12` | ? | ? | Untested |
-| HeadRush Pedalboard | `MG01` | ? | ? | Untested |
+| Sheeran Looper X | `HG08` | armv7, RK3288 | 1.0.2 | Four-track UI; factory content absent; silent loopback audio |
+| HeadRush Pedalboard | `MG01` | armv7, RK3288 | 2.7 | Touch; silent audio; no footswitches |
+| HeadRush Gigboard | `HG02` | armv7, RK3288 | 2.7 | Touch; silent audio; no footswitches |
+| HeadRush MX5 | `HG04` | armv7, RK3288 | 2.7 | Touch, 800×480; silent audio; no footswitches |
+| HeadRush Looperboard | `HG03` | armv7, RK3288 | 2.0.5 | Four-track UI; factory content absent; silent audio |
 
 Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](scripts/build_scripts/BUILD_ALESIS.md) and [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) guides for target-specific setup and limits. The VX5 audio and control checks cover 1.2.2; 1.3.1 is listed as booted.
 
@@ -121,6 +122,7 @@ Use the [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md), [Alesis](script
 | [Build](docs/BUILDING.md) | Requirements, firmware extraction, toolchains, disks and kernels |
 | [Instances](scripts/build_scripts/INSTANCES.md) | Instance settings, ports and launch options |
 | [Engine OS](docs/engine/README.md) | Modern, classic and legacy runtimes; shared internals |
+| [Firmware versions](docs/engine/FIRMWARE_VERSIONS.md) | Every Engine OS release, the devices it shipped for and when QEngine last booted it |
 | [arm64 Engine](scripts/build_scripts/BUILD_ARM64.md) / [armv7 Engine](scripts/build_scripts/BUILD_ARMV7_ENGINE.md) | Target build instructions |
 | [MPC](scripts/build_scripts/BUILD_MPC.md) / [MPC Sample](scripts/build_scripts/BUILD_MPC_SAMPLE.md) / [Alesis](scripts/build_scripts/BUILD_ALESIS.md) / [HeadRush](scripts/build_scripts/BUILD_HEADRUSH.md) | Other target instructions |
 | [Raspberry Pi](scripts/pi/README.md) / [FLX10](scripts/pi/flx10/README.md) | Chroot setup and controller integration |

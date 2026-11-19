@@ -51,11 +51,10 @@
  *     SysEx identity: F0 00 00 17 <deviceId 7F> <productId 27> ... F7
  *     (manufacturer 00 00 17 = inMusic, product 0x27 = SYSTEM ONE)
  *
- * WHAT IS STILL NOT GENERIC: motor. It is a shift-chord rather than a note, and
- * only RMZ2 spells it Shift + Slip; the other motorized products (JP08 and JP14,
- * the SC5000M and SC6000M) do something structurally different. It refuses to
- * fire on anything but RMZ2 -- see --motor-off. The `sysex`, `on`, `off`, `cc`
- * and `press` commands take raw numbers and are unaffected by any of this.
+ * Motor is per product: RMZ2 toggles it with a Shift + Slip chord, the SC5000M
+ * and SC6000M (JP08, JP14) with a button of their own. It refuses to fire on a
+ * product not in MOTOR_TOGGLES -- see --motor-off. The `sysex`, `on`, `off`,
+ * `cc` and `press` commands take raw numbers and are unaffected by any of this.
  *
  * Commands are read from stdin, one per line, so this can be driven
  * interactively or fed from a script/fifo:
@@ -72,8 +71,8 @@
  *                            file spells it (left/right, or deck on the
  *                            single-deck players) or a 1-based index, and may be
  *                            omitted where the product has only one deck.
- *   motor left|right         toggle the deck's motorized-platter mode
- *                            (shift + slip). REQUIRED ONCE PER ENGINE START
+ *   motor [deck]             toggle the deck's motorized-platter mode
+ *                            (RMZ2, JP08, JP14). REQUIRED ONCE PER ENGINE START
  *                            before play will do anything — see below.
  *   ports                    list sequencer clients/ports and our own id
  *   quit
@@ -105,8 +104,8 @@ static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
  *
  * Generated from that file. RMZ2 is the odd one out: inMusic's manufacturer id
  * 00 00 17 and a trailing 7F, where the RK3288 family uses 00 02 0B and the
- * Numark units 00 01 3f, both trailing 00. JP24, the other RK3588 product here,
- * keeps the Denon id 00 02 0B but shares RMZ2's trailing 7F.
+ * Numark units 00 01 3f, both trailing 00. JP22 and JP24, the other RK3588 products
+ * here, keep the Denon id 00 02 0B but share RMZ2's trailing 7F.
  *
  * Every one of those patterns wildcards the six bytes before the trailing one
  * -- the software revision -- so the zeros below cannot affect *binding*, and
@@ -140,6 +139,7 @@ static const struct device_identity DEVICE_IDENTITIES[] = {
     {"JP14", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0E */
     {"JP20", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 11  (prefix pattern) */
     {"JP21", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 12  (prefix pattern) */
+    {"JP22", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xF7}},   /* 00 02 0B 13 */
     {"JP24", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xF7}},   /* 00 02 0B 14 */
     {"NH08", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
     {"NH08S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
@@ -208,7 +208,7 @@ static const struct device_identity *identity_for(const char *code) {
  * use play 1 / cue 2, and have no load button at all: a track arrives from the
  * browser rather than from a deck control. Everything else is a two-deck
  * controller with play 10 / cue 9 and per-deck load notes 1 and 2. The RK3588
- * products (RMZ2, JP24) are the odd ones out, pairing the players' play/cue
+ * products (RMZ2, JP22, JP24) are the odd ones out, pairing the players' play/cue
  * notes with two decks and load notes of their own.
  *
  * A product absent from this table can still be driven with the raw press/on/
@@ -241,6 +241,7 @@ static const struct device_controls DEVICE_CONTROLS[] = {
     {"JP14",   1, 2, 1, {{"Deck", 0x00,   -1}}},
     {"JP20",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
     {"JP21",  10, 9, 2, {{"Left", 0x04, 0x01}, {"Right", 0x05, 0x02}}},
+    {"JP22",   1, 2, 2, {{"Left", 0x04, 0x18}, {"Right", 0x05, 0x19}}},
     {"JP24",   1, 2, 2, {{"Left", 0x04, 0x18}, {"Right", 0x05, 0x19}}},
     {"NH08",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
     {"NH08S", 10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
@@ -248,11 +249,32 @@ static const struct device_controls DEVICE_CONTROLS[] = {
     {"RMZ2",   1, 2, 2, {{"Left", 0x04, 0x1A}, {"Right", 0x05, 0x1B}}},
 };
 
-/* Shift + Slip is Action.ToggleMotor in RMZ2_Controller_Assignments.qml, and
- * only there -- see the motor command and --motor-off, both of which refuse to
- * send these anywhere else. */
-#define NOTE_SHIFT 0x5D
-#define NOTE_SLIP 0x20
+/* How each motorized product toggles motorized-platter mode, from its own
+ * assignment file, sent on each of its deck channels. RMZ2 spells it as a chord:
+ * Shift + Slip is Action.ToggleMotor in RMZ2_Controller_Assignments.qml. The
+ * SC5000M and SC6000M have a button of their own, `Motorized { motorNote: 19 }`
+ * in JP08_ and JP14_Controller_Assignments.qml. A product absent from here has
+ * no motor, and --motor-off leaves it alone: the same notes elsewhere land on
+ * whatever that product maps them to. */
+struct motor_toggle {
+    const char *code;
+    int shift_note;            /* held around note, or -1 for a plain press */
+    unsigned char note;
+};
+
+static const struct motor_toggle MOTOR_TOGGLES[] = {
+    {"JP08", -1,   19},
+    {"JP14", -1,   19},
+    {"RMZ2", 0x5D, 0x20},
+};
+
+static const struct motor_toggle *my_motor(void) {
+    const char *code = product_code();
+    for (size_t i = 0; i < sizeof(MOTOR_TOGGLES) / sizeof(MOTOR_TOGGLES[0]); i++)
+        if (strcmp(MOTOR_TOGGLES[i].code, code) == 0)
+            return &MOTOR_TOGGLES[i];
+    return NULL;
+}
 
 static const struct device_controls *controls_for(const char *code) {
     if (!code || !*code) return NULL;
@@ -529,8 +551,9 @@ static int load_led_map(const char *path) {
     return 0;
 }
 
-/* Auto motor-off. RMZ2's decks wait on platter timecode that cannot
- * exist under emulation, so play does nothing until motorized mode is toggled
+/* Auto motor-off. Motorized decks (RMZ2, JP08, JP14) wait on platter timecode
+ * that cannot exist under emulation, so play does nothing until motorized mode
+ * is toggled
  * off, and Engine does not persist that setting — it starts motorized every
  * time. Firing on Engine's identity inquiry is the right trigger because that
  * is precisely when Engine has (re)bound us, so it re-arms naturally across
@@ -612,13 +635,61 @@ static void press(int ch, int note, int ms) {
  * kept working, so the file loaded fine, but play was still dead, i.e. that
  * component wires the timecode input rather than selecting the mode — and
  * replacing it with a MIDI JogWheel { } as the non-motorized products
- * (JC11/JP11) use. The mode is the gate, not the platter source. */
-static void toggle_motor(int deck_channel) {
-    note_on(deck_channel, NOTE_SHIFT, 0x7F);
+ * (JC11/JP11) use. The mode is the gate, not the platter source.
+ *
+ * The SC5000M and SC6000M behave the same way: on JP08 5.3.0, play left the
+ * deck at its start point until motorNote was pressed, and then played. Engine
+ * sends its two inquiries about 11 s apart there, past the debounce, so the
+ * toggle goes out twice, and the deck still plays: each binding appears to
+ * start motorized again. */
+static void toggle_motor(const struct motor_toggle *m, int deck_channel) {
+    if (m->shift_note < 0) {
+        press(deck_channel, m->note, 80);
+        return;
+    }
+    note_on(deck_channel, m->shift_note, 0x7F);
     usleep(150 * 1000);
-    press(deck_channel, NOTE_SLIP, 80);
+    press(deck_channel, m->note, 80);
     usleep(150 * 1000);
-    note_off(deck_channel, NOTE_SHIFT);
+    note_off(deck_channel, m->shift_note);
+}
+
+/* --reply PREFIX=REPLY: answer any SysEx that starts with PREFIX with REPLY,
+ * both as hex bytes. For panels that hold their app until they answer a query
+ * of their own, as HeadRush's Evil 2.7 polls its footswitch board with
+ * F0 00 01 05 00 <product> 41 ... and stays on LOADING until it hears back. */
+#define MAX_REPLIES 4
+static struct { unsigned char prefix[32], reply[64]; size_t prefix_len, reply_len; }
+    replies[MAX_REPLIES];
+static int reply_count = 0;
+
+static size_t parse_hex(const char *text, unsigned char *out, size_t max) {
+    size_t n = 0;
+    char *end;
+    while (*text && n < max) {
+        while (*text == ' ' || *text == ',') text++;
+        if (!*text) break;
+        long v = strtol(text, &end, 16);
+        if (end == text || v < 0 || v > 255) return 0;
+        out[n++] = (unsigned char)v;
+        text = end;
+    }
+    return n;
+}
+
+static int add_reply(const char *spec) {
+    const char *eq = strchr(spec, '=');
+    char prefix[256];
+    if (!eq || reply_count >= MAX_REPLIES || (size_t)(eq - spec) >= sizeof(prefix)) return -1;
+    memcpy(prefix, spec, eq - spec);
+    prefix[eq - spec] = 0;
+    replies[reply_count].prefix_len = parse_hex(prefix, replies[reply_count].prefix,
+                                                sizeof(replies[reply_count].prefix));
+    replies[reply_count].reply_len = parse_hex(eq + 1, replies[reply_count].reply,
+                                               sizeof(replies[reply_count].reply));
+    if (!replies[reply_count].prefix_len || !replies[reply_count].reply_len) return -1;
+    reply_count++;
+    return 0;
 }
 
 static void send_sysex(unsigned char *buf, size_t len) {
@@ -823,6 +894,12 @@ static void handle_incoming(void) {
                 fflush(stdout);
                 if (motor_off_enabled) motor_off_due_ms = now_ms() + MOTOR_OFF_DEBOUNCE_MS;
             }
+            for (int r = 0; r < reply_count; r++)
+                if (len >= replies[r].prefix_len &&
+                    memcmp(d, replies[r].prefix, replies[r].prefix_len) == 0) {
+                    send_sysex(replies[r].reply, replies[r].reply_len);
+                    if (verbose) fprintf(stderr, "[surface] --reply %d answered\n", r);
+                }
         }
         if (snd_seq_event_input_pending(seq, 0) <= 0) break;
     }
@@ -956,6 +1033,13 @@ int main(int argc, char **argv) {
             note_maps[note_map_count].to_ch = to_ch;
             note_maps[note_map_count].to = to;
             note_map_count++;
+        } else if (strcmp(argv[i], "--reply") == 0 && i + 1 < argc) {
+            if (add_reply(argv[++i]) < 0) {
+                fprintf(stderr, "--reply wants PREFIX=REPLY as hex bytes, e.g. "
+                                "'F0 00 01 05 00 1A 41=F0 00 01 05 00 1A 41 00 03 00 00 00 F7' "
+                                "(at most %d)\n", MAX_REPLIES);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--led-map") == 0 && i + 1 < argc) {
             if (load_led_map(argv[++i]) < 0) return 1;
         } else if (argv[i][0] != '-') {
@@ -967,32 +1051,22 @@ int main(int argc, char **argv) {
                     "[--pitchbend-cc <upper>,<lower>] "
                     "[--relative-cc <cc>=<upper>,<lower>]... "
                     "[--note-map <ch>:<from>=[<ch>:]<to>]... "
-                    "[--led-map <file>] [--echo-lamps]\n", argv[0]);
+                    "[--led-map <file>] [--echo-lamps] [--reply <prefix>=<reply>]...\n", argv[0]);
             return 1;
         }
     }
 
-    /* The motor toggle is RMZ2's, not a generic control. It sends Shift + Slip
-     * on RMZ2's deck channels, which is Action.ToggleMotor only in
-     * RMZ2_Controller_Assignments.qml -- on any other product those same notes
-     * land on whatever that product's assignment file maps them to, and the
-     * unit acts on it. Firing it unbidden on the wrong device is worse than not
-     * firing it at all, so the guest's own product code decides, not the flag.
-     *
-     * Other motorized products exist (JP08 and JP14 are the SC5000M and
-     * SC6000M) and presumably need the same treatment eventually, but with
-     * their own note numbers read from their own assignment files. Answering
-     * that is a separate job from not misfiring here. */
-    if (motor_off_enabled) {
+    /* The motor toggle is per product, not a generic control: the notes one
+     * product toggles its motor with land on whatever another product's
+     * assignment file maps them to, and the unit acts on it. Firing it unbidden
+     * on the wrong device is worse than not firing it at all, so the guest's own
+     * product code decides, not the flag, and a product without an entry in
+     * MOTOR_TOGGLES gets nothing. Both builders pass the flag on every product. */
+    if (motor_off_enabled && !my_motor()) {
         const char *code = product_code();
-        if (strcmp(code, "RMZ2") != 0) {
-            fprintf(stderr,
-                    "WARNING: --motor-off ignored: this guest reports product code "
-                    "'%s', and the toggle it sends is RMZ2's Shift+Slip. Sending it "
-                    "here would trigger whatever %s maps those notes to.\n",
-                    *code ? code : "<unset>", *code ? code : "this device");
-            motor_off_enabled = 0;
-        }
+        fprintf(stderr, "--motor-off: '%s' has no motorized decks, nothing to toggle\n",
+                *code ? code : "<unset>");
+        motor_off_enabled = 0;
     }
 
     if (!client_name) client_name = default_client_name();
@@ -1053,9 +1127,11 @@ int main(int argc, char **argv) {
         if (motor_off_due_ms && now_ms() >= motor_off_due_ms) {
             motor_off_due_ms = 0;
             const struct device_controls *dc = my_controls();
-            for (int i = 0; dc && i < dc->deck_count; i++)
-                toggle_motor(dc->decks[i].channel);
-            printf("auto motor-off: toggled both decks out of motorized mode\n");
+            const struct motor_toggle *m = my_motor();
+            for (int i = 0; dc && m && i < dc->deck_count; i++)
+                toggle_motor(m, dc->decks[i].channel);
+            printf("auto motor-off: toggled %d deck%s out of motorized mode\n",
+                   dc ? dc->deck_count : 0, dc && dc->deck_count == 1 ? "" : "s");
             fflush(stdout);
         }
 
@@ -1128,16 +1204,15 @@ int main(int argc, char **argv) {
         } else if (strcmp(cmd, "motor") == 0) {
             char which[32] = {0};
             sscanf(rest, "%31s", which);
+            const struct motor_toggle *m = my_motor();
             const struct deck_controls *dk = resolve_deck(my_controls(), which);
-            if (dk) {
-                int ch = dk->channel;
+            if (!m) {
                 const char *pc = product_code();
-                if (strcmp(pc, "RMZ2") != 0)
-                    fprintf(stderr,
-                            "WARNING: these are RMZ2's Shift+Slip notes and this guest "
-                            "is '%s'; sending anyway because you asked.\n",
-                            *pc ? pc : "<unset>");
-                toggle_motor(ch);
+                fprintf(stderr, "'%s' has no motorized decks; use press/on/off to "
+                                "send raw notes\n", *pc ? pc : "<unset>");
+            } else if (dk) {
+                int ch = dk->channel;
+                toggle_motor(m, ch);
                 printf("toggled motorized-platter mode on deck ch 0x%02X\n", ch);
                 fflush(stdout);
             }

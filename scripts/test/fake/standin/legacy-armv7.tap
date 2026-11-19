@@ -1,0 +1,113 @@
+ok loader.dtshim.so
+ok loader.dtshim.so.symbols
+ok loader.alsashim.so
+ok loader.alsashim.so.symbols
+ok identity.product-code.open
+ok identity.product-code.open64
+ok identity.product-code.__open_2
+ok identity.product-code.__open64_2
+ok identity.product-code.openat
+ok identity.product-code.openat64
+ok identity.product-code.__openat_2 # SKIP
+ok identity.product-code.__openat64_2 # SKIP
+ok identity.product-code.fopen
+ok identity.product-code.fopen64
+ok identity.product-code
+ok identity.product-code.exists.access
+ok identity.product-code.exists.faccessat
+ok identity.product-code.exists
+ok identity.serial-number.open
+ok identity.serial-number.open64
+ok identity.serial-number.__open_2
+ok identity.serial-number.__open64_2
+ok identity.serial-number.openat
+ok identity.serial-number.openat64
+ok identity.serial-number.__openat_2 # SKIP
+ok identity.serial-number.__openat64_2 # SKIP
+ok identity.serial-number.fopen
+ok identity.serial-number.fopen64
+ok identity.serial-number
+ok identity.serial-number.exists.access
+ok identity.serial-number.exists.faccessat
+ok identity.serial-number.exists
+ok devmem.open
+ok devmem.map
+ok devmem.map-registers
+ok devmem.map-registers-32bit
+ok devicetree.mipi@ff960000/panel@0/rotation.open
+ok devicetree.mipi@ff960000/panel@0/rotation.open64
+ok devicetree.mipi@ff960000/panel@0/rotation.__open_2
+ok devicetree.mipi@ff960000/panel@0/rotation.__open64_2
+ok devicetree.mipi@ff960000/panel@0/rotation.openat # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.openat64 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.__openat_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.__openat64_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.fopen
+ok devicetree.mipi@ff960000/panel@0/rotation.fopen64
+ok devicetree.mipi@ff960000/panel@0/rotation
+ok devicetree.chosen/inmusic,internal-sd-fitted.open
+ok devicetree.chosen/inmusic,internal-sd-fitted.open64
+ok devicetree.chosen/inmusic,internal-sd-fitted.__open_2
+ok devicetree.chosen/inmusic,internal-sd-fitted.__open64_2
+ok devicetree.chosen/inmusic,internal-sd-fitted.openat # SKIP
+ok devicetree.chosen/inmusic,internal-sd-fitted.openat64 # SKIP
+ok devicetree.chosen/inmusic,internal-sd-fitted.__openat_2 # SKIP
+ok devicetree.chosen/inmusic,internal-sd-fitted.__openat64_2 # SKIP
+ok devicetree.chosen/inmusic,internal-sd-fitted.fopen
+ok devicetree.chosen/inmusic,internal-sd-fitted.fopen64
+ok devicetree.chosen/inmusic,internal-sd-fitted
+ok devicetree.inmusic,az01-pcb-rev.open
+ok devicetree.inmusic,az01-pcb-rev.open64
+ok devicetree.inmusic,az01-pcb-rev.__open_2
+ok devicetree.inmusic,az01-pcb-rev.__open64_2
+ok devicetree.inmusic,az01-pcb-rev.openat # SKIP
+ok devicetree.inmusic,az01-pcb-rev.openat64 # SKIP
+ok devicetree.inmusic,az01-pcb-rev.__openat_2 # SKIP
+ok devicetree.inmusic,az01-pcb-rev.__openat64_2 # SKIP
+ok devicetree.inmusic,az01-pcb-rev.fopen
+ok devicetree.inmusic,az01-pcb-rev.fopen64
+ok devicetree.inmusic,az01-pcb-rev
+ok efuse.secure.stat.__xstat # SKIP
+ok efuse.secure.stat.__lxstat # SKIP
+ok efuse.secure.stat.__xstat64
+ok efuse.secure.stat.__lxstat64
+ok efuse.secure.stat
+ok efuse.cpuid.stat.__xstat # SKIP
+ok efuse.cpuid.stat.__lxstat # SKIP
+ok efuse.cpuid.stat.__xstat64
+ok efuse.cpuid.stat.__lxstat64
+ok efuse.cpuid.stat
+ok efuse.secure.canonical.realpath
+ok efuse.secure.canonical.__realpath_chk
+ok efuse.secure.canonical
+ok efuse.cpuid.canonical.realpath
+ok efuse.cpuid.canonical.__realpath_chk
+ok efuse.cpuid.canonical
+ok efuse.listing.readdir64
+ok efuse.listing.readdir # SKIP
+ok efuse.secure.read.open
+ok efuse.secure.read.open64
+ok efuse.secure.read.__open_2
+ok efuse.secure.read.__open64_2
+ok efuse.secure.read.openat
+ok efuse.secure.read.openat64
+ok efuse.secure.read.__openat_2 # SKIP
+ok efuse.secure.read.__openat64_2 # SKIP
+ok efuse.secure.read.fopen
+ok efuse.secure.read.fopen64
+ok efuse.secure.read
+ok efuse.cpuid.read.open
+ok efuse.cpuid.read.open64
+ok efuse.cpuid.read.__open_2
+ok efuse.cpuid.read.__open64_2
+ok efuse.cpuid.read.openat
+ok efuse.cpuid.read.openat64
+ok efuse.cpuid.read.__openat_2 # SKIP
+ok efuse.cpuid.read.__openat64_2 # SKIP
+ok efuse.cpuid.read.fopen
+ok efuse.cpuid.read.fopen64
+ok efuse.cpuid.read
+ok battery # SKIP
+ok tee # SKIP
+ok quit # SKIP
+1..112

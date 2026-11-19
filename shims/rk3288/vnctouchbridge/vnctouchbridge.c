@@ -33,13 +33,24 @@ static void emit(int type, int code, int val) {
 
 static void sync_report(void) { emit(EV_SYN, SYN_REPORT, 0); }
 
+/* Each coordinate of a touch-down goes out twice in the one frame, a pixel off
+ * and then exact, because the input core drops a value equal to the device's
+ * current one. Without this a tap where the last one ended carries no position,
+ * and a reader opened since, such as a restarted Engine, puts it at 0,0. See
+ * touch_down in shims/touchbridge/touchbridge.c, where this was found. */
+static int neighbour(int v) { return v > 0 ? v - 1 : v + 1; }
+
 static void touch_down(int x, int y) {
     emit(EV_ABS, ABS_MT_SLOT, 0);
     emit(EV_ABS, ABS_MT_TRACKING_ID, 1);
     emit(EV_KEY, BTN_TOUCH, 1);
+    emit(EV_ABS, ABS_MT_POSITION_X, neighbour(x));
     emit(EV_ABS, ABS_MT_POSITION_X, x);
+    emit(EV_ABS, ABS_MT_POSITION_Y, neighbour(y));
     emit(EV_ABS, ABS_MT_POSITION_Y, y);
+    emit(EV_ABS, ABS_X, neighbour(x));
     emit(EV_ABS, ABS_X, x);
+    emit(EV_ABS, ABS_Y, neighbour(y));
     emit(EV_ABS, ABS_Y, y);
     sync_report();
 }

@@ -1,0 +1,37 @@
+ok loader.dtshim.so
+ok loader.dtshim.so.symbols
+ok loader.mpcsurface.so
+ok loader.mpcsurface.so.symbols
+ok loader.alsashim.so
+ok loader.alsashim.so.symbols
+ok identity.product-code.open
+ok identity.product-code.open64
+ok identity.product-code.__open_2 # SKIP
+ok identity.product-code.__open64_2 # SKIP
+ok identity.product-code.openat # SKIP
+ok identity.product-code.openat64 # SKIP
+ok identity.product-code.__openat_2 # SKIP
+ok identity.product-code.__openat64_2 # SKIP
+ok identity.product-code.fopen
+ok identity.product-code.fopen64
+ok identity.product-code
+ok identity.product-code.exists.access
+ok identity.product-code.exists.faccessat
+ok identity.product-code.exists
+ok identity.serial-number.open
+ok identity.serial-number.open64
+ok identity.serial-number.__open_2 # SKIP
+ok identity.serial-number.__open64_2 # SKIP
+ok identity.serial-number.openat # SKIP
+ok identity.serial-number.openat64 # SKIP
+ok identity.serial-number.__openat_2 # SKIP
+ok identity.serial-number.__openat64_2 # SKIP
+ok identity.serial-number.fopen
+ok identity.serial-number.fopen64
+ok identity.serial-number
+ok identity.serial-number.exists.access
+ok identity.serial-number.exists.faccessat
+ok identity.serial-number.exists
+ok devmem.open
+ok devmem.map
+1..36

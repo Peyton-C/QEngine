@@ -16,7 +16,9 @@
 # That is a memory-map problem, not a missing driver, and `highmem=off` fixes it
 # (see the armhf branch below), so both architectures now use the same PCI devices.
 # What still differs is the machine's highmem flag, the amount of RAM that flag
-# allows, the CPU, and the accelerator.
+# allows, the CPU, the accelerator, and the sound card -- that last one because of
+# what Debian builds for each architecture rather than because of the machine; see
+# arch_audio_devices at the bottom.
 
 ARCH="${ARCH:-arm64}"
 
@@ -71,6 +73,8 @@ case "$ARCH" in
         # itself: the launchers' own host check sets CPU=host for KVM/HVF, and a
         # value here would win over it via ${CPU:-...} and silently disable it.
         ARCH_CPU_DEFAULT="max"
+        # Nothing to add: this guest's card is hda, which has no such ceiling.
+        ARCH_KERNEL_ARGS=""
         GPU_DEV="virtio-gpu-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
@@ -101,6 +105,30 @@ case "$ARCH" in
         # it is a bigger change than this one and these devices have 2GB anyway.
         MACHINE="virt,highmem=off"
         ARCH_CPU_DEFAULT="cortex-a15"
+        # Lift a ceiling that would otherwise clamp silently.
+        #
+        # Linux's virtio_snd builds its ALSA constraints from module parameters at
+        # probe time (virtsnd_pcm_build_hw), and pcm_periods_max defaults to 16.
+        # This Engine runs 512-frame periods, so that caps a stream at 8192 frames
+        # -- and alsashim, which deepens a ring by scaling the buffer while leaving
+        # the period size alone, would hit it at ALSASHIM_BUFFER_SCALE=8 and go no
+        # further no matter what the variable said. A clamp that quiet is worth
+        # removing: the rootfs build ships scale 8 as a compromise
+        # between underruns that freeze Engine's audio callback outright and a ring
+        # so deep that its waveform no longer matches the sound (see the reasoning
+        # there), so tuning it across that range is expected rather than
+        # exceptional.
+        #
+        # On the kernel command line rather than in /etc/modprobe.d because this
+        # module is in the initrd's own load list, so it is modprobed inside the
+        # initramfs, before the real root's /etc is anywhere. The kernel applies
+        # module.parameter= arguments whenever the module loads, so the command
+        # line reaches it either way -- and needs no initrd or rootfs rebuild to
+        # change.
+        #
+        # A ceiling only: the ring actually allocated is whatever alsashim asks
+        # for, so a high value here changes nothing on its own.
+        ARCH_KERNEL_ARGS="virtio_snd.pcm_periods_max=128"
         GPU_DEV="virtio-gpu-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         # GL works here. Two things had to be true: the machine gained a working PCI
         # bus with highmem=off, so virtio-gpu-gl-pci can be attached at all, and the
@@ -109,9 +137,12 @@ case "$ARCH" in
         # cannot load in these images.
         #
         # Whether a *host* can serve it is separate. QEMU needs virglrenderer built
-        # in, and Debian's arm64 QEMU has neither virtio-gpu-gl-pci nor
-        # egl-headless, so on such a host the GL modes fail at startup no matter
-        # what this sets.
+        # in. Debian's arm64 QEMU has it, but ships virtio-gpu-gl-pci and
+        # egl-headless as modules in qemu-system-modules-opengl, a Recommends that
+        # --no-install-recommends leaves out, and egl-headless then needs libegl1
+        # and Mesa's libgallium on the host. Without them display_modes.sh drops to
+        # software rendering. Verified on a Pi 4 (V3D, Debian 13, QEMU 10.0.13)
+        # with JC11 5.3.0 under KVM.
         GPU_GL_DEV="virtio-gpu-gl-pci,edid=off,xres=$SCREEN_W,yres=$SCREEN_H"
         INPUT_DEVS="-device usb-ehci -device qemu-xhci,id=xhci -device usb-kbd -device usb-tablet"
         NET_DEV="virtio-net-pci"
@@ -129,6 +160,14 @@ case "$ARCH" in
                    echo "       the armmp-lpae kernel and drop highmem=off." >&2
                    exit 1; } ;;
         esac
+        # Four cores, the RK3288's own count, for the same reason MEM is set
+        # here: run_qemu.sh's ${SMP:-8} then leaves it in place. Eight was
+        # never all usable. Ubuntu's armhf kernel is built with NR_CPUS=4 and
+        # brings up four whatever QEMU offers, and the arm64 hosts that can
+        # run this guest under KVM are mostly four-core boards like the Pi 4,
+        # where eight vCPUs on four cores costs the audio thread its timing.
+        # Legacy instances already record SMP=4 for Engine's CPU-affinity setup.
+        SMP="${SMP:-4}"
         # A 32-bit guest *can* be KVM-accelerated, on a host whose cores implement
         # AArch32 at EL1 -- which is most arm64 Linux hardware, Cortex-A53/A72
         # included. Two things make that easy to miss. It does not work through
@@ -251,11 +290,34 @@ fi
 # default and leave playback null, which presents as a stuck XRUN rather than an
 # error (see the note in each engine launcher).
 #
-# The card differs by architecture because of what Debian builds, not the machine:
-# linux-image-armmp ships the HDA codec modules but not snd_hda_intel, so in a
-# 32-bit guest an ich9-intel-hda sits on the PCI bus with no driver and no card
-# ever appears. armhf gets virtio-sound instead, whose virtio_snd get_kernel.sh
-# puts in both initrds. arm64 keeps hda, which its audio was confirmed against.
+# Every guest gets hda when its kernel can drive it, and that is a property of
+# the kernel, not the architecture. Debian's armhf kernel (linux-image-armmp)
+# ships the HDA codec modules but not snd_hda_intel, so in a 32-bit guest an
+# ich9-intel-hda would sit on the PCI bus with no driver and no card would ever
+# appear. Ubuntu's, get_kernel.sh's default, has it. get_kernel.sh records which
+# in KERNEL_HDA, in an .info file beside the kernel; a kernel without that file
+# predates it and is Debian's, so it counts as having no hda on armhf.
+#
+# virtio-sound is what armhf gets without hda, and only then, because QEMU's
+# virtio-sound never resumes a stream once the guest lets its ring run dry.
+# Engine's stream froze at start on Prime GO 5.0.4 (JP11) in 5 of 7 tries under
+# KVM on a Pi 4, never advanced at all with a ring under ~30 ms, and under TCG
+# died before a track was loaded. On hda the same guest ran 5 of 5 cold starts
+# and 3 of 3 Engine restarts, and under TCG it plays on with short dropouts.
+#
+# use-timer=false moves samples when the audio backend asks for them, instead of
+# on hda's own timer. With the timer, Engine at 96 kHz lost a few samples about
+# eight times a second and ran 0.2% sharp (SC6000 5.0.4, JP13, on a Pi 4 under
+# KVM, measured at a 96 kHz capture so no host resampling was involved); without
+# it the same run kept exact pitch. 44.1 kHz products were clean either way.
+#
+# mixer=off leaves the codec without its emulated output amp. Linux brings that
+# amp up muted at zero gain and expects userspace to raise it, and Engine OS has
+# no mixer tool, so it stays muted. Backends that take the guest's volume pass the
+# mute on: under pipewire, the Linux default, QEMU's stream sat at volume 0 and
+# muted and Prime GO 5.3.0 and 4.3.0 (JP11, Pi 4) played silence, while wav and
+# coreaudio ignore it, which is how it went unseen. The real devices have no
+# such amp in front of Engine either.
 #
 # streams=1 is one playback stream and no capture, the virtio-sound equivalent
 # of hda-output rather than hda-duplex: QEMU makes the first half of the streams
@@ -265,10 +327,41 @@ fi
 # it with the -audiodev id it generated.
 #   $1 = the -audiodev id to attach to
 arch_audio_devices() {
-    # ${ARCH:-}: this runs long after the file was sourced, under set -u.
-    if [ "${ARCH:-}" = armhf ]; then
-        printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1"
-    else
-        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s' "$1"
+    # ${ARCH:-} rather than $ARCH: this runs long after the file was sourced, and
+    # under the launchers' `set -u` an unset ARCH would abort the boot here rather
+    # than fall through to the architecture this file already defaulted to.
+    # KERNEL_IMG is set by run_qemu.sh before it calls this. Every arm64 kernel
+    # either distribution builds has snd_hda_intel, so only armhf asks.
+    #
+    # Legacy Engine stays on virtio-sound whatever the kernel. Prime 4 and Prime 2
+    # 1.x run without alsashim, so nothing converts formats for them, and they
+    # set S32_LE on the card directly: hda offers only S16, the call fails, and
+    # Engine asserts in snd_pcm_state and exits before drawing (Prime 4 1.6.2,
+    # JC11). virtio-sound takes S32. ENGINE_VNC_PORT marks a legacy instance; only
+    # new_instance.sh's legacy path writes it.
+    if [ -z "${ENGINE_VNC_PORT:-}" ] && { [ "${ARCH:-}" != armhf ] ||
+       grep -qx 'KERNEL_HDA=1' "${KERNEL_IMG:-}.info" 2>/dev/null; }; then
+        # QEMU 11 dropped the use-timer property (11.1.3 has none) and refuses to
+        # start when given it, so it is passed only to a binary that lists it.
+        _hda_timer=""
+        case "$("${QEMU_BIN:-}" -device hda-output,help 2>/dev/null)" in
+            *use-timer*) _hda_timer=",use-timer=false" ;;
+        esac
+        printf -- '-device ich9-intel-hda -device hda-output,audiodev=%s%s,mixer=off' "$1" "$_hda_timer"
+        return 0
     fi
+
+    # virtio-sound-pci arrived in QEMU 8.2. Asking an older binary for it is a
+    # startup failure whose message names the device but not the requirement, and
+    # audio is not worth refusing to boot over -- so say what is missing and go on
+    # without a card.
+    case "$("${QEMU_BIN:-}" -device help 2>/dev/null)" in
+        *virtio-sound-pci*)
+            printf -- '-device virtio-sound-pci,streams=1,audiodev=%s' "$1" ;;
+        *)
+            echo "WARNING: $QEMU_BIN has no virtio-sound-pci (QEMU 8.2+), which is" >&2
+            echo "         the only sound card this guest's kernel can drive. Build" >&2
+            echo "         Ubuntu's with scripts/build_scripts/get_kernel.sh --arch" >&2
+            echo "         armhf, or boot without audio as this does now." >&2 ;;
+    esac
 }

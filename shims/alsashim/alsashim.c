@@ -234,11 +234,9 @@
  *                   that fails to start takes playback down with it -- the
  *                   stream opens, then sits in XRUN while decks never load.
  *   ALSASHIM_CAPTURE_PCM  PCM to record from when the card has playback but no
- *                   capture, or ALSASHIM_NO_CAPTURE hides it, e.g. "null", which
- *                   reads silence as fast as it is asked, so the output keeps the
- *                   time. Unset for none. SC LIVE 4 (JP21) needs it on such a card:
- *                   it treats its input as always present and segfaults starting
- *                   audio without one.
+ *                   capture, or ALSASHIM_NO_CAPTURE hides it. With "null",
+ *                   alsashim fills the reads with silence so playback keeps time.
+ *                   Unset for none.
  *   ALSASHIM_BUFFER_SCALE  multiplier for the PCM ring depth (default 8);
  *                   1 disables the resizing and the sw_params follow-up
  *                   entirely, leaving Engine's own buffering untouched
@@ -512,7 +510,7 @@ int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
 static unsigned int g_real_ch_max[2];
 /* The playback device Engine has open, as last opened through the rewrite below. */
 static _Atomic(snd_pcm_t *) g_main_pcm;
-/* And the capture device, for ALSASHIM_INPUT_WAV. */
+/* And the capture device, for silent fallback and ALSASHIM_INPUT_WAV. */
 static _Atomic(snd_pcm_t *) g_capture_pcm;
 static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
 
@@ -1007,6 +1005,19 @@ static const char *input_wav_path(void) {
     return (v && *v) ? v : NULL;
 }
 
+static int capture_needs_fill(snd_pcm_t *pcm) {
+    if (pcm != atomic_load(&g_capture_pcm)) return 0;
+    if (input_wav_path()) return 1;
+
+    /* A real input takes precedence over the fallback in snd_pcm_open(). */
+    const char *fallback = capture_pcm();
+    if (!fallback || strcmp(fallback, "null") != 0) return 0;
+    static const char *(*get_name)(snd_pcm_t *);
+    RESOLVE(get_name, "snd_pcm_name");
+    const char *name = get_name ? get_name(pcm) : NULL;
+    return name && strcmp(name, "null") == 0;
+}
+
 static unsigned int le16(const unsigned char *p) { return p[0] | (p[1] << 8); }
 static unsigned long le32(const unsigned char *p) {
     return p[0] | (p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
@@ -1130,27 +1141,29 @@ static void input_fill(void *buf, long frames) {
     unsigned int channels = atomic_load(&g_in.channels);
     unsigned int rate = atomic_load(&g_in.rate);
     int format = atomic_load(&g_in.format);
+    if (atomic_load(&g_wav.state) != 2 || rate == 0) {
+        /* ALSA's null PCM advances its pointers without writing the buffer.
+         * Engine 2.4.0–3.0.1 mixes that buffer into the Mixstream's output. */
+        static int (*set_silence)(int, void *, unsigned int);
+        RESOLVE(set_silence, "snd_pcm_format_set_silence");
+        if (set_silence && channels && (unsigned long)frames <= UINT_MAX / channels)
+            set_silence(format, buf, (unsigned int)frames * channels);
+        return;
+    }
     if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
         format != ALSASHIM_FORMAT_FLOAT_LE)
         return;
-    int have = atomic_load(&g_wav.state) == 2 && rate > 0;
-    double step = have ? (double)g_wav.rate / rate : 0;
+    double step = (double)g_wav.rate / rate;
     for (long f = 0; f < frames; f++) {
-        unsigned long at = have ? (unsigned long)g_in.pos : 0;
+        unsigned long at = (unsigned long)g_in.pos;
         unsigned long next = at + 1 < g_wav.frames ? at + 1 : 0;
         float frac = (float)(g_in.pos - (double)at);
         for (unsigned int c = 0; c < channels; c++) {
-            float v = 0.0f;
-            if (have) {
-                float a = wav_sample(at, c), b = wav_sample(next, c);
-                v = a + (b - a) * frac;
-            }
-            put_sample(buf, format, (unsigned long)f * channels + c, v);
+            float a = wav_sample(at, c), b = wav_sample(next, c);
+            put_sample(buf, format, (unsigned long)f * channels + c, a + (b - a) * frac);
         }
-        if (have) {
-            g_in.pos += step;
-            if (g_in.pos >= (double)g_wav.frames) g_in.pos -= (double)g_wav.frames;
-        }
+        g_in.pos += step;
+        if (g_in.pos >= (double)g_wav.frames) g_in.pos -= (double)g_wav.frames;
     }
 }
 
@@ -1162,7 +1175,7 @@ long snd_pcm_readi(snd_pcm_t *pcm, void *buf, snd_pcm_uframes_t frames) {
     RESOLVE(real_readi, "snd_pcm_readi");
     if (!real_readi) return -ENOSYS;
     long done = real_readi(pcm, buf, frames);
-    if (done > 0 && pcm == atomic_load(&g_capture_pcm) && input_wav_path())
+    if (done > 0 && capture_needs_fill(pcm))
         input_fill(buf, done);
     return done;
 }
@@ -1184,13 +1197,13 @@ int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
     if (ret < 0 || !get_channels || !get_format || !get_rate) return ret;
     unsigned int channels = 0, rate = 0;
     int format = -1;
-    if (pcm == atomic_load(&g_capture_pcm) && input_wav_path() &&
+    if (capture_needs_fill(pcm) &&
         get_channels(params, &channels) == 0 && get_format(params, &format) == 0 &&
         get_rate(params, &rate, NULL) == 0) {
         atomic_store(&g_in.channels, channels);
         atomic_store(&g_in.format, format);
         atomic_store(&g_in.rate, rate);
-        input_start();
+        if (input_wav_path()) input_start();
         return ret;
     }
     if (pcm != atomic_load(&g_main_pcm)) return ret;

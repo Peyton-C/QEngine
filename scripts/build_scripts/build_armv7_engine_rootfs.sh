@@ -916,11 +916,21 @@ EOF
     # SC LIVE 4 takes its mic and aux as one stereo input it splits itself, and
     # on 5.1.0 and 5.3.0 starts its audio as though that input is always there:
     # against the playback-only card above it dereferences the missing input and
-    # segfaults a second after opening the card. ALSA's null PCM stands in as the
-    # input, read as fast as Engine asks, so the output keeps the time.
+    # segfaults a second after opening the card. alsashim supplies silence
+    # through the null PCM, so the output keeps time.
     if [ "$PRODUCT_CODE" = JP21 ]; then
         echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
     fi
+    # Mixstream Engine 2.4.0 through 3.0.1 also assumes capture is present.
+    # Use the embedded Engine release tag, since an update can be renamed
+    # and --product-code can pick a Mixstream identity from another image.
+    case "$PRODUCT_CODE" in
+        NH08|NH08S|NH09|NH10)
+            if LC_ALL=C grep -aqE 'engine-embedded@(2\.4|3\.0)\.[0-9]+\.' /mnt/rootfs/usr/Engine/Engine; then
+                echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
+            fi
+            ;;
+    esac
     # The SC players give Layer B its own output pair, channels 3/4, which the
     # stereo card above drops: measured silent on SC6000 5.0.4 and 5.3.0. The
     # shim adds it into 1/2 so both layers are heard.

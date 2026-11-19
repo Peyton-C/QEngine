@@ -27,7 +27,7 @@ Use the instance launcher so the sound device and preload configuration stay tog
 | `ALSASHIM_BUFFER_SCALE` | Scales ring depth; default 8, which armv7 Engine builds also set, while the Pi uses 1 and the guest-linked legacy configuration 4 |
 | `ALSASHIM_XRUN_FREE_RUN` | Keeps playback running through an underrun instead of stopping it, which Engine never recovers from; off by default |
 | `ALSASHIM_NO_CAPTURE` | Hides capture devices |
-| `ALSASHIM_CAPTURE_PCM` | Records from this PCM when the card has no capture or it is hidden; SC LIVE 4 builds use `null` |
+| `ALSASHIM_CAPTURE_PCM` | Opens this PCM when capture is missing or hidden. `alsashim` fills reads from `null` with silence. |
 | `ALSASHIM_MAX_CHANNELS` | Limits advertised channels; the legacy configuration uses 4 |
 | `ALSASHIM_LAYER_MIX` | Adds channels 3/4 into 1/2 on a card with fewer than four channels, unless a cue card is set; SC5000, SC5000M, SC6000 and SC6000M builds use it, since their Layer B plays on 3/4 |
 | `ALSASHIM_METER` | Logs per-channel levels |
@@ -36,7 +36,9 @@ QEngine scales the buffer, period count and playback start/stop thresholds toget
 
 Each step of the scale adds one of Engine's rings of latency in QEMU. At 8, Prime 4 plays about 93 ms late and SC6000 about 75 ms, before QEMU and the host add their own. Scale 4 halves that and plays cleanly under KVM, but drops out briefly when a track loads during playback, and repeatedly under TCG. Below 4 the stream glitches. For low latency, use the [Pi chroot](../../scripts/pi/README.md), which runs Engine at its own buffer size.
 
-The repository records audible end-to-end playback on arm64 RMZ2 5.0.4, and recorded playback under KVM on armv7 Prime 4, Prime 4+, Prime GO and SC6000 on 4.3.0 to 5.3.0, Prime GO+ on 4.3.4, and Prime 2, SC LIVE 2 and 4 and Mixstream Pro, Pro+ and Pro GO on 5.1.0 or 5.3.0. SC LIVE 4 (`JP21`) takes its mic and aux as one stereo input that it splits itself, and starts its audio as though that input is always there. Against a playback-only card Engine segfaults a second after accepting it, so `alsashim` gives it ALSA's `null` PCM as the input. Given a real input with more than two channels, it aborts. Under TCG on Apple Silicon, CoreAudio playback of Prime GO 5.3.0 cuts out about once a second whatever the buffer settings, so listen to armv7 under KVM. Legacy playback and MIDI binding remain unverified despite the guest-linked audio setup. See the [support matrix](../../README.md#engine-os-support-matrix) for other targets. The experimental `az04-codec` modules are not required by the normal playback path.
+QEngine supplies silent capture for SC LIVE 4 (`JP21`) and for Mixstream identities on Engine 2.4.x and 3.0.x. Those builds can crash when capture is missing. SC LIVE 4 splits mic and aux from a stereo input and requires exactly two capture channels.
+
+The repository records audible end-to-end playback on arm64 RMZ2 5.0.4, and recorded playback under KVM on armv7 Prime 4, Prime 4+, Prime GO and SC6000 on 4.3.0 to 5.3.0, Prime GO+ on 4.3.4, and Prime 2, SC LIVE 2 and 4 and Mixstream Pro, Pro+ and Pro GO on 5.1.0 or 5.3.0. Under TCG on Apple Silicon, CoreAudio playback of Prime GO 5.3.0 cuts out about once a second whatever the buffer settings, so listen to armv7 under KVM. Legacy playback and MIDI binding remain unverified despite the guest-linked audio setup. See the [support matrix](../../README.md#engine-os-support-matrix) for other targets. The experimental `az04-codec` modules are not required by the normal playback path.
 
 ## MIDI discovery
 The guest needs the USB audio/MIDI and ALSA sequencer kernel modules. QEngine's kernel build supplies them. Engine can enumerate generic sequencer clients, but enumeration does not establish a working control surface: it binds a control assignment only after a matching MIDI Device Inquiry reply.

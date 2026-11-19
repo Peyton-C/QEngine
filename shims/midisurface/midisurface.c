@@ -104,8 +104,8 @@ static const unsigned char ID_REQUEST[] = {0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7};
  *
  * Generated from that file. RMZ2 is the odd one out: inMusic's manufacturer id
  * 00 00 17 and a trailing 7F, where the RK3288 family uses 00 02 0B and the
- * Numark units 00 01 3f, both trailing 00. JP24, the other RK3588 product here,
- * keeps the Denon id 00 02 0B but shares RMZ2's trailing 7F.
+ * Numark units 00 01 3f, both trailing 00. JP22 and JP24, the other RK3588 products
+ * here, keep the Denon id 00 02 0B but share RMZ2's trailing 7F.
  *
  * Every one of those patterns wildcards the six bytes before the trailing one
  * -- the software revision -- so the zeros below cannot affect *binding*, and
@@ -139,6 +139,7 @@ static const struct device_identity DEVICE_IDENTITIES[] = {
     {"JP14", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 0E */
     {"JP20", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 11  (prefix pattern) */
     {"JP21", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 02 0B 12  (prefix pattern) */
+    {"JP22", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xF7}},   /* 00 02 0B 13 */
     {"JP24", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x02, 0x0B, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7F, 0xF7}},   /* 00 02 0B 14 */
     {"NH08", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
     {"NH08S", {0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x00, 0x01, 0x3F, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7}},   /* 00 01 3f 3f */
@@ -207,7 +208,7 @@ static const struct device_identity *identity_for(const char *code) {
  * use play 1 / cue 2, and have no load button at all: a track arrives from the
  * browser rather than from a deck control. Everything else is a two-deck
  * controller with play 10 / cue 9 and per-deck load notes 1 and 2. The RK3588
- * products (RMZ2, JP24) are the odd ones out, pairing the players' play/cue
+ * products (RMZ2, JP22, JP24) are the odd ones out, pairing the players' play/cue
  * notes with two decks and load notes of their own.
  *
  * A product absent from this table can still be driven with the raw press/on/
@@ -240,6 +241,7 @@ static const struct device_controls DEVICE_CONTROLS[] = {
     {"JP14",   1, 2, 1, {{"Deck", 0x00,   -1}}},
     {"JP20",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
     {"JP21",  10, 9, 2, {{"Left", 0x04, 0x01}, {"Right", 0x05, 0x02}}},
+    {"JP22",   1, 2, 2, {{"Left", 0x04, 0x18}, {"Right", 0x05, 0x19}}},
     {"JP24",   1, 2, 2, {{"Left", 0x04, 0x18}, {"Right", 0x05, 0x19}}},
     {"NH08",  10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},
     {"NH08S", 10, 9, 2, {{"Left", 0x02, 0x01}, {"Right", 0x03, 0x02}}},

@@ -83,26 +83,29 @@ Prime 4 1.4.0 Beta 1 still runs the Qt 5.9 of 1.3.x. It boots upright and identi
 | 2.2.2 | 2022-06-16 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
 | 2.3.0 | 2022-08-24 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
 | 2.3.1 | 2022-09-02 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
-| 2.3.2 | 2022-09-22 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-10 |
+| 2.3.2 | 2022-09-22 | ? | ? | ? | ? | ? | Y | ? | ? | - | - | - | 2026-11-19 |
 | 2.3.3 | 2022-11-04 | - | - | - | - | - | - | - | - | Y | ? | - | 2026-11-11 |
-| 2.4.0 | 2022-12-13 | ? | ? | ? | Y | ? | ? | ? | ? | ? | ? | ? | 2026-11-08 |
+| 2.4.0 | 2022-12-13 | ? | ? | ? | Y | ? | N | ? | ? | ? | ? | N | 2026-11-19 |
 
 2.0.0 was booted from the SC5000 image built as each product code, and Prime GO's also from its own.
 Mixstream Pro 2.0.1 was reported at first boot and also had a public updater.
+Mixstream Pro+ 2.4.0 was booted from the SC LIVE 4 image and Mixstream Pro 2.4.0 from the Prime GO image. Both boot, but every Mixstream from 2.4.0 to 3.0.1 plays corrupt audio and segfaults once audio starts unless `ALSASHIM_CAPTURE_PCM=null` is set. Mixstream Pro 2.4.0 was not run past that crash.
 
 ## 3.x
 | Version | Release date | JP07 | JP08 | JP11 | JC11 | JC16 | NH08 | JP13 | JP14 | JC11S | JP20 | JP21 | NH08S | NH10 | Last tested |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 3.0.0 | 2023-03-03 | ? | ? | ? | ? | ? | ? | ? | ? | - | ? | ? | ? | ? | - |
-| 3.0.1 | 2023-04-05 | ? | ? | ? | ? | ? | ? | ? | ? | - | ? | ? | ? | ? | - |
-| 3.1.0 | 2023-06-15 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | - |
+| 3.0.0 | 2023-03-03 | ? | ? | ? | ? | ? | N | ? | ? | - | ? | ? | ? | N | 2026-11-18 |
+| 3.0.1 | 2023-04-05 | ? | ? | ? | ? | ? | ? | ? | ? | - | Y | Y | N | N | 2026-11-19 |
+| 3.1.0 | 2023-06-15 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | Y | 2026-11-18 |
 | 3.1.1 | 2023-07-05 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | - |
 | 3.2.0 | 2023-08-23 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | - |
 | 3.3.0 | 2023-12-06 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | - |
 | 3.4.0 | 2024-03-14 | ? | ? | ? | Y | ? | ? | ? | ? | ? | ? | ? | ? | ? | 2026-11-08 |
 
-The catalog flags Mixstream Pro Go 3.0.0 and 3.0.1 OTA.
-I've been unable to find the Mixstream Pro Go 3.0.0 and 3.0.1 images as anything besides OTA updates.
+The catalog flags Mixstream Pro Go 3.0.0 and 3.0.1 OTA. Their images are ordinary update images in the signed "for nh08s" container, not deltas.
+Mixstream Pro, Pro+ and Pro Go on 3.0.0 and 3.0.1 boot, with the corrupt audio and capture crash described under 2.x. Mixstream Pro+, SC LIVE 2 and SC LIVE 4 3.0.1 were booted from the Pro Go image. SC LIVE 2 plays cleanly; SC LIVE 4 starts its audio, but its play note is ignored, so playback was not checked.
+The 3.0.1 and 3.4.0 Engines reject `JP11S`: Engine exits before the GUI and the unit powers off. Prime GO+ first appears in 4.x.
+Mixstream Pro Go 3.1.0 was booted from the SC LIVE 4 image, whose Engine differs from the Pro Go's only in its build ID, and plays cleanly without `ALSASHIM_CAPTURE_PCM=null`.
 
 ## 4.x
 | Version | Release date | JP07 | JP08 | JP11 | JC11 | JC16 | NH08 | JP13 | JP14 | JC11S | JP11S | JP20 | JP21 | NH08S | NH10 | JP24 | RMZ2 | Last tested |
@@ -134,5 +137,5 @@ I've been unable to find the Mixstream Pro Go 3.0.0 and 3.0.1 images as anything
 | 5.1.0 | 2026-09-01 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | Y | - | 2026-11-06 |
 | 5.1.1 | 2026-09-28 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | Y | - | 2026-11-06 |
 | 5.2.0 | 2026-09-23 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | Y | 2026-10-08 |
-| 5.3.0 | 2026-11-05 | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | 2026-11-17 |
+| 5.3.0 | 2026-11-05 | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | Y | 2026-11-19 |
 

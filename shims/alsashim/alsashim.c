@@ -365,11 +365,25 @@ static sw_frames_t real_set_stop = NULL;
 static writei_t real_writei = NULL;
 static sw_get_frames_t real_get_boundary = NULL;
 
-/* Lazy resolution, one dlsym per symbol. Racing threads compute the same
+/* The hw_params getters and the _near/_first/_last setters exist twice in
+ * alsa-lib: the default at ALSA_0.9.0rc4, which writes through a pointer, and the
+ * hidden ALSA_0.9 original, which returns the value and leaves the pointer alone.
+ * glibc before 2.36 can hand dlsym(RTLD_NEXT) the hidden one (BZ #14932). On
+ * MIXSTREAM PRO GO 3.0.0 and 3.0.1 (Buildroot, glibc 2.34) that made
+ * get_channels_max leave Engine's value uninitialised, so Engine asked
+ * set_channels for whatever was on the stack and ran with no output. Asking for
+ * ALSA_0.9.0rc4 by name gets the right one there, and falls through to dlsym for
+ * every symbol that has only one version. */
+static void *next_alsa_sym(const char *sym) {
+    void *p = dlvsym(RTLD_NEXT, sym, "ALSA_0.9.0rc4");
+    return p ? p : dlsym(RTLD_NEXT, sym);
+}
+
+/* Lazy resolution, one lookup per symbol. Racing threads compute the same
  * pointer, so the unsynchronised write is benign. */
 #define RESOLVE(var, sym) \
     do { \
-        if (!(var)) (var) = (__typeof__(var))dlsym(RTLD_NEXT, sym); \
+        if (!(var)) (var) = (__typeof__(var))next_alsa_sym(sym); \
     } while (0)
 
 static const char *spoof_name(void) {

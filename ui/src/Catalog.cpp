@@ -32,11 +32,11 @@ const std::vector<Product>& catalog() {
         {"NH08S", "Numark Mixstream Pro+", "Engine", "armv7", {"MIXSTREAMPROPLUS"}, true},
         {"NH10", "Numark Mixstream Pro GO", "Engine", "armv7", {"MIXSTREAMPROGO"}, true},
 
-        {"ACVA3", "MPC One (Gen 2)", "MPC", "arm64", {"MPC-"}},
+        {"ACVA3", "MPC One G2", "MPC", "arm64", {"MPC-"}},
         {"ACVG", "MPC Live III", "MPC", "arm64", {"MPC-"}},
         {"ACVC", "MPC XL", "MPC", "arm64", {"MPC-"}},
         {"ACVM2", "MPC Key 61 (Gen 2)", "MPC", "arm64", {"MPC-"}},
-        {"ACVR2", "MPC Key 37 (Gen 2)", "MPC", "arm64", {"MPC-"}},
+        {"ACVR2", "MPC Key 37 G2", "MPC", "arm64", {"MPC-"}},
         {"ADA2S", "Force (Gen 2)", "MPC", "arm64", {"Force-", "force-"}},
         {"ACVA", "MPC One", "MPC", "armv7", {"MPC-"}},
         {"ACVA2", "MPC One+", "MPC", "armv7", {"MPC-"}},
@@ -69,6 +69,26 @@ const Product* findProduct(const std::string& code) {
     for (const Product& p : catalog()) {
         if (p.code == code) return &p;
     }
+    return nullptr;
+}
+
+const Product* findHeadRushFirmware(const std::string& filename) {
+    std::string name = lower(filename);
+
+    // new_instance.sh writes the path with printf %q, so a space in an
+    // updater's name can arrive as a backslash followed by a space.
+    for (size_t pos = name.find("\\ "); pos != std::string::npos; pos = name.find("\\ ", pos + 1)) {
+        name.erase(pos, 1);
+    }
+
+    for (const Product& p : catalog()) {
+        if (p.family != "HeadRush") continue;
+
+        for (const std::string& prefix : p.images) {
+            if (name.compare(0, prefix.size(), lower(prefix)) == 0) return &p;
+        }
+    }
+
     return nullptr;
 }
 

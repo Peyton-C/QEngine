@@ -15,8 +15,8 @@
 // guest. --instance selects that instance, and connects to it if it runs.
 // --new opens the New Device sheet.
 // --screenshot renders one frame offscreen into a PNG and quits, without
-// showing a window, so a layout change can be checked from a script. With
-// --instance it waits first for the guest's lamps, four seconds or --wait.
+// showing a window, so a layout change can be checked from a script. With a
+// running guest it waits for the screen and lamps, four seconds or --wait.
 // --overlay lays a PNG over the top face, or the one --overlay-face names, at
 // --overlay-alpha, 0.5 by default, so a layout can be checked against a
 // product photo. --overlay-rect is where the face sits in the image, in
@@ -611,9 +611,9 @@ int main(int argc, char** argv) {
 
         // A few frames first, so fonts are rasterised and the layout settles.
         if (shot) {
-            // With a guest, long enough for it to answer, so the shot shows
-            // its lamps.
-            const bool settled = !app.link.wanted() || ImGui::GetTime() > app.args.wait;
+            // A VNC-only guest still needs time to deliver its first frame.
+            const bool waitingForGuest = app.link.wanted() || app.screen.wanted();
+            const bool settled = !waitingForGuest || ImGui::GetTime() > app.args.wait;
 
             if (++frames >= 4 && settled) {
                 running = false;
@@ -622,13 +622,16 @@ int main(int argc, char** argv) {
                     std::printf("guest: %s, %u sent, %u received\n",
                                 app.link.connected() ? "connected" : "not connected", app.link.sent(),
                                 app.link.received());
-                    std::printf("screen: %s, %s\n", app.screen.connected() ? "connected" : "not connected",
-                                app.screen.status().c_str());
                     const auto& log = app.link.log();
 
                     for (size_t i = log.size() > 12 ? log.size() - 12 : 0; i < log.size(); ++i) {
                         std::printf("  %s\n", log[i].c_str());
                     }
+                }
+
+                if (app.screen.wanted()) {
+                    std::printf("screen: %s, %s\n", app.screen.connected() ? "connected" : "not connected",
+                                app.screen.status().c_str());
                 }
 
                 if (!saveScreenshot(app, drawData, format, app.args.screenshot)) {

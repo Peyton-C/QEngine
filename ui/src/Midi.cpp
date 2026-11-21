@@ -416,9 +416,9 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
         return;
     }
 
-    // Akai's pad colour: F0 47 7F <product> 65 00 04 <pad> <r> <g> <b> F7, pad
-    // 1 as 0, each level 0 to 127. MPC kits use about half, so a level is the
-    // LED's drive and is shown through the screen's gamma.
+    // Akai's pad colour: F0 47 7F <product> 65 00 04 <pad> <r> <g> <b> F7.
+    // Live III's MPCe pads use four consecutive indices per pad in 3.10.1.
+    // Each level is the LED's drive and is shown through the screen's gamma.
     if (m.size() == 12 && m[1] == 0x47 && m[4] == 0x65 && m[5] == 0x00 && m[6] == 0x04) {
         const auto level = [](unsigned char v) { return std::pow(float(v) / 127.0f, 1.0f / 2.2f); };
         const ImVec4 c = {level(m[8]), level(m[9]), level(m[10]), 1};
@@ -488,16 +488,12 @@ void GuestLink::bind(Surface& surface) {
             continue;
         }
 
-        const int lampCh = std::clamp(m.value("lamp_ch", c.ch), 0, 15);
-        const json lamp = m.value("lamp", m.value("note", json()));
+        const json pad = m.value("pad", json());
+        const bool akaiPad = pad.is_number() || pad.is_array();
+        const int lampCh = akaiPad ? kAkaiPads : std::clamp(m.value("lamp_ch", c.ch), 0, 15);
+        const json lamp = akaiPad ? pad : m.value("lamp", m.value("note", json()));
         const std::string type = m.value("lamp_type", "");
-        Lamp l{e.id, -1, type != "rgb", type != "note"};
-
-        // An MPC pad, lit by its number in Akai's pad colour SysEx.
-        if (m.contains("pad") && m["pad"].is_number()) {
-            lamps_[kAkaiPads << 8 | m["pad"].get<int>()].push_back({e.id, -1, false, true});
-            continue;
-        }
+        Lamp l{e.id, -1, !akaiPad && type != "rgb", akaiPad || type != "note"};
 
         if (lamp.is_array()) {
             for (size_t q = 0; q < lamp.size() && q < 4; ++q) {

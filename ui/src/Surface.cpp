@@ -759,19 +759,21 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
     }
     const float hit = std::max(st.flash, st.pressed ? 1.0f : 0.0f);
     const bool lit = lampsOn && st.lit;
+    const bool rim = flag(p, "rim");
+    const float rimLight = rim && lit ? 1.0f : idle;
 
     g.haloRect(p0, p1, r, g.L(1.2f), {0, g.L(0.6f)}, {0, 0, 0, 1}, 0.7f);
 
     // MPC pads are lit from below, so the light shows round the edge.
-    if (idle > 0 || hit > 0) {
-        g.haloRect(p0, p1, r, g.L(1.4f + 2.0f * hit), {0, 0}, lamp, idle * 0.5f + hit * 0.6f);
+    if (rimLight > 0 || hit > 0) {
+        g.haloRect(p0, p1, r, g.L(1.4f + 2.0f * hit), {0, 0}, lamp, rimLight * 0.5f + hit * 0.6f);
     }
 
     ImVec4 face = st.pressed ? darken(cap, 0.08f) : cap;
     g.rect(p0, p1, r, lighten(face, 0.07f), darken(face, 0.12f));
 
     // RGB pads light their whole face. A pad with a strip lights only that.
-    if (lit && !hasColour(p, "strip")) {
+    if (lit && !rim && !hasColour(p, "strip")) {
         g.haloRect(p0, p1, r, g.L(2.4f), {0, 0}, lamp, 0.4f);
         g.rect(p0, p1, r, lighten(lamp, 0.35f), mix(lamp, cap, 0.2f));
         g.dl->AddRectFilled(p0 + (p1 - p0) * 0.2f, p1 - (p1 - p0) * 0.2f, g.C({1, 1, 1, 0.12f}),
@@ -780,7 +782,7 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
 
     const bool quarters = flag(p, "quadrants");
 
-    // Engine lights each quarter of a split pad on its own note.
+    // A split pad can receive one colour for each of its four quarters.
     if (lampsOn && quarters) {
         const ImVec2 mid = (p0 + p1) * 0.5f;
 
@@ -793,6 +795,17 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
 
             const ImVec2 q0 = {q % 2 ? mid.x : p0.x, q / 2 ? mid.y : p0.y};
             const ImVec2 q1 = {q % 2 ? p1.x : mid.x, q / 2 ? p1.y : mid.y};
+
+            if (rim) {
+                const float stroke = std::max(1.0f, g.L(0.55f));
+                const ImVec2 clipMin = {q % 2 ? mid.x : p0.x - stroke, q / 2 ? mid.y : p0.y - stroke};
+                const ImVec2 clipMax = {q % 2 ? p1.x + stroke : mid.x, q / 2 ? p1.y + stroke : mid.y};
+                g.dl->PushClipRect(clipMin, clipMax, true);
+                g.dl->AddRect(p0, p1, g.C(lighten(qc, 0.2f)), r, 0, stroke);
+                g.dl->PopClipRect();
+                continue;
+            }
+
             const ImDrawFlags corner = q == 0 ? ImDrawFlags_RoundCornersTopLeft
                                        : q == 1 ? ImDrawFlags_RoundCornersTopRight
                                        : q == 2 ? ImDrawFlags_RoundCornersBottomLeft
@@ -824,8 +837,8 @@ void drawPad(const Painter& g, const json& p, const ControlState& st, bool lamps
         g.dl->AddLine({p0.x + r, mid.y}, {p1.x - r, mid.y}, line, 1.0f);
     }
 
-    if (idle > 0 || hit > 0) {
-        g.dl->AddRect(p0, p1, g.C(alpha(lighten(lamp, 0.2f), std::min(1.0f, idle + hit))), r, 0,
+    if (rimLight > 0 || hit > 0) {
+        g.dl->AddRect(p0, p1, g.C(alpha(lighten(lamp, 0.2f), std::min(1.0f, rimLight + hit))), r, 0,
                       std::max(1.0f, g.L(0.35f)));
     }
 

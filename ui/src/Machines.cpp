@@ -1,4 +1,5 @@
 #include "Machines.hpp"
+#include "Catalog.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -192,12 +193,25 @@ std::vector<Instance> Machines::scan() {
             i.rootfs = v["ROOTFS_IMG"];
             i.sshPort = toInt(v["SSH_PORT"], 2225);
 
+            // An arm64 HeadRush guest runs VX5, even in old instances built
+            // with HG04. The armv7 updaters each carry their own app and can
+            // be built from the CLI without recording a product code.
+            if (i.device == "headrush" && i.arch == "arm64") {
+                i.product = "HV03";
+            }
+
             // A builder's default, when the instance was built without
             // --product-code.
             if (i.product.empty()) {
                 if (i.device == "mpc") i.product = i.arch == "arm64" ? "ACVA3" : "ACV5";
                 else if (i.device == "mpc-sample") i.product = "AC50";
+                else if (i.device == "drummodule") i.product = "LDMD";
                 else if (i.device == "engine") i.product = i.arch == "arm64" ? "RMZ2" : "JP07";
+                else if (i.device == "headrush") {
+                    if (const Product* p = findHeadRushFirmware(fs::path(i.firmware).filename().string())) {
+                        i.product = p->code;
+                    }
+                }
             }
 
             // The families whose guests serve a panel over MIDI: Engine

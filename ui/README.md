@@ -25,7 +25,7 @@ A product that differs only in finish or printing is a `variants` entry in its s
 | Kind | What |
 | --- | --- |
 | `button` | Lit through the cap, the legend, or an LED `ring`, with an optional colour `stripe` |
-| `pad` | Velocity pad, lit across its face, round its rim, or along a colour `strip`; `"quadrants": true` splits it into four, as MPC pads are |
+| `pad` | Velocity pad with face lighting, `"rim": true` for edge lighting, or a colour `strip`; `"quadrants": true` draws four zones, as on Prime 4 G2, MPC Live III and MPC XL |
 | `knob`, `encoder` | Ranged or endless, with optional `scale`, `halo`, `arc`, `well` and `metal` cap; an encoder has fluted sides and a dished top, set `ribs` or `"style": "plain"` to change that |
 | `fader` | Vertical or `"orient": "h"`, with ticks and a centre `detent` |
 | `jog` | Platter that coasts after a flick: brushed metal, `"style": "vinyl"`, or `"style": "display"` with an LED ring and a centre screen |
@@ -41,9 +41,13 @@ Text sizes are cap heights, as measured off a photo, and `fonts.scale` widens a 
 ## Guest
 Selecting a running Engine, MPC or MPC Sample instance connects the panel to its MIDI port, the one `run_instance.sh` prints, and the status strip shows how that is going. The panel then speaks the product's own protocol through `midibridge` and `midisurface` in the guest, and Engine lights its lamps back, so Engine takes it for the real control surface. See [Audio and MIDI](../docs/engine/AUDIO_MIDI.md#host-midi).
 
-A control sends what its `midi` field says, in the numbers from the product's assignment file: a `note` for a button or pad, a `cc` or a 14-bit `[upper, lower]` pair for a knob or fader, a `relative` CC for an encoder, and a touch note with a position pair for a jog. Engine lights a control on the note it sends unless `lamp` names another, or four for a split pad's quarters, with `lamp_ch` for another channel and `lamp_type` where an RGB lamp and a simple one share a note. An `led` or an indicator has only a `lamp`, and a `meter`'s `cc` is the one Engine sends its level and peak on, read as the assignment file's `ledCCValues` where the meter lists them as `levels`. A switch or a stepped knob with `values` sends one for each position, a CC's value or a note's velocity, as an FX paddle or a channel assign selector does. A placed template's `midi_channel` gives its controls their channel, and the layout's `midi.channel` the rest. Every Engine layout is mapped, as is the MPC One (`ACVA3`), and each needs an instance built as that product. A panel for another product sends that product's numbers, which the guest reads as its own product's.
+A control sends what its `midi` field says, in the numbers from the product's assignment file: a `note` for a button or pad, a `cc` or a 14-bit `[upper, lower]` pair for a knob or fader, a `relative` CC for an encoder, and a touch note with a position pair for a jog. Engine lights a control on the note it sends unless `lamp` names another, or four for a split pad's quarters, with `lamp_ch` for another channel and `lamp_type` where an RGB lamp and a simple one share a note. An `led` or an indicator has only a `lamp`, and a `meter`'s `cc` is the one Engine sends its level and peak on, read as the assignment file's `ledCCValues` where the meter lists them as `levels`. A switch or a stepped knob with `values` sends one for each position, a CC's value or a note's velocity, as an FX paddle or a channel assign selector does. A placed template's `midi_channel` gives its controls their channel, and the layout's `midi.channel` the rest. Build each instance for the product whose panel you want to use.
 
-An MPC or MPC Sample instance is played the same way, through `mpcsurface` in the guest, which answers MPC's handshake itself. A layout with `"midi": {"lamps": "cc"}` is lit as MPC lights its panel, a button by a CC on its own note and a pad by Akai's pad colour SysEx, which a pad's `pad` number picks. An encoder's `touch` note is held while it is, as a Q-Link's touch sensor is. The MPC One's STEP SEQ, SAMPLER and Q-LINK buttons and the Q-Link LEDs send nothing yet, since their notes are not known. Unlike Engine, MPC needs no restart to see the panel connect.
+`mpcsurface` answers the guest's handshake and connects without restarting MPC, Force or MPC Sample. A layout with `"midi": {"lamps": "cc"}` lights buttons by CC and pads by Akai's pad colour SysEx. An encoder's `touch` note stays down while you turn it.
+
+MPC and Force layouts send pad notes, data dial turns and mapped Q-Links and buttons. Gen 1 button numbers follow [IamForce](https://github.com/TheKikGen/MPCLiveXplore-libs/blob/master/src/tkgl_midimapper.h). Unmapped controls, Key keybeds and touch strips are visual. The Live III and XL show four MPCe rim colours with a `pad` array of SysEx indices, and send a normal pad hit.
+
+The HeadRush, Sheeran and Alesis layouts show the guest display. Use the screen to control guests with touch support. The physical controls are visual.
 
 Engine only binds the surface when it starts, which a VM started from the UI always gets, since the panel connects as it boots. Knobs and faders are sent when they move, not when connecting, so Engine keeps its own positions until then.
 
@@ -53,7 +57,7 @@ Connecting also shows the guest's display in the layout's first `lcd`, read over
 The View menu's Screen in bezel, or `--view screen`, shows the guest's display alone in a frame coloured as the device. A layout's `bezel` sets it, as `"bands": [["#cfc6b6", 1], ["#121315", 2]]` stacks the Prime 4 G2's champagne third over its black, with an optional `edge` and a `border` as a share of the screen's shorter side. Without one the frame takes the body's colour, so the MPC One's is red.
 
 ## Screenshots
-`--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it. With `--instance` it waits for the guest's lamps first, four seconds or `--wait`, and prints what it sent and received.
+`--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it. With a running guest it waits four seconds for the screen and lamps, or the time you set with `--wait`.
 
 `--overlay photo.png` lays a product photo over the top face at half opacity, to check a layout against it. `--overlay-rect x0,y0,x1,y1` gives the faceplate's pixels in the photo, `--overlay-face front` picks the front panel and `--overlay-alpha` the opacity. Photos are inMusic's, so keep them in `build/` and never commit them.
 

@@ -43,6 +43,7 @@
 //                                  a Prime 4 G2's load buttons and pitch LEDs do
 //   "pad": N                       an MPC pad's number in Akai's pad colour
 //                                  SysEx, pad 1 as 0, which lights it
+//   "pad": [N, N, N, N]            four SysEx indices for an MPCe pad's quarters
 //
 //   "values": [V, ...]             a switch's or a stepped knob's value for
 //                                  each position, as a CC or, for a switch

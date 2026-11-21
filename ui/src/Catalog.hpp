@@ -19,6 +19,7 @@ struct Product {
 
 const std::vector<Product>& catalog();
 const Product* findProduct(const std::string& code);
+const Product* findHeadRushFirmware(const std::string& filename);
 
 // The release a firmware file holds, read from its name: "5.3.0", or
 // "5.1.0 beta 8". Empty when the name carries none.

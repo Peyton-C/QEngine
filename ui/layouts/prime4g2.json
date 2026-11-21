@@ -2,8 +2,8 @@
   "name": "Prime 4 G2",
   "products": ["JP24"],
   "size": [650, 430.5],
-  "photo": {"file": "prime4g2.png", "rect": [8, 2, 1492, 985]},
   "body": {"none": true, "radius": 2.0},
+  "bezel": {"bands": [["#cfc6b6", 1], ["#121315", 2]], "edge": "#2c2e33"},
   "fonts": {"label": 1.5, "scale": 1.7},
   "defaults": {
     "button": {"cap": "#1c1d20", "text": "#e0e0e0", "label_at": "on", "label_size": 1.3},
@@ -239,7 +239,6 @@
   "front": {
     "gap": 16,
     "size": [650, 37.5],
-    "photo": {"file": "prime4g2front.png", "rect": [58, 448, 1337, 522]},
     "body": {"color": "#1a1b1e", "shade": "#111214", "radius": 1.5, "edge": "#2c2e33"},
     "elements": [
       {"kind": "text", "text": "HEADPHONES", "at": [48.9, 11.9], "size": 1.2},

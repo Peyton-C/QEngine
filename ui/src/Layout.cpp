@@ -44,7 +44,7 @@ void addElement(Layout& out, const json& defaults, json e, int face) {
     out.elements.push_back(std::move(element));
 }
 
-// Reads one face of the device: its size, body, photo and elements. Elements
+// Reads one face of the device: its size, body and elements. Elements
 // are in the face's own millimetres and moved to where the face sits in the
 // whole drawing, and their ids are prefixed so faces cannot collide.
 bool addFace(Layout& out, const json& doc, const std::string& name, ImVec2 at, const json& defaults,
@@ -54,16 +54,6 @@ bool addFace(Layout& out, const json& doc, const std::string& name, ImVec2 at, c
     const ImVec2 size = vec2(doc, "size", {100, 100});
     face.rect = {at.x, at.y, size.x, size.y};
     face.body = doc.value("body", json::object());
-
-    if (doc.contains("photo")) {
-        const json& photo = doc["photo"];
-        face.photoFile = photo.value("file", "");
-
-        if (photo.contains("rect") && photo["rect"].size() == 4) {
-            const json& r = photo["rect"];
-            face.photoRect = {r[0].get<float>(), r[1].get<float>(), r[2].get<float>(), r[3].get<float>()};
-        }
-    }
 
     const int index = int(out.faces.size());
     out.faces.push_back(face);
@@ -232,6 +222,8 @@ bool loadLayout(const fs::path& path, Layout& out, std::string& error, const std
             layout.labelSize = num(doc["fonts"], "label", layout.labelSize);
             layout.textScale = num(doc["fonts"], "scale", layout.textScale);
         }
+
+        layout.bezel = doc.value("bezel", json::object());
 
         const json defaults = doc.value("defaults", json::object());
         const json templates = doc.value("templates", json::object());

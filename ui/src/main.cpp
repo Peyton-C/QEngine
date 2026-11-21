@@ -5,8 +5,8 @@
 // Midi.hpp, with the guest's screen in the panel's lcd over VNC, see
 // Screen.hpp. Shell.cpp draws the window and Wizard.cpp the sheet.
 //
-//   qengine-ui [layout name] [--layouts DIR] [--photos DIR] [--instance NAME]
-//              [--new] [--view drawn|photo|trace] [--screenshot out.png]
+//   qengine-ui [layout name] [--layouts DIR] [--instance NAME]
+//              [--new] [--view drawn|screen] [--screenshot out.png]
 //              [--log-input]
 //
 // A layout name or product code opens that layout on its own, without a
@@ -48,8 +48,6 @@ bool parseArgs(int argc, char** argv, Args& args) {
 
         if (a == "--layouts" && more) {
             args.layouts = argv[++i];
-        } else if (a == "--photos" && more) {
-            args.photos = argv[++i];
         } else if (a == "--instance" && more) {
             args.instance = argv[++i];
         } else if (a == "--screenshot" && more) {
@@ -58,7 +56,7 @@ bool parseArgs(int argc, char** argv, Args& args) {
             args.wait = std::atof(argv[++i]);
         } else if (a == "--view" && more) {
             const std::string v = argv[++i];
-            args.view = v == "photo" ? View::Photo : v == "trace" ? View::Trace : View::Drawn;
+            args.view = v == "screen" ? View::Screen : View::Drawn;
         } else if (a == "--new") {
             args.newDevice = true;
         } else if (a == "--log-input") {
@@ -67,8 +65,8 @@ bool parseArgs(int argc, char** argv, Args& args) {
             args.device = a;
         } else {
             std::fprintf(stderr,
-                         "usage: %s [layout] [--layouts DIR] [--photos DIR] [--instance NAME] "
-                         "[--new] [--view drawn|photo|trace] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
+                         "usage: %s [layout] [--layouts DIR] [--instance NAME] "
+                         "[--new] [--view drawn|screen] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
                          argv[0]);
             return false;
         }
@@ -251,42 +249,11 @@ void loadDevices(App& app) {
 
 }  // namespace
 
-// Draws the layout at `index`, or none for -1, and loads its photos.
+// Draws the layout at `index`, or none for -1.
 void selectDevice(App& app, int index) {
     app.current = index;
-    static const Layout none;
     const Device* d = index >= 0 ? &app.devices[size_t(index)] : nullptr;
-    const Layout& layout = d ? d->layout : none;
     app.surface.setLayout(d && d->error.empty() ? &d->layout : nullptr);
-
-    std::string paths;
-
-    for (const Face& face : layout.faces) {
-        paths += face.photoFile + "\n";
-    }
-
-    if (paths != app.photosFor) {
-        SDL_WaitForGPUIdle(app.gpu);
-        app.photos.clear();
-
-        for (const Face& face : layout.faces) {
-            auto texture = std::make_unique<Texture>();
-
-            if (!face.photoFile.empty()) {
-                texture->load(app.gpu, (app.args.photos / face.photoFile).string());
-            }
-
-            app.photos.push_back(std::move(texture));
-        }
-
-        app.photosFor = paths;
-    }
-
-    app.options.photos.clear();
-
-    for (const auto& texture : app.photos) {
-        app.options.photos.push_back({texture->valid() ? texture->id() : ImTextureID_Invalid, texture->size()});
-    }
 }
 
 namespace {
@@ -436,7 +403,8 @@ void routeTouch(App& app, const TouchEvent& t) {
     ImGuiIO& io = ImGui::GetIO();
 
     if (t.phase == TouchEvent::Down) {
-        if (app.surface.contains(t.pos)) {
+        // The Screen view draws no panel, so a finger there is a mouse.
+        if (app.options.view != View::Screen && app.surface.contains(t.pos)) {
             app.surfaceTouches.insert(t.id);
         } else if (app.uiTouch == 0) {
             app.uiTouch = t.id;
@@ -660,7 +628,6 @@ int main(int argc, char** argv) {
     disconnectGuest(app);
     SDL_WaitForGPUIdle(app.gpu);
     app.screen.release();
-    app.photos.clear();
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();

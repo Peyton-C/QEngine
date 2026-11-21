@@ -2,7 +2,6 @@
   "name": "MPC Sample",
   "products": ["AC50"],
   "size": [250, 300.6],
-  "photo": {"file": "mpcsample.png", "rect": [268, 214, 1930, 2213]},
   "body": {"color": "#cbcac5", "shade": "#b7b6b1", "radius": 5.0, "edge": "#e4e3df"},
   "fonts": {"label": 2.2},
   "defaults": {

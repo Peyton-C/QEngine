@@ -6,7 +6,6 @@
 #include "Midi.hpp"
 #include "Screen.hpp"
 #include "Surface.hpp"
-#include "Texture.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -22,7 +21,6 @@
 struct Args {
     std::string device;  // a layout to open, by file name or product code
     std::filesystem::path layouts = QENGINE_UI_LAYOUTS;
-    std::filesystem::path photos = QENGINE_UI_PHOTOS;
     std::filesystem::path repo = QENGINE_UI_REPO;
     std::filesystem::path instances = QENGINE_UI_INSTANCES;
     std::string instance;
@@ -78,10 +76,6 @@ struct App {
     int current = -1;  // the layout drawn, or -1 for none
     Surface surface;
     SurfaceOptions options;
-    // One per face of the current device. Texture is not movable, hence
-    // the pointers.
-    std::vector<std::unique_ptr<Texture>> photos;
-    std::string photosFor;  // the paths now loaded, to skip reloading them
     double lastReloadCheck = 0;
 
     // Fingers on the device go to the surface, and one elsewhere drives the

@@ -48,13 +48,11 @@ float imAngle(float a) { return a - kPi * 0.5f; }
 
 ImVec2 polar(ImVec2 c, float r, float a) { return {c.x + std::sin(a) * r, c.y - std::cos(a) * r}; }
 
-// Turns millimetres into screen pixels, and fades everything it draws by one
-// alpha so the Trace view can lay the drawing over the photo.
+// Turns millimetres into screen pixels.
 struct Painter {
     ImDrawList* dl = nullptr;
     ImVec2 origin;
     float s = 1.0f;
-    float fade = 1.0f;
     const Fonts* fonts = nullptr;
     float labelSize = 2.4f;
     float textScale = 1.0f;
@@ -66,10 +64,7 @@ struct Painter {
     // be measured off a photo. A font's size is its em, about 1.4 times that.
     float fontPx(float capMm) const { return L(capMm) * textScale / 0.72f; }
 
-    ImU32 C(ImVec4 c) const {
-        c.w *= fade;
-        return ImGui::ColorConvertFloat4ToU32(c);
-    }
+    ImU32 C(ImVec4 c) const { return ImGui::ColorConvertFloat4ToU32(c); }
 
     // Shades whatever was drawn since `start` from c0 at the top to c1 at
     // the bottom, keeping each vertex's alpha so anti-aliased edges survive.
@@ -437,7 +432,7 @@ void lcdPicture(ImVec2 p0, ImVec2 p1, ImVec2 size, ImVec2& min, ImVec2& max) {
     max = min + size * s;
 }
 
-void drawLcd(const Painter& g, const json& p, const SurfaceOptions::Photo& screen) {
+void drawLcd(const Painter& g, const json& p, const SurfaceOptions::Image& screen) {
     const ImVec4 r = rect(p, "rect");
     const ImVec2 p0 = g.P({r.x, r.y});
     const ImVec2 p1 = g.P({r.x + r.z, r.y + r.w});
@@ -1271,30 +1266,6 @@ void drawJog(const Painter& g, const json& p, const ControlState& st) {
     g.circle(c, plate * 0.07f, {0.25f, 0.26f, 0.28f, 1}, {0.1f, 0.1f, 0.11f, 1});
 }
 
-// Highlights a control in the Photo view, where the photo cannot move.
-void drawPressedOverlay(const Painter& g, const Element& e, const ControlState& st) {
-    const float hit = std::max(st.flash, st.pressed ? 1.0f : 0.0f);
-
-    if (hit <= 0) {
-        return;
-    }
-
-    const json& p = e.p;
-    const ImVec2 c = g.P(vec2(p, "at"));
-    const ImVec2 size = vec2(p, "size", {8, 8}) * g.s;
-    const ImVec4 col = colour(p, "lamp", {1, 1, 1, 1});
-
-    if (e.kind == "button" || e.kind == "pad") {
-        if (str(p, "shape") == "round") {
-            g.dl->AddCircleFilled(c, size.x * 0.5f, g.C(alpha(col, 0.35f * hit)));
-        } else {
-            g.dl->AddRectFilled(c - size * 0.5f, c + size * 0.5f, g.C(alpha(col, 0.35f * hit)), g.L(1.0f));
-        }
-    } else {
-        g.dl->AddCircle(c, size.x * 0.5f, g.C(alpha({1, 1, 1, 1}, 0.5f * hit)), 0, g.L(0.6f));
-    }
-}
-
 std::string hexColour(ImVec4 c) {
     char hex[8];
     std::snprintf(hex, sizeof hex, "#%02x%02x%02x", int(c.x * 255.0f), int(c.y * 255.0f), int(c.z * 255.0f));
@@ -1760,50 +1731,16 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         }
     }
 
-    // Each face is drawn from its photo when the view asks for one and the
-    // face has one; a face without falls back to the drawing.
-    std::vector<View> faceView(layout.faces.size(), View::Drawn);
-
-    for (size_t i = 0; i < layout.faces.size(); ++i) {
-        const Face& face = layout.faces[i];
-        const bool photo = i < options.photos.size() && options.photos[i].id != ImTextureID_Invalid &&
-                           face.photoRect.z > 0;
-        faceView[i] = photo ? options.view : View::Drawn;
-
-        if (faceView[i] == View::Drawn) {
-            drawBody(g, face);
-            continue;
-        }
-
-        const ImVec2 size = options.photos[i].size;
-        const ImVec2 uv0 = {face.photoRect.x / size.x, face.photoRect.y / size.y};
-        const ImVec2 uv1 = {face.photoRect.z / size.x, face.photoRect.w / size.y};
-        const ImVec2 p0 = g.P({face.rect.x, face.rect.y});
-        const ImVec2 p1 = g.P({face.rect.x + face.rect.z, face.rect.y + face.rect.w});
-        g.haloRect(p0, p1, g.L(3), g.L(10), {0, g.L(4)}, {0, 0, 0, 1}, 0.9f);
-        dl->AddImageRounded(options.photos[i].id, p0, p1, uv0, uv1, IM_COL32_WHITE,
-                            g.L(num(face.body, "radius", 3.0f)));
+    for (const Face& face : layout.faces) {
+        drawBody(g, face);
     }
-
-    const bool anyPhoto = std::any_of(faceView.begin(), faceView.end(), [](View v) { return v != View::Drawn; });
 
     for (const Element& e : layout.elements) {
         static const ControlState none;
         const ControlState& st = e.id.empty() ? none : state_[e.id];
         const json& p = e.p;
-        const View view = size_t(e.face) < faceView.size() ? faceView[size_t(e.face)] : View::Drawn;
 
         if (flag(p, "hidden")) {
-            continue;
-        }
-        g.fade = view == View::Trace ? options.traceAlpha : 1.0f;
-
-        if (view == View::Photo) {
-            if (e.kind == "lcd") {
-                drawLcd(g, p, options.screen);
-            } else if (interactive(e.kind)) {
-                drawPressedOverlay(g, e, st);
-            }
             continue;
         }
 
@@ -1827,22 +1764,6 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         else if (e.kind == "jack") drawJack(g, p);
         else if (e.kind == "switch") drawSwitch(g, p, st);
         else if (e.kind == "bracket") drawBracket(g, p);
-    }
-
-    g.fade = 1.0f;
-
-    if (anyPhoto && options.view != View::Drawn && hovered_ >= 0) {
-        const Element& e = layout.elements[size_t(hovered_)];
-        const ImVec2 c = g.P(vec2(e.p, "at"));
-        const ImVec2 size = vec2(e.p, "size", {8, 8}) * g.s;
-        const bool roundish = e.kind != "button" && e.kind != "pad" && e.kind != "fader";
-
-        if (roundish) {
-            dl->AddCircle(c, size.x * 0.5f + 2, IM_COL32(255, 255, 255, 110), 0, 1.5f);
-        } else if (e.kind != "fader") {
-            dl->AddRect(c - size * 0.5f - ImVec2(2, 2), c + size * 0.5f + ImVec2(2, 2),
-                        IM_COL32(255, 255, 255, 110), 3, 0, 1.5f);
-        }
     }
 
     if (options.showIds) {

@@ -368,39 +368,13 @@ void welcome(App& app) {
     }
 }
 
-// The View popover: drawn, photo or traced, and the panel's own options.
+// The View popover: drawn or screen alone, and the panel's own options.
 void viewMenu(App& app) {
-    bool havePhoto = false;
-
-    for (const auto& texture : app.photos) havePhoto = havePhoto || texture->valid();
-
     int view = int(app.options.view);
     ImGui::TextDisabled("VIEW");
     ImGui::RadioButton("Drawn", &view, int(View::Drawn));
-    ImGui::BeginDisabled(!havePhoto);
-    ImGui::RadioButton("Photo", &view, int(View::Photo));
-    ImGui::RadioButton("Trace over photo", &view, int(View::Trace));
-    ImGui::EndDisabled();
+    ImGui::RadioButton("Screen in bezel", &view, int(View::Screen));
     app.options.view = View(view);
-
-    if (!havePhoto && app.current >= 0) {
-        std::string missing;
-
-        for (const Face& f : app.devices[size_t(app.current)].layout.faces) {
-            if (!f.photoFile.empty()) missing += (missing.empty() ? "" : ", ") + f.photoFile;
-        }
-
-        if (!missing.empty()) {
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 240);
-            ImGui::TextDisabled("Put %s in %s for the photo views.", missing.c_str(), app.args.photos.string().c_str());
-            ImGui::PopTextWrapPos();
-        }
-    }
-
-    if (app.options.view == View::Trace) {
-        ImGui::SetNextItemWidth(200);
-        ImGui::SliderFloat("##trace", &app.options.traceAlpha, 0.1f, 1.0f, "drawing %.2f");
-    }
 
     ImGui::Separator();
     ImGui::BeginDisabled(app.link.connected());
@@ -573,6 +547,126 @@ void screenOnly(App& app, const Instance& inst) {
     }
 }
 
+// The guest's screen alone, in a frame coloured as the device is, from the
+// layout's "bezel": an MPC One's red, or a Prime 4 G2's champagne strip over
+// its black deck. Without a guest, as a layout on its own, the screen is
+// blank at the lcd's shape.
+void bezelScreen(App& app, const Instance* inst, const Layout& layout) {
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilledMultiColor(pos, pos + avail, IM_COL32(34, 36, 41, 255), IM_COL32(34, 36, 41, 255),
+                                IM_COL32(14, 15, 17, 255), IM_COL32(14, 15, 17, 255));
+
+    if (avail.x < 50 || avail.y < 50) return;
+
+    const nlohmann::json& bezel = layout.bezel;
+    const nlohmann::json& body = layout.faces.empty() ? bezel : layout.faces[0].body;
+    const ImVec4 bodyColour = flag(body, "none") ? ImVec4(0.08f, 0.08f, 0.09f, 1)
+                                                 : colour(body, "color", ImVec4(0.08f, 0.08f, 0.09f, 1));
+
+    struct Band {
+        ImU32 col;
+        float share;
+    };
+    std::vector<Band> bands;
+    float total = 0;
+
+    for (const nlohmann::json& b : bezel.value("bands", nlohmann::json::array())) {
+        if (!b.is_array() || b.empty() || !b[0].is_string()) continue;
+
+        const float share = b.size() > 1 && b[1].is_number() ? std::max(b[1].get<float>(), 0.0f) : 1.0f;
+        bands.push_back({u32(parseColour(b[0].get<std::string>(), bodyColour)), share});
+        total += share;
+    }
+
+    if (bands.empty() || total <= 0) {
+        bands = {{u32(bodyColour), 1.0f}};
+        total = 1.0f;
+    }
+
+    // The screen's own size while it is live, else the lcd's shape.
+    const bool live = inst && app.screen.connected() && app.screen.texture() != ImTextureID_Invalid;
+    ImVec2 size = {1280, 800};
+
+    if (live) {
+        size = app.screen.size();
+    } else {
+        for (const Element& e : layout.elements) {
+            const ImVec4 r = rect(e.p, "rect");
+
+            if (e.kind == "lcd" && r.z > 0 && r.w > 0) {
+                size = {800.0f * r.z / r.w, 800.0f};
+                break;
+            }
+        }
+    }
+
+    // Everything in the screen's pixels, then scaled to fit.
+    const float border = num(bezel, "border", 0.09f) * std::min(size.x, size.y);
+    const ImVec2 outer = size + ImVec2(border, border) * 2;
+    const float margin = std::min(avail.x, avail.y) * 0.04f;
+    const float scale = std::min((avail.x - 2 * margin) / outer.x, (avail.y - 2 * margin) / outer.y);
+    const ImVec2 omin = pos + (avail - outer * scale) * 0.5f;
+    const ImVec2 omax = omin + outer * scale;
+    const ImVec2 min = omin + ImVec2(border, border) * scale;
+    const ImVec2 max = min + size * scale;
+    const float radius = border * scale * 0.5f;
+
+    ImGui::InvisibleButton("##screen", avail);
+
+    dl->AddRectFilled(omin + ImVec2(0, 6), omax + ImVec2(0, 10), IM_COL32(0, 0, 0, 90), radius);
+    float y = omin.y;
+
+    for (size_t i = 0; i < bands.size(); ++i) {
+        const float h = (omax.y - omin.y) * bands[i].share / total;
+        const bool first = i == 0;
+        const bool last = i + 1 == bands.size();
+        const ImDrawFlags corners = first && last ? ImDrawFlags_RoundCornersAll
+                                    : first       ? ImDrawFlags_RoundCornersTop
+                                    : last        ? ImDrawFlags_RoundCornersBottom
+                                                  : ImDrawFlags_RoundCornersNone;
+        dl->AddRectFilled(ImVec2(omin.x, y), ImVec2(omax.x, last ? omax.y : y + h), bands[i].col, radius, corners);
+
+        if (!first) dl->AddLine(ImVec2(omin.x, y), ImVec2(omax.x, y), IM_COL32(0, 0, 0, 70), 1.0f);
+
+        y += h;
+    }
+
+    const ImU32 edge = hasColour(bezel, "edge")  ? u32(colour(bezel, "edge", {}))
+                       : hasColour(body, "edge") ? u32(colour(body, "edge", {}))
+                                                 : IM_COL32(255, 255, 255, 30);
+    dl->AddRect(omin, omax, edge, radius, 0, 1.5f);
+
+    // A black lip round the glass, as every one of them has.
+    const float lip = std::max(border * scale * 0.12f, 3.0f);
+    dl->AddRectFilled(min - ImVec2(lip, lip), max + ImVec2(lip, lip), IM_COL32(6, 6, 7, 255), lip);
+
+    if (live) {
+        dl->AddImage(app.screen.texture(), min, max);
+    } else {
+        dl->AddRectFilled(min, max, IM_COL32(10, 10, 12, 255));
+
+        if (inst && inst->state != MachineState::Stopped) {
+            const std::string note = "Waiting for the screen on :" + std::to_string(app.screen.port());
+            const ImVec2 ts = app.fonts.ui->CalcTextSizeA(13.5f, FLT_MAX, 0, note.c_str());
+            dl->AddText(app.fonts.ui, 13.5f, (min + max - ts) * 0.5f, ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                        note.c_str());
+        }
+
+        return;
+    }
+
+    // A press, held while dragged and let go wherever the mouse is then.
+    if (ImGui::IsItemActive() || app.screenHeld) {
+        const ImVec2 uv = ImClamp((ImGui::GetIO().MousePos - min) / ImMax(max - min, ImVec2(1, 1)), ImVec2(0, 0),
+                                  ImVec2(1, 1));
+        const bool down = ImGui::IsItemActive();
+        app.screen.pointer(uv, down);
+        app.screenHeld = down;
+    }
+}
+
 // The big start button over a stopped device's panel.
 void playOverlay(App& app, const Instance& inst, ImVec2 min, ImVec2 max) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -627,7 +721,8 @@ void statusStrip(App& app, const Instance* inst) {
         ImGui::SameLine(0, 22);
     };
 
-    const Element* e = app.current >= 0 ? app.surface.hovered() : nullptr;
+    // The Screen view draws no panel, so what was hovered in it is stale.
+    const Element* e = app.current >= 0 && app.options.view != View::Screen ? app.surface.hovered() : nullptr;
     const std::string error = app.current >= 0 ? app.devices[size_t(app.current)].error : "";
 
     if (!error.empty()) {
@@ -805,7 +900,14 @@ void instancePane(App& app, const Instance& inst) {
     const ImVec2 pmin = ImGui::GetCursorScreenPos();
     const ImVec2 pmax = pmin + ImGui::GetContentRegionAvail();
 
-    if (app.current >= 0) {
+    if (app.current >= 0 && app.options.view == View::Screen) {
+        bezelScreen(app, &inst, app.devices[size_t(app.current)].layout);
+
+        // The panel is not drawn, but the guest's lamps still land in it.
+        if (app.link.connected()) app.options.layoutLamps = true;
+
+        app.link.update(app.surface, ImGui::GetTime());
+    } else if (app.current >= 0) {
         app.options.screen = {};
 
         if (app.screen.connected() && app.screen.texture() != ImTextureID_Invalid) {
@@ -843,7 +945,13 @@ void layoutPane(App& app) {
     toolbar(app, nullptr);
     ImGui::BeginChild("##panel", {0, -30.0f}, 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     app.options.screen = {};
-    app.surface.draw(app.options, app.fonts);
+
+    if (app.options.view == View::Screen) {
+        bezelScreen(app, nullptr, app.devices[size_t(app.current)].layout);
+    } else {
+        app.surface.draw(app.options, app.fonts);
+    }
+
     ImGui::EndChild();
     ImGui::SetCursorScreenPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
     statusStrip(app, nullptr);

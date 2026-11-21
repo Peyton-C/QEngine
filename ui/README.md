@@ -18,7 +18,7 @@ Builds and VMs run detached, with their output in `build.log` and `console.log` 
 A product with no layout shows its screen on its own. `--instance NAME` selects an instance at start, and `--new` opens the sheet, on a product with `qengine-ui JP24 --new`.
 
 ## Layouts
-Each device is one file in `layouts/`, in millimetres from the faceplate's top left, so every device shares the same drawing code and a button is the same size on all of them. `defaults` sets each kind's style once per device, and `templates` lets a two deck unit draw its deck once and place it twice. An optional `front` block adds the front panel, drawn below the top with its own size, body, photo and elements, and sharing the top's defaults and templates. The app reloads a layout when its file is saved.
+Each device is one file in `layouts/`, in millimetres from the faceplate's top left, so every device shares the same drawing code and a button is the same size on all of them. `defaults` sets each kind's style once per device, and `templates` lets a two deck unit draw its deck once and place it twice. An optional `front` block adds the front panel, drawn below the top with its own size, body and elements, and sharing the top's defaults and templates. The app reloads a layout when its file is saved.
 
 A product that differs only in finish or printing is a `variants` entry in its sibling's file, listed as its own device. It merges over the base's settings, swaps colours everywhere with `colors`, patches or hides single elements by id with `elements`, and adds its own with `add`. A placed template can also take a `patch`, so deck 2 can differ from deck 1. The Prime GO+ (`JP11S`) is the Prime GO in silver this way, and the Prime 4+ (`JC11S`) is a Prime 4. The sidebar's Layouts section draws one on its own, without a guest, and a layout name or product code on the command line opens it, as in `qengine-ui JP24`.
 
@@ -50,9 +50,9 @@ Engine only binds the surface when it starts, which a VM started from the UI alw
 ## Screen
 Connecting also shows the guest's display in the layout's first `lcd`, read over VNC, and a click or a finger on it reaches the guest as a touch through its usb-tablet. The UI reads QEMU's VNC console on `5900 + VNC_DISPLAY`, which only the `vnc` and `egl-vnc` displays serve, so a VM started from a terminal needs `--display vnc` where it would otherwise open a window. A legacy rootfs draws Engine through its own Qt VNC server instead, and the UI reads that on `ENGINE_VNC_PORT`. The UI has its own small RFB client, which asks for raw pixels since both servers are on localhost, and accepts no password. A VNC viewer can stay connected beside it.
 
-## Photos
-Product photos are inMusic's and are never committed. Put them in `build/product_photos`, or point `--photos` elsewhere, and a layout's `photo.rect` maps its faceplate. The Photo view shows the photo with the screen and pressed controls drawn over it. Trace lays the drawing over the photo, which is how a new layout is checked.
+The View menu's Screen in bezel, or `--view screen`, shows the guest's display alone in a frame coloured as the device. A layout's `bezel` sets it, as `"bands": [["#cfc6b6", 1], ["#121315", 2]]` stacks the Prime 4 G2's champagne third over its black, with an optional `edge` and a `border` as a share of the screen's shorter side. Without one the frame takes the body's colour, so the MPC One's is red.
 
+## Screenshots
 `--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it. With `--instance` it waits for the guest's lamps first, four seconds or `--wait`, and prints what it sent and received.
 
 ## Touch

@@ -2,7 +2,6 @@
   "name": "VX5",
   "products": ["HV03"],
   "size": [190, 185.2],
-  "photo": {"file": "headrush vx5.png", "rect": [390, 62, 1147, 800]},
   "body": {"color": "#1e1f21", "shade": "#141516", "radius": 5.0, "edge": "#55575c"},
   "fonts": {"label": 2.6},
   "defaults": {

@@ -15,9 +15,7 @@
 // A layout file has:
 //   size       the faceplate, [width, height]
 //   body       its colour, corner radius and edge
-//   photo      optional, a product photo and the pixel rect of the faceplate
-//              in it, used by the Photo and Trace views
-//   front      optional, the front panel, with its own size, body, photo,
+//   front      optional, the front panel, with its own size, body,
 //              elements and a gap above it; defaults and templates are shared
 //   variants   optional, product codes that differ from the base, each
 //              merging over the settings above, swapping colours with
@@ -29,6 +27,11 @@
 //   templates  named lists of elements, placed with {"use", "prefix",
 //              "offset"}; a two deck unit draws its deck once
 //   elements   drawn in order, later ones on top
+//   bezel      optional, how the Screen view frames the guest's display:
+//              "bands", [colour, share] stacked top to bottom, as the Prime 4
+//              G2's champagne strip over its black deck; "edge"; "border",
+//              its width as a share of the screen's shorter side. Without it
+//              the frame is the body's colour.
 //   midi       optional, {"channel": N}, the channel for controls that name
 //              none, and "lamps": "cc" where the guest lights buttons with
 //              control changes, as MPC does; see Midi.hpp for a control's own
@@ -50,8 +53,6 @@ struct Face {
     std::string name;
     ImVec4 rect = {0, 0, 100, 100};  // x, y, w, h in the whole drawing, mm
     nlohmann::json body;
-    std::string photoFile;
-    ImVec4 photoRect = {0, 0, 0, 0};  // x0, y0, x1, y1 in photo pixels
 };
 
 struct Layout {
@@ -65,6 +66,7 @@ struct Layout {
 
     std::vector<Face> faces;
     std::vector<Element> elements;
+    nlohmann::json bezel = nlohmann::json::object();
 
     std::string variant;                // the product code loaded, or empty for the base
     std::vector<std::string> variants;  // every variant the file defines

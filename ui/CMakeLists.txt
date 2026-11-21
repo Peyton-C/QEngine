@@ -65,7 +65,6 @@ add_executable(qengine-ui
   src/Screen.cpp
   src/Shell.cpp
   src/Surface.cpp
-  src/Texture.cpp
   src/Touch.cpp
   src/Wizard.cpp)
 
@@ -83,13 +82,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Defaults for running from the build tree: the layouts beside this file, the
-# repo whose scripts build and run instances, and the photos and instances in
-# its untracked build/ directory, since they are inMusic's.
+# repo whose scripts build and run instances, and the instances in its
+# untracked build/ directory, since they are inMusic's.
 target_compile_definitions(qengine-ui PRIVATE
   QENGINE_UI_LAYOUTS="${CMAKE_CURRENT_SOURCE_DIR}/layouts"
   QENGINE_UI_ICONS="${mdi_SOURCE_DIR}/fonts/materialdesignicons-webfont.ttf"
   QENGINE_UI_REPO="${CMAKE_CURRENT_SOURCE_DIR}/.."
-  QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos"
   QENGINE_UI_INSTANCES="${CMAKE_CURRENT_SOURCE_DIR}/../build/instances")
 
 find_package(Threads REQUIRED)

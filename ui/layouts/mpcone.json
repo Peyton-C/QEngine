@@ -2,7 +2,6 @@
   "name": "MPC One",
   "products": ["ACVA", "ACVA2", "ACVA3"],
   "size": [280, 281],
-  "photo": {"file": "mpcone.png", "rect": [7, 95, 2847, 2944]},
   "body": {"color": "#d8261e", "shade": "#b81c16", "radius": 4.0, "edge": "#f05048"},
   "fonts": {"label": 2.5},
   "midi": {"channel": 0, "lamps": "cc"},

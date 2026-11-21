@@ -2,7 +2,6 @@
   "name": "SYSTEM ONE",
   "products": ["RMZ2"],
   "size": [760, 389.8],
-  "photo": {"file": "ranesystemone.png", "rect": [14, 18, 1416, 737]},
   "body": {"color": "#2b2c2f", "shade": "#222326", "radius": 4.0, "edge": "#4a4c51"},
   "fonts": {"label": 1.6, "scale": 1.7},
   "defaults": {
@@ -196,7 +195,6 @@
   "front": {
     "gap": 24,
     "size": [760, 66.3],
-    "photo": {"file": "RANEFRONT.png", "rect": [114, 636, 2774, 868]},
     "body": {"color": "#141416", "shade": "#0e0e10", "radius": 2.0, "edge": "#2c2d30"},
     "elements": [
       {"kind": "panel", "rect": [0.0, 0.0, 24.6, 66.3], "color": "#0c0c0d", "radius": 2.0},

@@ -19,13 +19,11 @@ struct Fonts {
 
 enum class View {
     Drawn,  // everything drawn from the layout
-    Photo,  // the product photo, with the screen and pressed controls drawn over it
-    Trace,  // the drawing over the photo, for checking a layout against it
+    Screen, // the guest's display alone, in a frame coloured as the device
 };
 
 struct SurfaceOptions {
     View view = View::Drawn;
-    float traceAlpha = 0.6f;
 
     // Light the lamps a layout marks "lit", as a stand-in for the guest
     // driving them.
@@ -33,16 +31,12 @@ struct SurfaceOptions {
     bool animateMeters = true;
     bool showIds = false;
 
-    // One per face of the layout, in the same order; an invalid id for a
-    // face with no photo.
-    struct Photo {
+    // The guest's display, drawn in the lcd; an invalid id for none.
+    struct Image {
         ImTextureID id = ImTextureID_Invalid;
         ImVec2 size = {0, 0};
     };
-    std::vector<Photo> photos;
-
-    // The guest's display, drawn in the lcd; an invalid id for none.
-    Photo screen;
+    Image screen;
 };
 
 // Where the panel's screen is being pointed at, 0 to 1 across the guest's

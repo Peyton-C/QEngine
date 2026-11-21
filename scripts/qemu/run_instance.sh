@@ -142,6 +142,7 @@ export DEVICE DISPLAY_MODE
 if [ -n "${ENGINE_VNC_PORT:-}" ]; then export ENGINE_VNC_PORT; fi
 if [ -n "${MIDI_PORT:-}" ]; then export MIDI_PORT; fi
 if [ -n "${SMP:-}" ]; then export SMP; fi
+if [ -n "${SCREEN:-}" ]; then export SCREEN; fi
 # Optional, and absent from most instance.envs. Exported only when the file set
 # it, so arch_devices.sh's own default applies otherwise. An `if` rather than a
 # `&&` list because this is the penultimate statement under `set -e`.

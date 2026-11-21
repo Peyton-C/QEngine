@@ -1,0 +1,43 @@
+# Runs the fake Engine against the shims in stock containers, one per firmware
+# era. It uses no firmware: see scripts/test/fake/standin.sh for what that
+# covers, and scripts/test/fake/check.sh for the fuller check against instances.
+name: Shims
+on:
+  push:
+    paths: ['shims/**', 'scripts/test/**', 'scripts/build_scripts/rootfs_steps/write_fake_dt.sh', '.github/workflows/shims.yml']
+  pull_request:
+    paths: ['shims/**', 'scripts/test/**', 'scripts/build_scripts/rootfs_steps/write_fake_dt.sh', '.github/workflows/shims.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+# A newer push to the same branch or pull request replaces the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  standin:
+    # arm64, so the arm64 stand-in runs natively. The runners' CPUs have run
+    # armv7 containers natively too, which is the closer test, so QEMU is set
+    # up only if one fails to start: its binfmt handler would otherwise take
+    # every 32-bit binary whether the CPU could run it or not.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Try an armv7 container without emulation
+        id: native
+        continue-on-error: true
+        run: docker run --rm --platform linux/arm/v7 debian:bookworm true
+      - uses: docker/setup-qemu-action@v3
+        if: steps.native.outcome == 'failure'
+        with:
+          platforms: arm
+      - name: Run the fake Engine in each stand-in
+        run: scripts/test/fake/standin.sh
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standin-results
+          path: build/test/fake/results/standin/
+          retention-days: 14

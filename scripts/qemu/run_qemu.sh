@@ -38,7 +38,8 @@ DEVICE="${DEVICE:-engine}"
 # The guest's screen, WIDTHxHEIGHT. 1280x800 by default, HeadRush Prime included:
 # its real panel is portrait, but qmlrotate turns Evil's UI back to landscape.
 # SCREEN=800x1280 gives HeadRush the panel as it is, with the UI sideways.
-# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs.
+# MPC Sample 1.3.0 and VX5 1.2.2 render fixed 320x240 and 160x128 UIs, and
+# HeadRush Flex Prime an 800x480 one, which its instance.env sets as SCREEN.
 # Match that mode so the framebuffer does not surround it with unused space.
 case "$DEVICE:${ARCH:-arm64}" in
     mpc-sample:*) SCREEN="${SCREEN:-320x240}" ;;
@@ -85,8 +86,9 @@ DATA_IMG="${DATA_IMG:-$BUILD_DIR/$_data}"
 KERNEL_IMG="${KERNEL_IMG:-$BUILD_DIR/$_kern}"
 INITRD_IMG="${INITRD_IMG:-$BUILD_DIR/$_init}"
 SSH_PORT="${SSH_PORT:-2225}"
-# armhf has already set this to a value its machine type can address; ${MEM:-...}
-# leaves that in place, the same way it does for ACCEL and CPU below.
+# armhf has already set these, MEM to a value its machine type can address and
+# SMP to the RK3288's four cores; ${MEM:-...} and ${SMP:-...} leave them in
+# place, the same way ACCEL and CPU are left below.
 MEM="${MEM:-4096}"
 SMP="${SMP:-8}"
 
@@ -205,4 +207,4 @@ exec "$QEMU_BIN" \
   $DISPLAY_ARGS \
   -serial "$SERIAL" \
   $QEMU_EXTRA_ARGS \
-  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0 $KERNEL_EXTRA_ARGS"
+  -append "root=UUID=$ROOT_UUID rw rootwait console=ttyAMA0${ARCH_KERNEL_ARGS:+ $ARCH_KERNEL_ARGS} $KERNEL_EXTRA_ARGS"

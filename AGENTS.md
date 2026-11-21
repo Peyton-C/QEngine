@@ -17,7 +17,7 @@ That is mechanism, not evidence, and the distinction matters. That arm64 Engine 
 `build/` is the working directory and is not tracked: firmware, instances, kernels and research notes. Anything an agent or another person needs to know goes in `docs/` or this file.
 
 ## Documentation voice
-The house style is pink diamond's, the same as bejeweled's. Most of the docs here were written before this file and do not follow it yet; `scripts/pi/README.md` is closest. Bring a doc into line when you rewrite it, rather than restyling one in passing.
+The house style is pink diamond's, the same as bejeweled's. The docs follow it, and a new one should too.
 
 **Be short.** Roughly half the length of a first draft. State what QEngine does and, if it is not obvious, why. Then stop.
 
@@ -53,10 +53,11 @@ update .img  ->  new_instance.sh  ->  build/instances/<name>/  ->  run_instance.
 
 | Path | What |
 | --- | --- |
-| `scripts/build_scripts/` | `new_instance.sh`, a rootfs builder per family and architecture, the kernel builder, and patches to QEMU, Mesa and qtwayland |
-| `scripts/build_scripts/rootfs_steps/` | Steps every builder sources into its privileged container: telemetry, devicetree, MONTERO, resizing |
+| `scripts/build_scripts/` | `new_instance.sh`, a rootfs builder per family and architecture, the kernel builder, the Mesa and qtwayland builders, and patches to QEMU, ANGLE, qtwayland and Qt 5's software renderer |
+| `scripts/build_scripts/rootfs_steps/` | Steps the builders source into their privileged container: telemetry, devicetree, MONTERO, Mesa, Legacy Engine, resizing, checks |
 | `scripts/qemu/` | `run_instance.sh` reads an instance and execs `run_qemu.sh`, the only QEMU command line |
 | `scripts/pi/` | Staging an instance for the Pi and running it there, its services and sway configs |
+| `scripts/test/` | Boot an instance headless, play test tones through Engine and check the capture, on the Mac or a test host |
 | `scripts/vm/` | Run inside a guest, as root, to start Engine by hand |
 | `shims/` | `LD_PRELOAD` shims and helpers in C, with SoC-specific ones under `rk3288/` and `rk3588/` |
 | `ui/` | A concept front panel UI in Dear ImGui and SDL3 GPU, drawn from a layout file per device |
@@ -67,11 +68,11 @@ Telemetry stays blocked. Every rootfs a builder writes goes through `block_telem
 
 An instance owns everything that differs between devices, so two can be built and booted side by side. Kernels are the one thing shared, one per architecture. A build option that should survive `--force` is recorded in `instance.env`, as `--product-code` and `--montero` are. Device families are rows in the registry in `new_instance.sh`, so a new family or architecture is a new row, not a new script.
 
-A rootfs step is sourced, never run on its own, and must be safe to run twice over the same image. Shims are built by the builders for the target architecture inside Docker. A shim that differs by SoC keeps one source and picks with `-DSOC_RK3588` or `-DSOC_RK3288`, as `dtshim` does, rather than being copied. A new shim gets its line in `shims/README.md`.
+A rootfs step is sourced, never run on its own, and must be safe to run twice over the same image. Shims are built by the builders for the target architecture inside Docker. A shim that differs by SoC keeps one source and picks with `-DSOC_RK3588`, `-DSOC_RK3566` or `-DSOC_RK3288`, as `dtshim` does, rather than being copied. A new shim gets its line in `shims/README.md`.
 
 On the Pi, settings come from `pi.env`. A new one is documented in `chroot-engine.sh` and added to `pi.env.example`, commented out. Nothing written for a session, such as an sshd config or keys, goes into the rootfs; it lives under `/run` or `/srv/engine/run`.
 
-There is no test suite. Run `shellcheck` over changed scripts and `bash -n` at least. Python, such as the FLX10 bridge, runs with `uv run`. The Pi used for chroot runs is `pi-engine.local`, with the staged files in `~/qengine`. Nothing replaces booting Engine, so say which architecture, product code and firmware version a change was tried on, and which it was not.
+There is no test suite. `scripts/test/` boots an instance and measures its audio, which covers playback changes. `scripts/test/fake/` runs a stand-in for Engine against the shims inside every instance on a test host, in seconds, so run `check.sh -s` there before and after a shim change. A call the fake Engine does not make yet is a new probe. Run `shellcheck` over changed scripts and `bash -n` at least. Python, such as the FLX10 bridge, runs with `uv run`. The Pi used for chroot runs is `pi-engine.local`, with the staged files in `~/qengine`. Nothing replaces booting Engine, so say which architecture, product code and firmware version a change was tried on, and which it was not.
 
 Code comments are the place for the reasoning the docs leave out. Explain why something is done a particular way, especially where the obvious approach fails, and cite the firmware version or device that shows it. The long header comments on the build scripts are the model.
 

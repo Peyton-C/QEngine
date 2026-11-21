@@ -12,7 +12,7 @@ Run commands from the repository root. Start Docker before building; the builder
 | e2fsprogs, including `debugfs` and `dumpe2fs` | Inspects the rootfs and reads its UUID |
 | `file` | Checks extracted and built images |
 
-`qemu-system-aarch64` can run both arm64 and armv7 guests. QEngine falls back to `qemu-system-arm` for armv7 when needed; `QEMU_BIN` selects a particular binary. On macOS, add Homebrew's keg-only e2fsprogs tools to `PATH`:
+`qemu-system-aarch64` can run both arm64 and armv7 guests. QEngine falls back to `qemu-system-arm` for armv7 when needed; `QEMU_BIN` selects a particular binary. On an arm64 Linux host whose cores run AArch32, such as a Raspberry Pi 4, armv7 guests use KVM when you can open `/dev/kvm`, so add yourself to the `kvm` group; otherwise they fall back to TCG. On macOS, add Homebrew's keg-only e2fsprogs tools to `PATH`:
 
 ```sh
 export PATH="$(brew --prefix e2fsprogs)/sbin:$PATH"
@@ -93,7 +93,8 @@ Kernel modules need the running kernel's exact build and symbol versions, indepe
 | --- | --- | --- |
 | `engine` | `data_disk.img` | `/data` and `/factory`, for RK3588 Engine, Gen 2 MPC, MPC Sample and VX5 |
 | `mpc` | `emmc.img` | `az01-internal`, for RK3288 targets, including Engine |
-| `internal-sd` | `sdcard.img` | Extra internal SD storage for the Alesis drum module |
+| `internal-sd` | `sdcard.img` | Internal SD storage for the Prime Drum Module |
+| `drum-content` | `content.img` | eMMC content partition for the Core Drum Module |
 
 Disk-layout names describe platform conventions. Armv7 Engine uses the `mpc` layout. On RK3288, the writable disk also backs `/etc` and `/var` overlays; on RK3588, `/etc` lives on the rootfs. See [Storage](engine/STORAGE.md).
 
@@ -102,7 +103,7 @@ Writable disks survive `--force`, including settings and any overlay files that 
 Raw images are sparse. Use `du -h build/instances/*/rootfs.img` to see allocated storage; `ls -lh` reports virtual capacity. Preserve holes when copying with `rsync --sparse`.
 
 ## Kernel
-`get_kernel.sh` prepares a generic Debian kernel and initrd for QEMU's `virt` machine. The initrd includes the storage, input, graphics and audio modules QEngine needs, and makes its modules available in the guest. A vendor Rockchip kernel targets hardware QEMU does not emulate and is not a substitute.
+`get_kernel.sh` prepares a generic distribution kernel and initrd for QEMU's `virt` machine, from Ubuntu 26.04 unless you pass `--distro debian`. The initrd includes the storage, input, graphics and audio modules QEngine needs, and makes its modules available in the guest. A vendor Rockchip kernel targets hardware QEMU does not emulate and is not a substitute.
 
 | Architecture | Shared files in `build/` | QEMU machine |
 | --- | --- | --- |
@@ -111,7 +112,14 @@ Raw images are sparse. Use `du -h build/instances/*/rootfs.img` to see allocated
 
 QEngine builds missing kernel files on demand. To refresh one architecture's pair, run `scripts/build_scripts/get_kernel.sh --arch arm64` or `--arch armhf`. Existing instances reference those shared paths.
 
-Armv7 needs `highmem=off` for its PCI devices and accepts at most 3072 MiB of RAM. Its default accelerator is TCG unless an arm64 Linux host and QEMU support AArch32 guests under KVM. Apple Silicon cannot accelerate armv7 guests. Arm64 uses HVF or KVM where available, otherwise TCG.
+| `--distro` | Kernel | Use |
+| --- | --- | --- |
+| `ubuntu` | Ubuntu 26.04, 7.0 | The default. Has the HDA sound driver on both architectures |
+| `debian` | Debian 13, 6.12 | The earlier kernel. Its armv7 build has no HDA driver |
+
+Both write the same files, so the last one built is the kernel every instance of that architecture boots. `vmlinuz-generic-<arch>.info` beside the kernel records which it is. Ubuntu's kernel was booted with Modern and Classic Engine and with MPC; Legacy Engine, HeadRush and the Alesis drum module were not tried on it, so build Debian's if one of those fails to start.
+
+Armv7 needs `highmem=off` for its PCI devices, accepts at most 3072 MiB of RAM and defaults to four cores, as the RK3288 has. Its default accelerator is TCG unless an arm64 Linux host and QEMU support AArch32 guests under KVM. Apple Silicon cannot accelerate armv7 guests. Arm64 uses HVF or KVM where available, otherwise TCG.
 
 ## Display
 ```sh
@@ -130,7 +138,7 @@ scripts/qemu/run_instance.sh --name rmz2-5.0.4 --no-gl
 
 `--display` changes one run. `--gl` and `--no-gl` select the GL or software member of the SDL/VNC pair. Edit `DISPLAY_MODE` in `instance.env` to keep a choice. Legacy Engine uses software rendering and its own VNC server regardless of QEMU's console display.
 
-Virgl needs both the guest Mesa driver and a QEMU built with virglrenderer and OpenGL. If QEMU lacks the required device or display backend, the launcher prints a warning and falls back to software rendering. On Linux, use a QEMU build with `virtio-gpu-gl-pci` and `egl-headless` or SDL OpenGL support. On macOS, follow [macOS virgl](MACOS_VIRGL.md).
+Virgl needs both the guest Mesa driver and a QEMU built with virglrenderer and OpenGL. If QEMU lacks the required device or display backend, the launcher prints a warning and falls back to software rendering. On Linux, use a QEMU build with `virtio-gpu-gl-pci` and `egl-headless` or SDL OpenGL support. Debian ships those as modules, so install `qemu-system-modules-opengl` and `libegl1` alongside `qemu-system-arm`; a Raspberry Pi 4 serves `egl-vnc` this way on its V3D. On macOS, follow [macOS virgl](MACOS_VIRGL.md).
 
 For JP22, set `GPU_MAX_OUTPUTS=3` in `instance.env`. Engine creates three windows and aborts if they share one EGLFS screen. QEngine supplies one connector and tablet per head; the rootfs configures matching screen names and touch-device links. Changing the screen JSON to one output does not reduce Engine's window count. Multi-head operation has only been tried on arm64.
 

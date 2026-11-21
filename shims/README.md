@@ -11,7 +11,7 @@ Allows for a regular cursor to be displayed in Engine.
 Converts the ARGB8888 format frames from Qt to XRGB8888 for use with the virtio gpu.
 
 ## dtshim
-Fakes various parts of the device tree expected by Engine and other InMusic OSes.
+Serves the devicetree and hardware sysfs files expected by Engine and other inMusic applications, including a full battery on AC for Prime GO, Prime GO+ and Mixstream Pro GO.
 
 ## kmsshim
 A fake KMS device for apps that drive the display themselves, preloaded into MPC so it can run as a window under a Wayland compositor. `kmspresent`, beside it, runs on the host: it shows the app's frames as a window and gives the app a touchscreen from the window's input. Used by `chroot-mpc.sh` with `PLATFORM=wayland`.
@@ -20,7 +20,10 @@ A fake KMS device for apps that drive the display themselves, preloaded into MPC
 Carries MIDI between a QEMU guest and its host over a virtio-serial port, as a sequencer client named `QEngine MIDI` that `midisurface` forwards from. See [Audio and MIDI](../docs/engine/AUDIO_MIDI.md#host-midi).
 
 ## midisurface
-An emulated midi surface to control Engine.
+An emulated MIDI surface to control Engine. `--reply` answers a SysEx query of the app's own, which is how it stands in for the HeadRush 2.x footswitch board.
+
+## maliwindow
+Renders the statically linked Mali backend of Looper X, Looperboard and Evil 2.7 through Mesa into QEMU's framebuffer, turned 90 or 270 degrees from portrait to landscape.
 
 ## mpcsurface
 An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the dial, Q-Links and the Sample's knobs. Preloaded into the app, which finds it as its panel's USB MIDI card, or on MPC Sample as its serial "Control Surface" card, and driven through `/run/mpcsurface.fifo` or, in QEMU, MIDI from the host. See [mpcsurface](mpcsurface/README.md) for commands.
@@ -29,10 +32,10 @@ An emulated control surface for MPC, Force and MPC Sample: pads, buttons, the di
 Loads QML mods into Engine's UI, replacing its own files or adding new ones beside them. Built into Engine rootfs images, arm64 or armv7, with `new_instance.sh --montero`.
 
 ## pcmhold
-Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. HeadRush Prime uses 8 out and 2 in.
+Gives the kernel's loopback sound card the channel counts of the card it stands in for, by holding its partner device open. Sheeran Looper X uses 8 out and 2 in.
 
 ## qmlrotate
-Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush and early SC5000 builds use it to turn their UI, rotated for a sideways portrait panel, back to landscape.
+Rotates a Qt Quick window's content by `QMLROTATE` degrees. HeadRush and early SC5000 builds use it to turn their UI, rotated for a sideways portrait panel, back to landscape. `QMLROTATE_SWAP=1` also gives the root the panel's portrait size, which HeadRush lays out from.
 
 ## qt55vnc
 Serves the native Qt 5.5 offscreen display over VNC and supplies raster placeholders for OpenGL textures on SC5000 1.0.x. See [qt55vnc](rk3288/qt55vnc/README.md).

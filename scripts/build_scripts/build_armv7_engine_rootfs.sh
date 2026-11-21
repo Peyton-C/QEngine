@@ -35,6 +35,8 @@
 # Environment:
 #   PRODUCT_CODE  which of this image's device identities to spoof. Default JP07,
 #                 or HG06 for a HeadRush image.
+#   AUDIO_CARD_NAME  the sound card name alsashim presents, in place of the one
+#                 detect_audio_card.sh works out.
 #   MONTERO       1 to build MONTERO, the QML mod loader, with every mod under
 #                 shims/montero/mods, install them in /root, and preload MONTERO
 #                 into Engine. Off by default: it is the one shim that needs Qt to
@@ -117,6 +119,13 @@ esac
 # detect_mesa.sh.
 # shellcheck source=detect_mesa.sh
 . "$SCRIPT_DIR_SELF/detect_mesa.sh"
+# Which ALSA card name this product's real hardware registers, which is the name
+# alsashim has to spoof the emulated card as. Read off the rootfs for the same
+# reason Mesa is: on RK3288 it is the ASoC card name of whichever devicetree
+# compatible a driver in this image actually claims, and that is not always the
+# product code -- JP08 comes up as "JP07". See detect_audio_card.sh.
+# shellcheck source=detect_audio_card.sh
+. "$SCRIPT_DIR_SELF/detect_audio_card.sh"
 
 extract_rootfs "$FIRMWARE_IMG" "$OUT_PATH"
 
@@ -145,12 +154,33 @@ if "$DEBUGFS" -R 'stat /usr/JP07/JP07' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:
             tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; }; then
     LEGACY_ENGINE=1
 fi
+# Evil 2.7 (Pedalboard, Gigboard, MX5) and Looperboard 2.0.5 are Buildroot 2021
+# with glibc 2.32. As for
+# MPC 2.x in build_mpc_rootfs.sh, shims built on bookworm bind dlsym and pthread_*
+# to GLIBC_2.34 and the guest's loader refuses them, and so does the Mesa that
+# build_mali_mesa.sh builds there. So what runs in the guest is built on bullseye,
+# glibc 2.31, Mesa included.
+HR_OLD_LIBC=0
+if { "$DEBUGFS" -R 'stat /usr/Evil/Evil' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+     "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; } &&
+   "$DEBUGFS" -R 'ls /usr/lib' "$OUT_PATH" 2>/dev/null |
+        tr -s ' ' '\n' | grep -E '^libc-2\.([0-9]|[12][0-9]|3[0-3])\.so$' >/dev/null; then
+    HR_OLD_LIBC=1
+    echo "--- guest glibc predates 2.34: linking shims and Mesa for it ---"
+fi
 if [ "$LEGACY_ENGINE" = 1 ]; then
     MESA_LAYOUT=none
     MESA_VERSION=""
     echo "--- legacy Engine runtime: software VNC, vendor GL retained ---"
 else
     detect_mesa "$OUT_PATH"
+fi
+# Set even where it goes unused, because docker run below passes it under set -u.
+# A name from the environment (new_instance.sh --audio-card-name) wins over
+# detection, which detect_audio_card reports.
+AUDIO_CARD_NAME="${AUDIO_CARD_NAME:-}"
+if [ "$LEGACY_ENGINE" != 1 ]; then
+    detect_audio_card "$OUT_PATH" "${PRODUCT_CODE:-JP07}" "$FIRMWARE_IMG"
 fi
 
 ### 2. Grow the image and filesystem #########################################
@@ -200,7 +230,7 @@ docker run --rm --platform linux/arm/v7 \
         # libdrm-dev: drmatomic includes drm.h/drm_mode.h. No libgl1-mesa-dri:
         # unlike the RMZ2 rootfs this one already ships a complete Mesa, so
         # nothing foreign needs staging in. See the privileged container below.
-        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev >/dev/null 2>&1
+        apt-get install -y -qq gcc libc6-dev libdrm-dev libasound2-dev libegl-dev libgles-dev >/dev/null 2>&1
 
         gcc -shared -fPIC -O2 -Wall \
             -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -DSOC_RK3288 -ldl -lpthread
@@ -218,6 +248,9 @@ docker run --rm --platform linux/arm/v7 \
             -o /shims/midibridge/midibridge_$SHIM_ARCH /shims/midibridge/midibridge.c -lasound
         gcc -O2 -Wall \
             -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound
+        gcc -shared -fPIC -O2 -Wall \
+            -o /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
+            /shims/rk3288/maliwindow/maliwindow.c -ldl -lEGL -lGLESv2
         # -lpthread for its upstream relay thread. Only this builder compiles it:
         # it proxies the Engine Qt VNC server, and Qt dropped the VNC platform
         # plugin, so there is nothing for it to proxy on arm64 or on armv7 Engine
@@ -247,8 +280,21 @@ elif [ "$MESA_LAYOUT" = mali ]; then
     # 4.3.4 and earlier: a whole Mesa in place of the Mali blob, and the Qt eglfs
     # integration that can drive it, since this Qt was built with only the blob's.
     # See build_mali_mesa.sh and build_qt5_eglfs_kms.sh.
-    "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
-    cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        "$SCRIPT_DIR_SELF/build_mali_mesa.sh" --base bullseye
+        cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali+bullseye" "$STAGE_DIR/mesa-mali"
+    else
+        "$SCRIPT_DIR_SELF/build_mali_mesa.sh"
+        cp -a "$REPO_ROOT/build/mesa-$MESA_VERSION-armhf-mali" "$STAGE_DIR/mesa-mali"
+    fi
+    # Looper X 1.0.2 and Evil 2.7 (Pedalboard, Gigboard, MX5) link Qt statically,
+    # including eglfs_mali and eglfs_emu, and ship no /usr/qt. A dynamic Qt plugin
+    # cannot replace a built-in integration, so they get Mesa alone and maliwindow.
+    if ! "$DEBUGFS" -R 'stat /usr/qt/lib/libQt5Core.so.5.15.2' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' &&
+       { "$DEBUGFS" -R 'stat /usr/Looper/Looper' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:' ||
+         "$DEBUGFS" -R 'stat /usr/Evil/Evil' "$OUT_PATH" 2>/dev/null | grep -q 'Inode:'; }; then
+        touch "$STAGE_DIR/mesa-only"
+    else
     # The plugin is checked against this rootfs's own Qt, read out of the image
     # the way detect_mesa.sh reads it.
     DEBUGFS=""
@@ -294,6 +340,36 @@ elif [ "$MESA_LAYOUT" = mali ]; then
         [ -s "$STAGE_DIR/qmlrotate.so" ] || {
             echo "ERROR: qmlrotate did not build." >&2; exit 1; }
     fi
+    fi # dynamically linked Qt
+
+    # Evil 2.7 and Looperboard: rebuild what runs in the guest on bullseye, whose
+    # glibc 2.31 is older than the guest's 2.32, over the bookworm builds above.
+    # maliwindow links the bullseye Mesa just staged, midisurface stands in for
+    # Evil's panel (see the evil.service section), and pcmhold holds Looper's
+    # loopback.
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        docker pull -q --platform linux/arm/v7 debian:bullseye >/dev/null
+        docker run --rm --platform linux/arm/v7 -e SHIM_ARCH="$SHIM_ARCH" \
+            -v "$SHIMS_DIR:/shims" -v "$STAGE_DIR:/stage" debian:bullseye bash -c '
+                set -e
+                export DEBIAN_FRONTEND=noninteractive
+                # See build_mali_mesa.sh: bullseye-security now lives on the archive.
+                sed -i "s|deb.debian.org/debian-security|archive.debian.org/debian-security|" /etc/apt/sources.list
+                apt-get update -qq
+                apt-get install -y -qq gcc libc6-dev libasound2-dev libegl-dev libgles-dev >/dev/null 2>&1
+                M=/stage/mesa-mali
+                gcc -shared -fPIC -O2 -Wall -DSOC_RK3288 \
+                    -o /shims/dtshim/dtshim_$SHIM_ARCH.so /shims/dtshim/dtshim.c -ldl -lpthread
+                gcc -shared -fPIC -O2 -Wall -Wl,-rpath-link,$M \
+                    -o /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
+                    /shims/rk3288/maliwindow/maliwindow.c -ldl $M/libEGL.so.1 $M/libGLESv2.so.2
+                gcc -O2 -Wall \
+                    -o /shims/touchbridge/touchbridge_$SHIM_ARCH /shims/touchbridge/touchbridge.c
+                gcc -O2 -Wall \
+                    -o /shims/midisurface/midisurface_$SHIM_ARCH /shims/midisurface/midisurface.c -lasound
+                gcc -O2 -Wall \
+                    -o /shims/pcmhold/pcmhold_$SHIM_ARCH /shims/pcmhold/pcmhold.c -lasound'
+    fi
 else
     "$SCRIPT_DIR_SELF/build_virgl_mesa.sh" --arch "$SHIM_ARCH" \
         --mesa-version "$MESA_VERSION" --layout "$MESA_LAYOUT"
@@ -320,6 +396,7 @@ for artifact in alsashim/alsashim_$SHIM_ARCH.so \
                 midisurface/midisurface_$SHIM_ARCH \
                 midibridge/midibridge_$SHIM_ARCH \
                 pcmhold/pcmhold_$SHIM_ARCH \
+                rk3288/maliwindow/maliwindow_$SHIM_ARCH.so \
                 dtshim/dtshim_$SHIM_ARCH.so; do
     [ -s "$SHIMS_DIR/$artifact" ] || {
         echo "ERROR: shim build produced no $artifact" >&2; exit 1; }
@@ -394,10 +471,20 @@ if [ -d /mnt/rootfs/usr/Engine ]; then
     fi
 elif [ -x /mnt/rootfs/usr/JP07/JP07 ]; then
     APP_UNIT=jp07.service; DEFAULT_CODE=JP07
-elif [ -x /mnt/rootfs/usr/Evil/Evil ]; then
-    APP_UNIT=evil.service; DEFAULT_CODE=HG06
+elif [ -x /mnt/rootfs/usr/Evil/Evil ] || [ -x /mnt/rootfs/usr/Looper/Looper ]; then
+    # Evil and Looper are built per product and never read the code (Prime's
+    # Evil, run as HG12, still reports HG06), so default to the one the image's
+    # own devicetree names: HG08 for Looper X, HG03 for Looperboard.
+    if [ -x /mnt/rootfs/usr/Evil/Evil ]; then
+        APP_UNIT=evil.service; DEFAULT_CODE=HG06
+    else
+        APP_UNIT=looper.service; DEFAULT_CODE=HG08
+    fi
+    _dt_code="$(find /mnt/rootfs/boot -maxdepth 1 -name 'rk3288-az0?-*.dtb' -printf '%f\n' |
+        sed -n 's/^rk3288-az0.-\([a-z]\{2\}[0-9]\{2\}\)\.dtb$/\1/p' | sed -n 1p | tr a-z A-Z)"
+    DEFAULT_CODE="${_dt_code:-$DEFAULT_CODE}"
 else
-    echo "ERROR: neither /usr/Engine nor /usr/Evil in this rootfs." >&2
+    echo "ERROR: no Engine, Evil or Looper application in this rootfs." >&2
     exit 1
 fi
 PRODUCT_CODE="${PRODUCT_CODE:-$DEFAULT_CODE}"
@@ -405,6 +492,7 @@ echo "--- app unit $APP_UNIT, product code $PRODUCT_CODE ---"
 
 block_telemetry /mnt/rootfs
 blank_root_password /mnt/rootfs
+hide_internal_disks /mnt/rootfs
 if [ "$LEGACY_ENGINE" = 1 ]; then
     # -skipFirmwareUpdate does not exist in 1.x. Do not inject it into the old
     # launchers or install contemporary ALSA/MIDI/EGLFS preloads into this libc.
@@ -496,42 +584,150 @@ ln -sf /dev/null /mnt/rootfs/etc/systemd/system/autovt@tty1.service
 
 OVERRIDE="/mnt/rootfs/etc/systemd/system/$APP_UNIT.d/override.conf"
 mkdir -p "$(dirname "$OVERRIDE")"
-if [ "$APP_UNIT" = evil.service ]; then
-    # Evil opens its own card by name, hw:HV01, and Prime 5.2.0 segfaults a few
-    # seconds after startup when there is none. The kernel's loopback card stands
-    # in: it needs no host audio, and get_kernel.sh loads it from the initrd, which
-    # is too early for a modprobe.d id= option on the rootfs to reach it, so its
-    # id is renamed through sysfs instead before Evil starts. $$ is systemd's
-    # escape for a literal $.
-    #
-    # The name alone is not enough. A loopback offers 32 channels each way, Evil
-    # takes them all and then segfaults in its audio thread overrunning buffers
-    # sized for the real card, which HG06's devicetree gives 8 playback and 2
-    # capture channels. pcmhold pins the loopback to that shape; see pcmhold.c.
-    cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
-    chmod 755 /mnt/rootfs/root/pcmhold
-    cat > /mnt/rootfs/etc/systemd/system/qengine-hv01.service <<'EOF'
+if [ "$APP_UNIT" = evil.service ] || [ "$APP_UNIT" = looper.service ]; then
+    # Evil and Looper open their own card by name and segfault a few seconds after
+    # startup when there is none. The card is built into each image, not chosen by
+    # product code: Prime 5.2.0 and Core 4.1.1 open hw:HV01, Flex Prime 5.2.0
+    # hw:HG04 (its devicetree's inmusic,hg04-audio), Looper X 1.0.2 hw:HG08. So it
+    # is read from the app, whatever code the instance is built as.
+    case "$APP_UNIT" in
+        evil.service) _app=/mnt/rootfs/usr/Evil/Evil; HR_CARD=HV01 ;;
+        *) _app=/mnt/rootfs/usr/Looper/Looper; HR_CARD=HG08 ;;
+    esac
+    _cards="$(grep -ao 'hw:[A-Z][A-Z][0-9][0-9]' "$_app" | sort -u | cut -c4-)"
+    if [ "$(printf '%s\n' "$_cards" | grep -c .)" = 1 ]; then
+        HR_CARD="$_cards"
+    else
+        echo "WARNING: no single card name in $_app ($_cards), using $HR_CARD." >&2
+    fi
+    echo "--- app opens hw:$HR_CARD ---"
+
+    if [ "$APP_UNIT" = evil.service ]; then
+        # Evil gets snd-dummy's qengine-hg model, built by get_kernel.sh: 8 out and
+        # 2 in at 96000 Hz, the real card's shape, kept on hrtimers. Flex Prime
+        # 5.2.0 runs 48-frame periods in a 144-frame ring, 1.5 ms, which snd-aloop's
+        # 4 ms jiffies cannot serve: its reads and writes fail with EIO and Evil
+        # exits 42 every half minute with a black screen. Playback is discarded
+        # and capture is silent, as on the loopback.
+        cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<EOF
 [Unit]
-Description=Stand the loopback sound card in for HV01, the card Evil opens
+Description=Stand a dummy sound card in for $HR_CARD, the card Evil opens
+After=systemd-udevd.service
 Before=evil.service
 
 [Service]
-Type=simple
-ExecStart=/root/pcmhold HV01 8 2
-# Evil must not open the card before pcmhold has pinned it.
-ExecStartPost=/bin/sleep 1
-Restart=on-failure
-ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "$$(cat $$c/id)" = Loopback ] && printf HV01 > $$c/id; done; grep -q "\\[HV01" /proc/asound/cards'
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe snd-dummy model=qengine-hg id=$HR_CARD
+ExecStart=/bin/grep -qF "[$HR_CARD" /proc/asound/cards
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    ln -sf ../qengine-hv01.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-hv01.service
+    else
+        # Looper stays on the kernel's loopback card, the path Looper X 1.0.2 was
+        # checked on. get_kernel.sh loads it from the initrd, too early for a
+        # modprobe.d id= option on the rootfs to reach it, so its id is renamed
+        # through sysfs before Looper starts. $$ is systemd's escape for a literal $.
+        #
+        # A loopback offers 32 channels each way, and the app takes them all and
+        # then segfaults overrunning buffers sized for the real card's 8 playback
+        # and 2 capture channels. pcmhold pins the loopback to that shape; see
+        # pcmhold.c.
+        cp -a /shims/pcmhold/pcmhold_$SHIM_ARCH /mnt/rootfs/root/pcmhold
+        chmod 755 /mnt/rootfs/root/pcmhold
+        cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-audio.service <<EOF
+[Unit]
+Description=Stand the loopback sound card in for $HR_CARD, the card Looper opens
+Before=looper.service
+
+[Service]
+Type=simple
+ExecStart=/root/pcmhold $HR_CARD 8 2
+# Looper must not open the card before pcmhold has pinned it.
+ExecStartPost=/bin/sleep 1
+Restart=on-failure
+ExecStartPre=/bin/sh -c 'for c in /sys/class/sound/card*; do [ "\$\$(cat \$\$c/id)" = Loopback ] && printf $HR_CARD > \$\$c/id; done; grep -q "\\\\[$HR_CARD" /proc/asound/cards'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+    ln -sf ../qengine-headrush-audio.service /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-audio.service
+
+    # Evil 2.7 waits on LOADING ("setAppLoaded() rerceived but midi still in
+    # progress") until its panel answers over MIDI. The panel is an ALSA
+    # sequencer port whose name picks the assignment files: HG04 Control Surface
+    # MIDI 1 on MX5, M-Audio Pass Through on Gigboard and Pedalboard. Its
+    # <port>_Device.qml polls the footswitch board with F0 00 01 05 00 <product>
+    # 41 00 00 F7, and on MX5 gives up after 2 s, on the others never. It then
+    # sends the universal identity request and reads the panel's firmware version
+    # from bytes 11-14 and a serial from 20-35. midisurface plays the panel under
+    # that name, with both answers. The version is the one the image bundles in
+    # firmware.json, under Firmware on MX5 and Scripts on Gigboard and Pedalboard:
+    # "10.065" reads as bytes 1 0 . 0 65. Given any other, Evil puts the panel in
+    # DFU mode to flash it and restarts. 5.x does not wait, and is left without.
+    #
+    # Looperboard 2.0.5 waits the same way, with product 17 on M-Audio Pass
+    # Through, from C++ rather than QML; its Device.qml keeps the old QML version
+    # commented out, which still names the port and product, so it is read alike.
+    _appdir=/mnt/rootfs/usr/Evil
+    [ "$APP_UNIT" = evil.service ] || _appdir=/mnt/rootfs/usr/Looper
+    if [ "$HR_OLD_LIBC" = 1 ]; then
+        _dev="$(grep -l 'sendSysEx("F0 00 01 05 00 [0-9A-F][0-9A-F] 41 ' "$_appdir"/Assignments/*_Device.qml | sed -n 1p)"
+        if [ -n "$_dev" ]; then
+            _port="$(basename "$_dev" _Device.qml | tr _ ' ')"
+            _prod="$(grep -o 'sendSysEx("F0 00 01 05 00 [0-9A-F][0-9A-F] 41 ' "$_dev" | sed -n 1p | cut -d' ' -f6)"
+            _ver="$(cat "$_appdir"/Firmware/firmware.json "$_appdir"/Scripts/firmware.json 2>/dev/null |
+                sed -n 's/.*"version" *: *"\([0-9]*\)\.\([0-9]*\)".*/\1 \2/p' | sed -n 1p || true)"
+            # shellcheck disable=SC2086 # two words, the version's halves
+            set -- ${_ver:-1 000}
+            _v="$(printf '%02X %02X %02X %02X' "${1%"${1#?}"}" "${1#?}" "${2%"${2#?}"}" "$((10#${2#?}))")"
+            _id="F0 7E 7F 06 02 00 01 05 00 $_prod 00 $_v 00 00 00 00 00"
+            _id="$_id 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 F7"
+            _fs="F0 00 01 05 00 $_prod 41 00 03 00 00 00 F7"
+            echo "--- panel \"$_port\", product $_prod, firmware ${_ver:-none} ---"
+            cp -a /shims/midisurface/midisurface_$SHIM_ARCH /mnt/rootfs/root/midisurface
+            cat > /mnt/rootfs/etc/systemd/system/qengine-headrush-panel.service <<EOF
+[Unit]
+Description=Stand in for $_port, the panel the app waits for
+Before=$APP_UNIT
+DefaultDependencies=no
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+Environment="MIDISURFACE_ID_RESPONSE=$_id"
+# Driveable by hand like Engine's surface: echo 'sysex F0 ...' > /run/midisurface.fifo
+ExecStartPre=/bin/sh -c '[ -p /run/midisurface.fifo ] || mkfifo /run/midisurface.fifo'
+ExecStart=/bin/sh -c 'exec 3<>/run/midisurface.fifo; exec /root/midisurface "$_port" --reply "F0 00 01 05 00 $_prod 41=$_fs" < /run/midisurface.fifo'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            ln -sf ../qengine-headrush-panel.service \
+                /mnt/rootfs/etc/systemd/system/multi-user.target.wants/qengine-headrush-panel.service
+        fi
+    fi
 
     # Evil turns its UI -90 degrees for HG06's portrait panel; qmlrotate turns it
     # back for QEngine's landscape screen. See qmlrotate.cpp.
-    cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
-    chmod 755 /mnt/rootfs/root/qmlrotate.so
+    #
+    # The 4-inch units are built for a smaller panel: Flex Prime's and MX5's Evil
+    # take the 800x480 layout turned +90 (hg04Transform), whatever product code
+    # they run as, and Prime's image run as HG12 keeps Prime's 1280x800. So it goes
+    # by the image, through its devicetree, and the screen size is left in
+    # /etc/qengine/screen for new_instance.sh to record as SCREEN.
+    HR_ROTATE=90 HR_PANEL=800x1280
+    rm -f /mnt/rootfs/etc/qengine/screen
+    if [ "$APP_UNIT" = evil.service ] &&
+       { [ -f /mnt/rootfs/boot/rk3288-az05-hg12.dtb ] || [ -f /mnt/rootfs/boot/rk3288-az05-hg04.dtb ]; }; then
+        HR_ROTATE=-90 HR_PANEL=480x800
+        mkdir -p /mnt/rootfs/etc/qengine
+        echo 800x480 > /mnt/rootfs/etc/qengine/screen
+    fi
 
     # dtshim for the product code, serial and pcb-rev Evil reads, and drmatomic for
     # virtio-gpu as below, and qmlrotate. Not alsashim or quitshim: both are
@@ -539,16 +735,43 @@ EOF
     # process runevil starts, from /bin/sh on, and qmlrotate links Qt, so
     # /usr/qt/lib has to be on the path from the unit, not only from Evil's own
     # script, which sets it later.
-    cat > "$OVERRIDE" <<'EOF'
+    if [ ! -f /stage/mesa-only ]; then
+        cp -a /stage/qmlrotate.so /mnt/rootfs/root/qmlrotate.so
+        chmod 755 /mnt/rootfs/root/qmlrotate.so
+        cat > "$OVERRIDE" <<EOF
 [Unit]
-After=touchbridge.service qengine-hv01.service
-Requires=touchbridge.service qengine-hv01.service
+After=touchbridge.service qengine-headrush-audio.service
+Requires=touchbridge.service qengine-headrush-audio.service
 
 [Service]
 Environment=LD_PRELOAD=/root/dtshim.so:/root/drmatomic.so:/root/qmlrotate.so
 Environment=LD_LIBRARY_PATH=/usr/qt/lib
-Environment=QMLROTATE=90
+Environment=QMLROTATE=$HR_ROTATE
+Environment=QMLROTATE_SWAP=1
 EOF
+    else
+        # Qt linked into the app, which qmlrotate cannot reach. maliwindow renders
+        # Qt's Mali window into a Mesa pbuffer and turns each frame into the
+        # landscape framebuffer instead, and Qt's own evdev handler turns touch to
+        # match; see maliwindow.c. Qt is told the portrait panel's size.
+        cp -a /shims/rk3288/maliwindow/maliwindow_$SHIM_ARCH.so /mnt/rootfs/root/maliwindow.so
+        case "$HR_ROTATE" in
+            90) _mali=90 _touch=270 ;;
+            *)  _mali=270 _touch=90 ;;
+        esac
+        cat > "$OVERRIDE" <<EOF
+[Unit]
+After=touchbridge.service qengine-headrush-audio.service
+Requires=touchbridge.service qengine-headrush-audio.service
+
+[Service]
+Environment=LD_PRELOAD=/root/dtshim.so:/root/maliwindow.so
+Environment=QT_QPA_EGLFS_WIDTH=${HR_PANEL%x*}
+Environment=QT_QPA_EGLFS_HEIGHT=${HR_PANEL#*x}
+Environment=MALIWINDOW_ROTATE=$_mali
+Environment=QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS=rotate=$_touch
+EOF
+    fi
 else
     cat > "$OVERRIDE" <<'EOF'
 [Unit]
@@ -591,9 +814,137 @@ Environment=EGL_PLATFORM=gbm
 # in the image -- and use a non-GL display mode.
 Environment=MESA_LOADER_DRIVER_OVERRIDE=virtio_gpu
 EOF
+if [ "$APP_UNIT" = looper.service ]; then
+    cat >> "$OVERRIDE" <<'EOF'
+# HG08 1.0.2 starts dozens of realtime DSP threads at 96000 Hz. Under TCG
+# they starve USB input processing; silent-loopback UI runs need normal scheduling.
+CapabilityBoundingSet=~CAP_SYS_NICE
+LimitRTPRIO=0
+EOF
+fi
+if [ -f /stage/mesa-only ] && { [ "$APP_UNIT" = looper.service ] || [ "$APP_UNIT" = evil.service ]; }; then
+    cat >> "$OVERRIDE" <<'EOF'
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_mali
+# touchbridge already supplies the tablet as touch. Qt's raw mouse path would
+# also deliver each click, with coordinates for the unrotated portrait panel.
+# A path that does not exist, so Qt opens no mouse: given /dev/null, it reads
+# EOF in a loop, and Evil 2.7 logged that until journald suppressed everything.
+Environment=QT_QPA_EVDEV_MOUSE_PARAMETERS=/dev/qengine-no-mouse
+Environment=EGL_PLATFORM=surfaceless
+Environment=LIBGL_ALWAYS_SOFTWARE=1
+Environment=MESA_LOADER_DRIVER_OVERRIDE=swrast
+EOF
+fi
 
 if [ "$MONTERO" = 1 ]; then
     install_montero /mnt/rootfs "$SHIM_ARCH" /stage
+fi
+
+# The audio half, appended separately because it is the one part of this unit
+# that varies with the firmware: AUDIO_CARD_NAME is detected per product and so
+# has to be expanded here, while everything above is fixed text written by a
+# quoted heredoc.
+#
+# alsashim was already preloaded above for the MIDI card-number gate; these two
+# variables are what additionally get the emulated sound card accepted as an
+# audio device.
+#
+# ALSASHIM_AS: Engine's ALSADeviceEnumerator rejects any card whose name is not
+# in its compiled-in per-product allowlist, before it looks at the card's PCM
+# devices at all -- so QEMU's "HDA Intel" is skipped on its name alone and Engine
+# ends up with no audio device to select. The shim reports the name the real
+# hardware's ASoC driver registers instead. Left unset it would default to RMZ2,
+# which is the RK3588 product's name and in no RK3288 product's list.
+# ALSASHIM_CARD: restrict that spoof to card 0, QEMU's emulated card, so a USB
+# controller plugged in later keeps its own name.
+#
+# The card must be attached playback-only (hda-output, or virtio-sound-pci with
+# streams=1 on a kernel without hda, never hda-duplex or streams=2): Engine takes
+# the first device of each enumeration pass as its default and the capture pass
+# runs second, so a capture PCM wins the default, the playback slot is left null,
+# and playback never runs. arch_audio_devices in scripts/qemu/arch_devices.sh
+# picks the card from what the guest's kernel can drive, so the rootfs does not
+# depend on which it is: both are card 0.
+#
+# The shim also rewrites hw:N to plughw:N so ALSA converts between the format
+# Engine asks for and the S16_LE/2ch the emulated card offers, and deepens the
+# PCM ring (ALSASHIM_BUFFER_SCALE, default 8) so that a 5.8ms buffer is not being
+# serviced by QEMU's 10ms audio timer. Both are on by default; see
+# shims/alsashim/alsashim.c and docs/engine/AUDIO_MIDI.md.
+# ALSASHIM_BUFFER_SCALE: how much deeper than Engine's own request the PCM ring
+# is made. 8 is the only value on this guest yet observed to produce sound.
+#
+# The numbers here are NOT arm64's. RMZ2's Engine asks for a 256-frame ring of
+# 128-frame periods (5.8ms / 2.9ms); this one asks for 1024 frames of 512-frame
+# periods -- 23.2ms of ring, 11.6ms per period -- so each step of the scale is
+# worth four times as much wall clock, and 8 here means 185.8ms in 16 periods.
+#
+# What was measured, at 512-frame periods throughout:
+#
+#   scale 1 (23.2ms)   Audio_probe frozen, Engine acts as though it has no
+#                      audio device and will not load a track
+#   scale 4 (92.9ms)   XRUN before the first buffer is even refilled:
+#                      hw_ptr == appl_ptr == 4096, i.e. Engine wrote exactly one
+#                      ring and then nothing, ever
+#   scale 8 (185.8ms)  plays, but Engine's playhead visibly snaps backwards
+#   scale 32 (743ms)   the same, much worse
+#
+# Note what the scale-4 pointers say: this is not Engine failing to keep up with
+# a steady stream. It stalls once -- at track load, from inside TCG, since a
+# 32-bit guest gets no hardware acceleration on Apple Silicon -- and never comes
+# back, because once the PCM is in XRUN state every snd_pcm_writei returns -EPIPE
+# and Engine calls no snd_pcm_prepare. So the depth is not really buying
+# throughput; it is buying enough slack to never hit that one fatal stall.
+#
+# Which is why the depth also costs what it does. Engine never measures the
+# latency it got -- it imports snd_pcm_avail and snd_pcm_writei and no
+# snd_pcm_delay or snd_pcm_status -- so it advances its playhead by what it has
+# written and then corrects to where audio actually is, and that correction is a
+# backwards jump the size of the ring's fill level.
+#
+# ALSASHIM_XRUN_FREE_RUN is the way out of that trade, if it works: it makes
+# playback free-running so a stall is a gap rather than a permanent stop, which
+# should let the scale come back down to 1 or 2 and take the playhead error with
+# it. Untested on this guest -- try it against the numbers above:
+#
+#   Environment=ALSASHIM_XRUN_FREE_RUN=1
+#   Environment=ALSASHIM_BUFFER_SCALE=1
+#
+# Both are service environment variables, so a drop-in and `systemctl restart
+# engine` is the whole loop; /proc/asound/card0/pcm0p/sub0/status reports the
+# state and the XRUN count, and hw_params beside it the ring actually granted.
+# Quoted whole: the XMOS interface on JC11 is "PRIME 4 Audio", and systemd
+# splits an unquoted Environment= value at its spaces.
+if [ "$APP_UNIT" = engine.service ]; then
+    cat >> "$OVERRIDE" <<EOF
+Environment="ALSASHIM_AS=$AUDIO_CARD_NAME"
+Environment=ALSASHIM_CARD=0
+Environment=ALSASHIM_BUFFER_SCALE=8
+EOF
+    # SC LIVE 4 takes its mic and aux as one stereo input it splits itself, and
+    # on 5.1.0 and 5.3.0 starts its audio as though that input is always there:
+    # against the playback-only card above it dereferences the missing input and
+    # segfaults a second after opening the card. alsashim supplies silence
+    # through the null PCM, so the output keeps time.
+    if [ "$PRODUCT_CODE" = JP21 ]; then
+        echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
+    fi
+    # Mixstream Engine 2.4.0 through 3.0.1 also assumes capture is present.
+    # Use the embedded Engine release tag, since an update can be renamed
+    # and --product-code can pick a Mixstream identity from another image.
+    case "$PRODUCT_CODE" in
+        NH08|NH08S|NH09|NH10)
+            if LC_ALL=C grep -aqE 'engine-embedded@(2\.4|3\.0)\.[0-9]+\.' /mnt/rootfs/usr/Engine/Engine; then
+                echo 'Environment=ALSASHIM_CAPTURE_PCM=null' >> "$OVERRIDE"
+            fi
+            ;;
+    esac
+    # The SC players give Layer B its own output pair, channels 3/4, which the
+    # stereo card above drops: measured silent on SC6000 5.0.4 and 5.3.0. The
+    # shim adds it into 1/2 so both layers are heard.
+    case "$PRODUCT_CODE" in
+        JP07|JP08|JP13|JP14) echo 'Environment=ALSASHIM_LAYER_MIX=1' >> "$OVERRIDE" ;;
+    esac
 fi
 
 fi # modern rootfs installation
@@ -612,10 +963,12 @@ docker run --rm --privileged \
     -e OUT_NAME="$OUT_NAME" \
     -e SHIM_ARCH="$SHIM_ARCH" \
     -e LEGACY_ENGINE="$LEGACY_ENGINE" \
+    -e HR_OLD_LIBC="$HR_OLD_LIBC" \
     -e PRODUCT_CODE="${PRODUCT_CODE:-}" \
     -e MONTERO="$MONTERO" \
     -e MESA_LAYOUT="$MESA_LAYOUT" \
     -e MESA_VERSION="$MESA_VERSION" \
+    -e AUDIO_CARD_NAME="$AUDIO_CARD_NAME" \
     -v "$OUT_DIR:/out" \
     -v "$SHIMS_DIR:/shims:ro" \
     -v "$STAGE_DIR:/stage:ro" \

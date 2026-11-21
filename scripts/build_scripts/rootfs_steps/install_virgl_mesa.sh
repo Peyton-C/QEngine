@@ -77,6 +77,8 @@ install_virgl_mesa() {
         # Qt has only the blob's, so Mesa alone would never be drawn to. Under
         # /usr/qt, which is Qt's prefix; Engine's runengine puts /usr/qt/lib on
         # LD_LIBRARY_PATH.
+        # Looper X links its Qt integrations statically and has no Qt DSOs.
+        [ ! -f "$_stage/mesa-only" ] || return 0
         _k="$_stage/qt5-eglfs-kms"
         [ -s "$_k/plugins/egldeviceintegrations/libqeglfs-kms-integration.so" ] || {
             echo "ERROR: no eglfs_kms plugin staged at $_k." >&2; return 1; }

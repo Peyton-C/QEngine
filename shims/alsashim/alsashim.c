@@ -182,7 +182,23 @@
  * glitch in the headphones every several minutes. The second output runs
  * about 30-80ms behind the first.
  *
- * 6. AN INPUT FROM A FILE (optional)
+ * 6. TWO LAYERS ON ONE PAIR (optional)
+ *
+ * The SC5000, SC5000M, SC6000 and SC6000M are one deck with two layers, and
+ * the hardware gives each layer its own RCA pair: Layer A on channels 1/2 and
+ * Layer B on 3/4, for a DJ mixer to bring together. On a stereo card the plug
+ * layer keeps only the first pair, so Layer B plays into nothing -- measured on
+ * SC6000 (JP13) 5.0.4 and 5.3.0 with ALSASHIM_METER, Layer B alone reading
+ * 0 on 1/2 and full on 3/4. This is what PR 13 (erhan-) first pointed out.
+ *
+ * With ALSASHIM_LAYER_MIX set, every snd_pcm_writei() to Engine's device has
+ * channels 3/4 added into 1/2, clipped, before it goes to the card. Engine's
+ * own buffer is left alone -- the sum is made in a copy -- so the meter and the
+ * second output still see each layer on its own pair. It stands down by itself
+ * where the layers can be heard apart: when the card has four channels or more,
+ * and when ALSASHIM_CUE_PCM already plays 3/4 on a second card.
+ *
+ * 7. AN INPUT FROM A FILE (optional)
  *
  * QEMU on macOS can play but not record: its coreaudio backend has no input,
  * and it is built without SDL audio. An app that processes what it hears, as
@@ -197,7 +213,13 @@
  * Env vars:
  *   ALSASHIM_AS     card name to report (default "RMZ2", System One's real
  *                   simple-audio-card name, which is what its allowlist
- *                   contains), or "off" to report every card's own name
+ *                   contains), or "off" to report every card's own
+ *                   name. RK3288 products need this set: there the name
+ *                   is the ASoC card name their vendor machine driver
+ *                   registers ("JP07", "JP11", ...), and it is not always the
+ *                   product code -- JP08 shares JP07's devicetree compatible
+ *                   and so comes up as "JP07". scripts/build_scripts/
+ *                   detect_audio_card.sh works it out per firmware.
  *   ALSASHIM_CARD   only spoof this card index; default -1 = every card
  *   ALSASHIM_NOPLUG non-empty to leave PCM device names alone (skip the
  *                   plughw rewrite), e.g. against a card that already
@@ -211,15 +233,34 @@
  *                   runs input and output as one combined device, and an input
  *                   that fails to start takes playback down with it -- the
  *                   stream opens, then sits in XRUN while decks never load.
+ *   ALSASHIM_CAPTURE_PCM  PCM to record from when the card has playback but no
+ *                   capture, or ALSASHIM_NO_CAPTURE hides it. With "null",
+ *                   alsashim fills the reads with silence so playback keeps time.
+ *                   Unset for none.
  *   ALSASHIM_BUFFER_SCALE  multiplier for the PCM ring depth (default 8);
  *                   1 disables the resizing and the sw_params follow-up
  *                   entirely, leaving Engine's own buffering untouched
+ *   ALSASHIM_XRUN_FREE_RUN  non-empty (and not "0") to set playback's
+ *                   stop_threshold to the ring boundary, so an underrun leaves
+ *                   the stream running instead of stopping it. Engine never
+ *                   recovers from an XRUN -- every later write returns -EPIPE
+ *                   and it calls no snd_pcm_prepare -- so under emulation one
+ *                   stall silences audio permanently. Off by default; it turns
+ *                   a permanent silence into an audible gap, which is only the
+ *                   better trade where stalls are expected.
  *   ALSASHIM_MIDI_CARD  card number to report for card-less MIDI sequencer
  *                   clients (default 0); -1 disables this substitution
  *   ALSASHIM_CUE_PCM  PCM to play a second output pair on, e.g. "plughw:1";
  *                   unset for none
  *   ALSASHIM_CUE_CHANNEL  first channel of that pair in Engine's frame, counting
  *                   from 1 (default 3)
+ *   ALSASHIM_LAYER_MIX  non-empty (and not "0") to add channels 3/4 into 1/2
+ *                   on a card with fewer than four channels, unless
+ *                   ALSASHIM_CUE_PCM is set: both layers of an SC player on one
+ *                   stereo output
+ *   ALSASHIM_MAIN_PCM  one more PCM name to treat as the app's own device, as a
+ *                   hw: name is, for the cue, the input and the meter. MPC 2.7.0
+ *                   plays to "default" rather than to a hw: name.
  *   ALSASHIM_INPUT_WAV  WAV file to replace what the app records with: PCM of
  *                   16, 24 or 32 bits or 32-bit float, any rate, mono or more
  *                   channels; unset to leave capture alone
@@ -286,6 +327,7 @@ typedef int (*hw_get_frames_d_t)(const snd_pcm_hw_params_t *,
                                  snd_pcm_uframes_t *, int *);
 typedef int (*sw_frames_t)(snd_pcm_t *, snd_pcm_sw_params_t *, snd_pcm_uframes_t);
 typedef long (*writei_t)(snd_pcm_t *, const void *, snd_pcm_uframes_t);
+typedef int (*sw_get_frames_t)(const snd_pcm_sw_params_t *, snd_pcm_uframes_t *);
 
 static get_name_t real_get_name = NULL;
 static get_card_t real_get_card = NULL;
@@ -319,12 +361,27 @@ static hw_get_frames_d_t real_get_persz_max = NULL;
 static sw_frames_t real_set_start = NULL;
 static sw_frames_t real_set_stop = NULL;
 static writei_t real_writei = NULL;
+static sw_get_frames_t real_get_boundary = NULL;
 
-/* Lazy resolution, one dlsym per symbol. Racing threads compute the same
+/* The hw_params getters and the _near/_first/_last setters exist twice in
+ * alsa-lib: the default at ALSA_0.9.0rc4, which writes through a pointer, and the
+ * hidden ALSA_0.9 original, which returns the value and leaves the pointer alone.
+ * glibc before 2.36 can hand dlsym(RTLD_NEXT) the hidden one (BZ #14932). On
+ * MIXSTREAM PRO GO 3.0.0 and 3.0.1 (Buildroot, glibc 2.34) that made
+ * get_channels_max leave Engine's value uninitialised, so Engine asked
+ * set_channels for whatever was on the stack and ran with no output. Asking for
+ * ALSA_0.9.0rc4 by name gets the right one there, and falls through to dlsym for
+ * every symbol that has only one version. */
+static void *next_alsa_sym(const char *sym) {
+    void *p = dlvsym(RTLD_NEXT, sym, "ALSA_0.9.0rc4");
+    return p ? p : dlsym(RTLD_NEXT, sym);
+}
+
+/* Lazy resolution, one lookup per symbol. Racing threads compute the same
  * pointer, so the unsynchronised write is benign. */
 #define RESOLVE(var, sym) \
     do { \
-        if (!(var)) (var) = (__typeof__(var))dlsym(RTLD_NEXT, sym); \
+        if (!(var)) (var) = (__typeof__(var))next_alsa_sym(sym); \
     } while (0)
 
 static const char *spoof_name(void) {
@@ -343,6 +400,14 @@ static int spoof_card(void) {
 static int debug_on(void) {
     const char *v = getenv("ALSASHIM_DEBUG");
     return v && *v;
+}
+
+/* Whether to make playback free-running rather than let an underrun stop the
+ * stream. Independent of ALSASHIM_BUFFER_SCALE on purpose: the case it exists
+ * for is a *shallow* ring that would otherwise die on its first stall. */
+static int free_run_on(void) {
+    const char *v = getenv("ALSASHIM_XRUN_FREE_RUN");
+    return v && *v && *v != '0';
 }
 
 const char *snd_ctl_card_info_get_name(const snd_ctl_card_info_t *obj) {
@@ -378,19 +443,44 @@ static int no_capture(void) {
     return v && *v;
 }
 
+/* The PCM to record from when the card has no capture stream, or ALSASHIM_NO_CAPTURE
+ * hides it; NULL for none. */
+static const char *capture_pcm(void) {
+    const char *v = getenv("ALSASHIM_CAPTURE_PCM");
+    return (v && *v) ? v : NULL;
+}
+
 /* How Engine asks whether a device has a given direction at all. A card with no
- * capture answers -ENOENT here, so that is what a hidden one answers too. */
+ * capture answers -ENOENT here, so that is what a hidden one answers too.
+ *
+ * With ALSASHIM_CAPTURE_PCM, a device with playback and no capture, or a hidden
+ * one, is reported as having both, by answering the capture query with the
+ * playback stream's info and putting the direction back. Engine then opens hw:N
+ * for capture, which snd_pcm_open() below sends to the stand-in. */
 int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
+    typedef void (*set_stream_t)(snd_pcm_info_t *, int);
+    static set_stream_t set_stream;
     RESOLVE(real_ctl_pcm_info, "snd_ctl_pcm_info");
     RESOLVE(real_pcm_info_stream, "snd_pcm_info_get_stream");
+    RESOLVE(set_stream, "snd_pcm_info_set_stream");
     if (!real_ctl_pcm_info) return -ENOENT;
 
-    if (no_capture() && real_pcm_info_stream &&
-        real_pcm_info_stream(info) == ALSASHIM_STREAM_CAPTURE) {
+    int capture = real_pcm_info_stream &&
+                  real_pcm_info_stream(info) == ALSASHIM_STREAM_CAPTURE;
+    if (no_capture() && capture && !capture_pcm()) {
         if (debug_on()) fprintf(stderr, "[alsashim] hiding a capture stream\n");
         return -ENOENT;
     }
-    return real_ctl_pcm_info(ctl, info);
+    int ret = (no_capture() && capture) ? -ENOENT : real_ctl_pcm_info(ctl, info);
+    if (ret < 0 && capture && capture_pcm() && set_stream) {
+        set_stream(info, ALSASHIM_STREAM_PLAYBACK);
+        ret = real_ctl_pcm_info(ctl, info);
+        set_stream(info, ALSASHIM_STREAM_CAPTURE);
+        if (ret >= 0 && debug_on())
+            fprintf(stderr, "[alsashim] reporting a capture stream backed by \"%s\"\n",
+                    capture_pcm());
+    }
+    return ret;
 }
 
 /* The channel count the hardware really has, per direction, as probed just
@@ -410,12 +500,17 @@ int snd_ctl_pcm_info(snd_ctl_t *ctl, snd_pcm_info_t *info) {
  * (master, booth, cue, ...) and needs room for all of them: told a stereo
  * headset has 2 channels it ran cleanly and silently, and told 16 it played,
  * with plug handing the first pair to the card exactly as it did at 10000.
- * Sixteen is enough for every layout seen so far and costs nothing to render. */
+ * Sixteen is enough for every layout seen so far and costs nothing to render.
+ *
+ * The floor is for outputs only. Capture reports the card's own maximum, since
+ * SC LIVE 4 (JP21, 5.1.0 and 5.3.0) takes its mic and aux as one 32-bit stereo
+ * pair it splits itself, and throws "Number of input channels must equal 2 if
+ * setting deinterleave32BitMicAndAux to true" and aborts given 16. */
 #define ALSASHIM_MIN_REPORTED_CHANNELS 16
 static unsigned int g_real_ch_max[2];
 /* The playback device Engine has open, as last opened through the rewrite below. */
 static _Atomic(snd_pcm_t *) g_main_pcm;
-/* And the capture device, for ALSASHIM_INPUT_WAV. */
+/* And the capture device, for silent fallback and ALSASHIM_INPUT_WAV. */
 static _Atomic(snd_pcm_t *) g_capture_pcm;
 static int g_last_stream = ALSASHIM_STREAM_PLAYBACK;
 
@@ -461,8 +556,34 @@ static int probe_real_hw(const char *hw_name, int stream) {
     return iec958_only;
 }
 
-/* Has no pcm argument, so the direction is taken from the most recent open --
- * Engine queries each device straight after opening it. */
+/* Which direction each params object was last filled for, by snd_pcm_hw_params_any.
+ * Engine keeps one per device, so a handful of slots is plenty. */
+#define PARAMS_SLOTS 16
+static struct { const snd_pcm_hw_params_t *p; int stream; } g_params[PARAMS_SLOTS];
+static pthread_mutex_t g_params_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned int g_params_next;
+
+int snd_pcm_hw_params_any(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
+    RESOLVE(real_hw_any, "snd_pcm_hw_params_any");
+    if (!real_hw_any) return -ENOSYS;
+    int ret = real_hw_any(pcm, params);
+    RESOLVE(real_pcm_stream, "snd_pcm_stream");
+    if (ret < 0 || !real_pcm_stream) return ret;
+    int stream = real_pcm_stream(pcm);
+    pthread_mutex_lock(&g_params_lock);
+    unsigned int i;
+    for (i = 0; i < PARAMS_SLOTS && g_params[i].p != params; i++) {}
+    if (i == PARAMS_SLOTS) i = g_params_next++ % PARAMS_SLOTS;
+    g_params[i].p = params;
+    g_params[i].stream = stream;
+    pthread_mutex_unlock(&g_params_lock);
+    return ret;
+}
+
+/* Has no pcm argument, so the direction comes from the snd_pcm_hw_params_any that
+ * filled the params, or failing that from the most recent open. The open alone was
+ * enough while a card had only playback; with a capture stream too, Engine opens
+ * both and then configures playback, and capture's figure would be applied. */
 int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *params,
                                        unsigned int *val) {
     RESOLVE(real_get_ch_max, "snd_pcm_hw_params_get_channels_max");
@@ -470,8 +591,18 @@ int snd_pcm_hw_params_get_channels_max(const snd_pcm_hw_params_t *params,
     int ret = real_get_ch_max(params, val);
     if (ret < 0 || !val) return ret;
 
-    unsigned int cap = g_real_ch_max[g_last_stream];
-    if (cap > 0 && cap < ALSASHIM_MIN_REPORTED_CHANNELS)
+    int stream = g_last_stream;
+    pthread_mutex_lock(&g_params_lock);
+    for (unsigned int i = 0; i < PARAMS_SLOTS; i++)
+        if (g_params[i].p == params &&
+            (g_params[i].stream == ALSASHIM_STREAM_PLAYBACK ||
+             g_params[i].stream == ALSASHIM_STREAM_CAPTURE))
+            stream = g_params[i].stream;
+    pthread_mutex_unlock(&g_params_lock);
+
+    unsigned int cap = g_real_ch_max[stream];
+    if (stream == ALSASHIM_STREAM_PLAYBACK && cap > 0 &&
+        cap < ALSASHIM_MIN_REPORTED_CHANNELS)
         cap = ALSASHIM_MIN_REPORTED_CHANNELS;
     const char *v = getenv("ALSASHIM_MAX_CHANNELS");
     if (v && *v) cap = (unsigned int)atoi(v);
@@ -490,7 +621,30 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
 
     /* Belt and braces for ALSASHIM_NO_CAPTURE: an open that did not go through
      * the query above still finds nothing there. */
-    if (no_capture() && stream == ALSASHIM_STREAM_CAPTURE) return -ENOENT;
+    if (no_capture() && stream == ALSASHIM_STREAM_CAPTURE && !capture_pcm())
+        return -ENOENT;
+
+    /* The capture snd_ctl_pcm_info() reported for a card that has none, or whose
+     * own is hidden. The stand-in is reported as stereo, the layout JP21 insists on. */
+    if (name && strncmp(name, "hw:", 3) == 0 && stream == ALSASHIM_STREAM_CAPTURE &&
+        capture_pcm()) {
+        snd_pcm_t *probe = NULL;
+        if (no_capture() ||
+            real_pcm_open(&probe, name, stream, ALSASHIM_PCM_NONBLOCK) < 0) {
+            int ret = real_pcm_open(pcmp, capture_pcm(), stream, mode);
+            if (debug_on())
+                fprintf(stderr, "[alsashim] \"%s\" has no capture; opening \"%s\": %d\n",
+                        name, capture_pcm(), ret);
+            if (ret >= 0 && pcmp) {
+                g_last_stream = stream;
+                g_real_ch_max[stream] = 2;
+                atomic_store(&g_capture_pcm, *pcmp);
+            }
+            return ret;
+        }
+        RESOLVE(real_pcm_close, "snd_pcm_close");
+        if (real_pcm_close) real_pcm_close(probe);
+    }
 
     if (name && strncmp(name, "hw:", 3) == 0 && !getenv("ALSASHIM_NOPLUG")) {
         char plugged[128];
@@ -514,8 +668,10 @@ int snd_pcm_open(snd_pcm_t **pcmp, const char *name, int stream, int mode) {
     }
     int ret = real_pcm_open(pcmp, name, stream, mode);
     /* Left on hw: by ALSASHIM_NOPLUG, as MPC is, it is still the device the
-     * second output copies from, and the input replaces. */
-    if (ret >= 0 && name && strncmp(name, "hw:", 3) == 0 && pcmp)
+     * second output copies from, and the input replaces. So is ALSASHIM_MAIN_PCM. */
+    const char *main_pcm = getenv("ALSASHIM_MAIN_PCM");
+    if (ret >= 0 && name && pcmp && (strncmp(name, "hw:", 3) == 0 ||
+                                     (main_pcm && *main_pcm && strcmp(name, main_pcm) == 0)))
         atomic_store(stream == ALSASHIM_STREAM_PLAYBACK ? &g_main_pcm : &g_capture_pcm,
                      *pcmp);
     return ret;
@@ -736,18 +892,75 @@ static void meter(const void *buf, int format, unsigned int channels, long frame
     seen = 0;
 }
 
+static int layer_mix_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("ALSASHIM_LAYER_MIX");
+        on = v && *v && strcmp(v, "0") != 0;
+    }
+    return on;
+}
+
+/* A copy of buf with channels 3/4 added into 1/2, for ALSASHIM_LAYER_MIX, or
+ * buf itself where the mix does not apply or the copy cannot be made. The copy
+ * is kept per thread and only grows, so after Engine's first write the audio
+ * thread allocates nothing. */
+static const void *layer_mix(const void *buf, int format, unsigned int channels,
+                             snd_pcm_uframes_t frames) {
+    static __thread void *mixed;
+    static __thread size_t cap;
+    unsigned int real = g_real_ch_max[ALSASHIM_STREAM_PLAYBACK];
+    if (!layer_mix_on() || cue_pcm_name() || channels < 4 || real == 0 || real >= 4)
+        return buf;
+    size_t bytes = format == ALSASHIM_FORMAT_S16_LE ? 2 : 4;
+    size_t len = (size_t)frames * channels * bytes;
+    if (len > cap) {
+        void *grown = realloc(mixed, len);
+        if (!grown) return buf;
+        mixed = grown;
+        cap = len;
+    }
+    memcpy(mixed, buf, len);
+    for (snd_pcm_uframes_t f = 0; f < frames; f++)
+        for (unsigned int c = 0; c < 2; c++) {
+            size_t to = (size_t)f * channels + c, from = to + 2;
+            switch (format) {
+            case ALSASHIM_FORMAT_S16_LE: {
+                int16_t *s = mixed;
+                int32_t v = (int32_t)s[to] + s[from];
+                s[to] = (int16_t)(v > INT16_MAX ? INT16_MAX : v < INT16_MIN ? INT16_MIN : v);
+                break;
+            }
+            case ALSASHIM_FORMAT_S32_LE: {
+                int32_t *s = mixed;
+                int64_t v = (int64_t)s[to] + s[from];
+                s[to] = (int32_t)(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v);
+                break;
+            }
+            case ALSASHIM_FORMAT_FLOAT_LE: {
+                float *s = mixed;
+                float v = s[to] + s[from];
+                s[to] = v > 1.0f ? 1.0f : v < -1.0f ? -1.0f : v;
+                break;
+            }
+            }
+        }
+    return mixed;
+}
+
 /* The only call Engine writes audio with. */
 long snd_pcm_writei(snd_pcm_t *pcm, const void *buf, snd_pcm_uframes_t frames) {
     RESOLVE(real_writei, "snd_pcm_writei");
     if (!real_writei) return -ENOSYS;
-    long done = real_writei(pcm, buf, frames);
-    if (done <= 0 || pcm != atomic_load(&g_main_pcm)) return done;
-
+    int is_main = pcm == atomic_load(&g_main_pcm);
     int format = atomic_load(&g_fmt_format);
     unsigned int channels = atomic_load(&g_fmt_channels);
-    if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
-        format != ALSASHIM_FORMAT_FLOAT_LE)
-        return done;
+    int known = format == ALSASHIM_FORMAT_S16_LE || format == ALSASHIM_FORMAT_S32_LE ||
+                format == ALSASHIM_FORMAT_FLOAT_LE;
+    long done = real_writei(pcm, is_main && known
+                                     ? layer_mix(buf, format, channels, frames) : buf,
+                            frames);
+    if (done <= 0 || !is_main || !known) return done;
     if (meter_on()) meter(buf, format, channels, done);
 
     unsigned int first = cue_channel();
@@ -790,6 +1003,19 @@ static const char *input_wav_path(void) {
     static int looked;
     if (!looked) { v = getenv("ALSASHIM_INPUT_WAV"); looked = 1; }
     return (v && *v) ? v : NULL;
+}
+
+static int capture_needs_fill(snd_pcm_t *pcm) {
+    if (pcm != atomic_load(&g_capture_pcm)) return 0;
+    if (input_wav_path()) return 1;
+
+    /* A real input takes precedence over the fallback in snd_pcm_open(). */
+    const char *fallback = capture_pcm();
+    if (!fallback || strcmp(fallback, "null") != 0) return 0;
+    static const char *(*get_name)(snd_pcm_t *);
+    RESOLVE(get_name, "snd_pcm_name");
+    const char *name = get_name ? get_name(pcm) : NULL;
+    return name && strcmp(name, "null") == 0;
 }
 
 static unsigned int le16(const unsigned char *p) { return p[0] | (p[1] << 8); }
@@ -915,27 +1141,29 @@ static void input_fill(void *buf, long frames) {
     unsigned int channels = atomic_load(&g_in.channels);
     unsigned int rate = atomic_load(&g_in.rate);
     int format = atomic_load(&g_in.format);
+    if (atomic_load(&g_wav.state) != 2 || rate == 0) {
+        /* ALSA's null PCM advances its pointers without writing the buffer.
+         * Engine 2.4.0–3.0.1 mixes that buffer into the Mixstream's output. */
+        static int (*set_silence)(int, void *, unsigned int);
+        RESOLVE(set_silence, "snd_pcm_format_set_silence");
+        if (set_silence && channels && (unsigned long)frames <= UINT_MAX / channels)
+            set_silence(format, buf, (unsigned int)frames * channels);
+        return;
+    }
     if (format != ALSASHIM_FORMAT_S16_LE && format != ALSASHIM_FORMAT_S32_LE &&
         format != ALSASHIM_FORMAT_FLOAT_LE)
         return;
-    int have = atomic_load(&g_wav.state) == 2 && rate > 0;
-    double step = have ? (double)g_wav.rate / rate : 0;
+    double step = (double)g_wav.rate / rate;
     for (long f = 0; f < frames; f++) {
-        unsigned long at = have ? (unsigned long)g_in.pos : 0;
+        unsigned long at = (unsigned long)g_in.pos;
         unsigned long next = at + 1 < g_wav.frames ? at + 1 : 0;
         float frac = (float)(g_in.pos - (double)at);
         for (unsigned int c = 0; c < channels; c++) {
-            float v = 0.0f;
-            if (have) {
-                float a = wav_sample(at, c), b = wav_sample(next, c);
-                v = a + (b - a) * frac;
-            }
-            put_sample(buf, format, (unsigned long)f * channels + c, v);
+            float a = wav_sample(at, c), b = wav_sample(next, c);
+            put_sample(buf, format, (unsigned long)f * channels + c, a + (b - a) * frac);
         }
-        if (have) {
-            g_in.pos += step;
-            if (g_in.pos >= (double)g_wav.frames) g_in.pos -= (double)g_wav.frames;
-        }
+        g_in.pos += step;
+        if (g_in.pos >= (double)g_wav.frames) g_in.pos -= (double)g_wav.frames;
     }
 }
 
@@ -947,7 +1175,7 @@ long snd_pcm_readi(snd_pcm_t *pcm, void *buf, snd_pcm_uframes_t frames) {
     RESOLVE(real_readi, "snd_pcm_readi");
     if (!real_readi) return -ENOSYS;
     long done = real_readi(pcm, buf, frames);
-    if (done > 0 && pcm == atomic_load(&g_capture_pcm) && input_wav_path())
+    if (done > 0 && capture_needs_fill(pcm))
         input_fill(buf, done);
     return done;
 }
@@ -969,13 +1197,13 @@ int snd_pcm_hw_params(snd_pcm_t *pcm, snd_pcm_hw_params_t *params) {
     if (ret < 0 || !get_channels || !get_format || !get_rate) return ret;
     unsigned int channels = 0, rate = 0;
     int format = -1;
-    if (pcm == atomic_load(&g_capture_pcm) && input_wav_path() &&
+    if (capture_needs_fill(pcm) &&
         get_channels(params, &channels) == 0 && get_format(params, &format) == 0 &&
         get_rate(params, &rate, NULL) == 0) {
         atomic_store(&g_in.channels, channels);
         atomic_store(&g_in.format, format);
         atomic_store(&g_in.rate, rate);
-        input_start();
+        if (input_wav_path()) input_start();
         return ret;
     }
     if (pcm != atomic_load(&g_main_pcm)) return ret;
@@ -1253,6 +1481,38 @@ int snd_pcm_sw_params_set_stop_threshold(snd_pcm_t *pcm,
                                          snd_pcm_uframes_t val) {
     RESOLVE(real_set_stop, "snd_pcm_sw_params_set_stop_threshold");
     if (!real_set_stop) return -ENOSYS;
+
+    /* Free-running playback: stop_threshold at the ring's boundary — a value the
+     * available count can never reach — is ALSA's own idiom for "never stop this
+     * stream on an underrun". The stream stays RUNNING through a gap instead of
+     * entering XRUN, which matters here because Engine does not recover from one:
+     * once the PCM is in XRUN state every further snd_pcm_writei returns -EPIPE
+     * until someone calls snd_pcm_prepare, and Engine calls neither. A single
+     * stall is therefore permanent, and shows up as an audio device that went
+     * silent and a frozen "Audio_probe" watchdog rather than as a dropout.
+     *
+     * On real hardware an XRUN essentially never happens, so that recovery path
+     * has simply never had to work. Under emulation it is the common case.
+     *
+     * The cost is that a stall becomes an audible gap with the playhead running
+     * on through it, where today it is silence forever; and the benefit is that
+     * surviving stalls no longer requires burying them under ring depth, which is
+     * what pushes Engine's own position display out of step with the sound.
+     *
+     * Checked before the depth-derived value below so this holds at any
+     * ALSASHIM_BUFFER_SCALE, scale 1 included. */
+    if (free_run_on()) {
+        RESOLVE(real_get_boundary, "snd_pcm_sw_params_get_boundary");
+        snd_pcm_uframes_t boundary;
+        if (real_get_boundary && real_get_boundary(p, &boundary) == 0 &&
+            boundary > val && real_set_stop(pcm, p, boundary) == 0) {
+            log_scaled(pcm, "stop_threshold (free-run)", val, boundary);
+            return 0;
+        }
+        if (debug_on())
+            fprintf(stderr, "[alsashim] free-run stop_threshold refused; "
+                            "leaving it at %lu\n", (unsigned long)val);
+    }
 
     snd_pcm_uframes_t bufsz;
     if (buffer_scale() > 1 && granted_buffer_size(pcm, &bufsz) == 0 &&

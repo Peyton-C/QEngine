@@ -1,0 +1,92 @@
+ok loader.dtshim.so
+ok loader.dtshim.so.symbols
+ok loader.drmatomic.so
+ok loader.drmatomic.so.symbols
+ok loader.alsashim.so
+ok loader.alsashim.so.symbols
+ok loader.teeshim.so
+ok loader.teeshim.so.symbols
+ok loader.quitshim.so
+ok loader.quitshim.so.symbols
+ok identity.product-code.open
+ok identity.product-code.open64
+ok identity.product-code.__open_2 # SKIP
+ok identity.product-code.__open64_2 # SKIP
+ok identity.product-code.openat # SKIP
+ok identity.product-code.openat64 # SKIP
+ok identity.product-code.__openat_2 # SKIP
+ok identity.product-code.__openat64_2 # SKIP
+ok identity.product-code.fopen
+ok identity.product-code.fopen64
+ok identity.product-code
+ok identity.product-code.exists.access
+ok identity.product-code.exists.faccessat
+ok identity.product-code.exists
+ok identity.serial-number.open
+ok identity.serial-number.open64
+ok identity.serial-number.__open_2 # SKIP
+ok identity.serial-number.__open64_2 # SKIP
+ok identity.serial-number.openat # SKIP
+ok identity.serial-number.openat64 # SKIP
+ok identity.serial-number.__openat_2 # SKIP
+ok identity.serial-number.__openat64_2 # SKIP
+ok identity.serial-number.fopen
+ok identity.serial-number.fopen64
+ok identity.serial-number
+ok identity.serial-number.exists.access
+ok identity.serial-number.exists.faccessat
+ok identity.serial-number.exists
+ok devmem.open
+ok devmem.map
+ok devicetree.dsi@fde20000/panel@0/rotation.open
+ok devicetree.dsi@fde20000/panel@0/rotation.open64
+ok devicetree.dsi@fde20000/panel@0/rotation.__open_2 # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.__open64_2 # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.openat # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.openat64 # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.__openat_2 # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.__openat64_2 # SKIP
+ok devicetree.dsi@fde20000/panel@0/rotation.fopen
+ok devicetree.dsi@fde20000/panel@0/rotation.fopen64
+ok devicetree.dsi@fde20000/panel@0/rotation
+ok devicetree.dsi@fde30000/panel@0/rotation.open
+ok devicetree.dsi@fde30000/panel@0/rotation.open64
+ok devicetree.dsi@fde30000/panel@0/rotation.__open_2 # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.__open64_2 # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.openat # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.openat64 # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.__openat_2 # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.__openat64_2 # SKIP
+ok devicetree.dsi@fde30000/panel@0/rotation.fopen
+ok devicetree.dsi@fde30000/panel@0/rotation.fopen64
+ok devicetree.dsi@fde30000/panel@0/rotation
+ok devicetree.mipi@ff960000/panel@0/rotation.open
+ok devicetree.mipi@ff960000/panel@0/rotation.open64
+ok devicetree.mipi@ff960000/panel@0/rotation.__open_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.__open64_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.openat # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.openat64 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.__openat_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.__openat64_2 # SKIP
+ok devicetree.mipi@ff960000/panel@0/rotation.fopen
+ok devicetree.mipi@ff960000/panel@0/rotation.fopen64
+ok devicetree.mipi@ff960000/panel@0/rotation
+ok devicetree.edp-panel/rotation.open
+ok devicetree.edp-panel/rotation.open64
+ok devicetree.edp-panel/rotation.__open_2 # SKIP
+ok devicetree.edp-panel/rotation.__open64_2 # SKIP
+ok devicetree.edp-panel/rotation.openat # SKIP
+ok devicetree.edp-panel/rotation.openat64 # SKIP
+ok devicetree.edp-panel/rotation.__openat_2 # SKIP
+ok devicetree.edp-panel/rotation.__openat64_2 # SKIP
+ok devicetree.edp-panel/rotation.fopen
+ok devicetree.edp-panel/rotation.fopen64
+ok devicetree.edp-panel/rotation
+ok efuse # SKIP
+ok battery # SKIP
+ok tee.context
+ok tee.session
+ok tee.attest
+ok quit.sigterm
+ok quit.splash
+1..91

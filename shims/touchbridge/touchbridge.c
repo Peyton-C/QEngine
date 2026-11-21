@@ -287,13 +287,29 @@ static void emit(int type, int code, int val) {
 
 static void sync_report(void) { emit(EV_SYN, SYN_REPORT, 0); }
 
+/* Each coordinate of a touch-down is sent twice in the one frame, first a pixel
+ * off and then exact. The input core drops any absolute value equal to the
+ * device's current one, so a tap where the last one ended arrives with no
+ * position at all, only BTN_TOUCH and the tracking ID. A reader that saw the
+ * last tap still has the coordinates. A reader that opened the device since
+ * does not: Engine restarted with `systemctl restart engine` starts at 0,0, so
+ * every repeated tap on one button lands in the corner, and on a screen with
+ * one target, such as a dialog's Ok, touch looks dead until a reboot (Prime GO
+ * 5.0.4, JP11). Neither value matches the current one, so both get through,
+ * and the reader ends the frame on the real position. */
+static int neighbour(int v) { return v > 0 ? v - 1 : v + 1; }
+
 static void touch_down(int x, int y) {
     emit(EV_ABS, ABS_MT_SLOT, 0);
     emit(EV_ABS, ABS_MT_TRACKING_ID, 1);
     emit(EV_KEY, BTN_TOUCH, 1);
+    emit(EV_ABS, ABS_MT_POSITION_X, neighbour(x));
     emit(EV_ABS, ABS_MT_POSITION_X, x);
+    emit(EV_ABS, ABS_MT_POSITION_Y, neighbour(y));
     emit(EV_ABS, ABS_MT_POSITION_Y, y);
+    emit(EV_ABS, ABS_X, neighbour(x));
     emit(EV_ABS, ABS_X, x);
+    emit(EV_ABS, ABS_Y, neighbour(y));
     emit(EV_ABS, ABS_Y, y);
     sync_report();
 }

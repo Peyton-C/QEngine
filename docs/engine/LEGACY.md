@@ -7,7 +7,7 @@ Legacy Engine OS covers armv7 firmware with glibc older than 2.34, including Eng
 | SC5000 1.0.x, Qt 5.5.1 | Native Qt, a matching raster scenegraph plugin and `qt55vnc` serving the offscreen display |
 | Qt 5.9 and 5.12 | Qt VNC, `vnctouchbridge` and `qmlrotate` where landscape correction is needed |
 | Qt 5.15.2 with older glibc | Qt VNC and `vnctouchbridge`; no rotation shim needed |
-| SC media players and Prime GO, Qt 5.12.6 | Guest-linked `alsashim`, four-channel playback-only loopback and original buffer sizes |
+| Qt 5.12.6, 1.5.1 to 2.0.0 | Guest-linked `alsashim`, four-channel playback-only loopback at buffer scale 4 |
 
 Early SC5000 firmware runs `/usr/JP07/JP07`. Later firmware uses product-named entries under `/usr/Engine`, such as `JP07`, `JC11` or `NH08`; some are links to `Engine`. QEngine checks the old layout and glibc, so a product-named executable alone does not select legacy mode.
 

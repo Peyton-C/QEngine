@@ -65,6 +65,7 @@ add_executable(qengine-ui
   src/Screen.cpp
   src/Shell.cpp
   src/Surface.cpp
+  src/Texture.cpp
   src/Touch.cpp
   src/Wizard.cpp)
 

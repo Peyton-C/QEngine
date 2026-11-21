@@ -7,6 +7,8 @@
 //
 //   qengine-ui [layout name] [--layouts DIR] [--instance NAME]
 //              [--new] [--view drawn|screen] [--screenshot out.png]
+//              [--overlay image.png [--overlay-face top|front]
+//               [--overlay-rect x0,y0,x1,y1] [--overlay-alpha A]]
 //              [--log-input]
 //
 // A layout name or product code opens that layout on its own, without a
@@ -15,6 +17,11 @@
 // --screenshot renders one frame offscreen into a PNG and quits, without
 // showing a window, so a layout change can be checked from a script. With
 // --instance it waits first for the guest's lamps, four seconds or --wait.
+// --overlay lays a PNG over the top face, or the one --overlay-face names, at
+// --overlay-alpha, 0.5 by default, so a layout can be checked against a
+// product photo. --overlay-rect is where the face sits in the image, in
+// pixels, and is the whole image without it. It has no place in the window's
+// menus, since only someone drawing a layout needs it.
 // --log-input prints the pointer, touch and scroll events SDL delivers, to
 // see what a touchscreen or a pen actually sends.
 
@@ -57,6 +64,19 @@ bool parseArgs(int argc, char** argv, Args& args) {
         } else if (a == "--view" && more) {
             const std::string v = argv[++i];
             args.view = v == "screen" ? View::Screen : View::Drawn;
+        } else if (a == "--overlay" && more) {
+            args.overlay = argv[++i];
+        } else if (a == "--overlay-face" && more) {
+            args.overlayFace = argv[++i];
+        } else if (a == "--overlay-alpha" && more) {
+            args.overlayAlpha = float(std::atof(argv[++i]));
+        } else if (a == "--overlay-rect" && more) {
+            ImVec4& r = args.overlayRect;
+
+            if (std::sscanf(argv[++i], "%f,%f,%f,%f", &r.x, &r.y, &r.z, &r.w) != 4 || r.z <= r.x || r.w <= r.y) {
+                std::fprintf(stderr, "--overlay-rect wants x0,y0,x1,y1\n");
+                return false;
+            }
         } else if (a == "--new") {
             args.newDevice = true;
         } else if (a == "--log-input") {
@@ -66,7 +86,9 @@ bool parseArgs(int argc, char** argv, Args& args) {
         } else {
             std::fprintf(stderr,
                          "usage: %s [layout] [--layouts DIR] [--instance NAME] "
-                         "[--new] [--view drawn|screen] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
+                         "[--new] [--view drawn|screen] [--screenshot out.png] [--wait SECONDS] "
+                         "[--overlay image.png] [--overlay-face top|front] [--overlay-rect x0,y0,x1,y1] "
+                         "[--overlay-alpha A] [--log-input]\n",
                          argv[0]);
             return false;
         }
@@ -490,6 +512,17 @@ int main(int argc, char** argv) {
     init.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
     ImGui_ImplSDLGPU3_Init(&init);
 
+    if (!app.args.overlay.empty()) {
+        if (app.overlay.load(app.gpu, app.args.overlay)) {
+            app.options.overlay = {{app.overlay.id(), app.overlay.size()},
+                                   app.args.overlayFace,
+                                   app.args.overlayRect,
+                                   app.args.overlayAlpha};
+        } else {
+            std::fprintf(stderr, "could not load %s\n", app.args.overlay.c_str());
+        }
+    }
+
     loadDevices(app);
 
     if (app.devices.empty()) {
@@ -628,6 +661,7 @@ int main(int argc, char** argv) {
     disconnectGuest(app);
     SDL_WaitForGPUIdle(app.gpu);
     app.screen.release();
+    app.overlay.reset();
     ImGui_ImplSDLGPU3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();

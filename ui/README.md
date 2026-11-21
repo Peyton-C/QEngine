@@ -55,5 +55,7 @@ The View menu's Screen in bezel, or `--view screen`, shows the guest's display a
 ## Screenshots
 `--screenshot out.png` renders one frame without a window and quits, and `--view` picks the view for it. With `--instance` it waits for the guest's lamps first, four seconds or `--wait`, and prints what it sent and received.
 
+`--overlay photo.png` lays a product photo over the top face at half opacity, to check a layout against it. `--overlay-rect x0,y0,x1,y1` gives the faceplate's pixels in the photo, `--overlay-face front` picks the front panel and `--overlay-alpha` the opacity. Photos are inMusic's, so keep them in `build/` and never commit them.
+
 ## Touch
 Each finger holds its own control, so two jogs or a fader and a knob can move at once. SDL reports touchscreens itself on Linux and Windows. On macOS 27 AppKit gives a touchscreen's or Sidecar's fingers only to gesture recognizers, and sends the window nothing for a drag, so the UI attaches a recognizer of its own and ignores the clicks macOS makes up from taps. A touch outside the device drives the rest of the window as a mouse. Scrolls turn knobs, faders and platters too, for a trackpad. `--log-input` prints the clicks, scrolls and touches that arrive.

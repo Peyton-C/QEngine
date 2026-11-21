@@ -6,6 +6,7 @@
 #include "Midi.hpp"
 #include "Screen.hpp"
 #include "Surface.hpp"
+#include "Texture.hpp"
 
 #include <SDL3/SDL.h>
 
@@ -26,6 +27,10 @@ struct Args {
     std::string instance;
     View view = View::Drawn;
     std::string screenshot;
+    std::string overlay;  // a PNG to lay over a face, see SurfaceOptions::Overlay
+    std::string overlayFace = "top";
+    ImVec4 overlayRect = {0, 0, 0, 0};
+    float overlayAlpha = 0.5f;
     double wait = 4.0;  // before a screenshot with a guest connected
     bool logInput = false;
     bool newDevice = false;
@@ -76,6 +81,7 @@ struct App {
     int current = -1;  // the layout drawn, or -1 for none
     Surface surface;
     SurfaceOptions options;
+    Texture overlay;
     double lastReloadCheck = 0;
 
     // Fingers on the device go to the surface, and one elsewhere drives the

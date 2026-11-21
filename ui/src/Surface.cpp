@@ -1766,6 +1766,22 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         else if (e.kind == "bracket") drawBracket(g, p);
     }
 
+    if (options.overlay.image.id != ImTextureID_Invalid) {
+        const SurfaceOptions::Overlay& o = options.overlay;
+
+        for (const Face& face : layout.faces) {
+            if (face.name != o.face) {
+                continue;
+            }
+
+            const ImVec2 size = o.image.size;
+            const ImVec4 r = o.rect.z > 0 ? o.rect : ImVec4(0, 0, size.x, size.y);
+            dl->AddImage(o.image.id, g.P({face.rect.x, face.rect.y}),
+                         g.P({face.rect.x + face.rect.z, face.rect.y + face.rect.w}), {r.x / size.x, r.y / size.y},
+                         {r.z / size.x, r.w / size.y}, g.C({1, 1, 1, o.alpha}));
+        }
+    }
+
     if (options.showIds) {
         for (const Element& e : layout.elements) {
             if (e.id.empty() || !interactive(e.kind) || flag(e.p, "hidden")) {

@@ -37,6 +37,17 @@ struct SurfaceOptions {
         ImVec2 size = {0, 0};
     };
     Image screen;
+
+    // An image laid over one face, from --overlay, to check a layout against
+    // a photo. rect is the face's x0, y0, x1, y1 in image pixels, all zero
+    // for the whole image.
+    struct Overlay {
+        Image image;
+        std::string face = "top";
+        ImVec4 rect = {0, 0, 0, 0};
+        float alpha = 0.5f;
+    };
+    Overlay overlay;
 };
 
 // Where the panel's screen is being pointed at, 0 to 1 across the guest's

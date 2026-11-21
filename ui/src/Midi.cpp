@@ -73,11 +73,26 @@ int outputOf(const Element& e, const ControlState& st) {
         return int(std::floor(st.angle / kTwoPi * ticks)) & 0x3FFF;
     }
 
+    // A switch with "values" reports its position, so it is sent when it
+    // moves rather than when the panel connects.
+    if (e.kind == "switch" && m.contains("values")) {
+        return int(std::lround(st.value));
+    }
+
     if (e.kind == "knob" || e.kind == "fader") {
         int v = int(std::lround(std::clamp(st.value, 0.0f, 1.0f) * 16383.0f));
 
         if (flag(m, "invert")) {
             v = 16383 - v;
+        }
+
+        // A stepped knob, as an FX channel assign selector is, sends one of
+        // its "values" for each detent rather than a sweep.
+        const json& values = m.value("values", json());
+
+        if (values.is_array() && !values.empty()) {
+            const size_t step = size_t(std::lround(float(v) / 16383.0f * float(values.size() - 1)));
+            return std::clamp(values[step].get<int>(), 0, 127);
         }
 
         return isPair(m.value("cc", json())) ? v : v >> 7;
@@ -353,6 +368,26 @@ void GuestLink::message(Surface& surface, const std::vector<unsigned char>& m) {
             ControlState& st = states[id];
             st.guest = true;
 
+            // A meter with "levels" is sent as the assignment file's
+            // ledCCValues, the CC for each count of lit LEDs, whether they
+            // count up (0, 14, 27...) or are a bitmask (0, 1, 3, 7...). The
+            // highest one the value reaches is how many are lit.
+            const json& levels = layout->elements[size_t(controls_[id].index)].p["midi"].value("levels", json());
+
+            if (levels.is_array() && levels.size() > 1) {
+                size_t lit = 0;
+
+                for (size_t i = 0; i < levels.size(); ++i) {
+                    if (m[2] >= levels[i].get<int>()) {
+                        lit = i;
+                    }
+                }
+
+                st.value = float(lit) / float(levels.size() - 1);
+                st.peak = -1.0f;
+                continue;
+            }
+
             // The LED the peak holds at, 20 for the first to 110 for the
             // tenth, plus how many are lit, 0 to 10, as 97 is 7 lit with the
             // peak on the eighth. The peak is never below the level, which
@@ -490,10 +525,32 @@ void GuestLink::track(Control& c, const ControlState& st, const Element& e) {
             note(ch, n, down);
         }
     } else if (e.kind == "switch") {
-        const bool on = st.value >= 0.5f;
+        const json values = m.value("values", json());
 
-        if (n >= 0 && on != (c.prev.value >= 0.5f)) {
-            note(ch, n, on);
+        // "values" gives each position what it sends: a CC's value, or a
+        // note's velocity with 0 as note off, as an FX paddle is on either
+        // side of off. Without it a switch is a note, on past its first
+        // position.
+        if (values.is_array() && !values.empty()) {
+            const int pos = std::clamp(outputOf(e, st), 0, int(values.size()) - 1);
+
+            if (pos != c.lastValue) {
+                const int v = std::clamp(values[size_t(pos)].get<int>(), 0, 127);
+
+                if (m.contains("cc")) {
+                    cc(ch, m["cc"], v);
+                } else if (n >= 0) {
+                    note(ch, n, v > 0, v);
+                }
+
+                c.lastValue = pos;
+            }
+        } else {
+            const bool on = st.value >= 0.5f;
+
+            if (n >= 0 && on != (c.prev.value >= 0.5f)) {
+                note(ch, n, on);
+            }
         }
     } else if (e.kind == "encoder") {
         // A touch sensor, as an MPC's Q-Links have, held for as long as the

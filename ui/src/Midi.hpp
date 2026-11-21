@@ -44,8 +44,14 @@
 //   "pad": N                       an MPC pad's number in Akai's pad colour
 //                                  SysEx, pad 1 as 0, which lights it
 //
+//   "values": [V, ...]             a switch's or a stepped knob's value for
+//                                  each position, as a CC or, for a switch
+//                                  with a note, its velocity, 0 as note off
+//
 // A meter's "midi" is {"cc": N}, the CC Engine sends its level on: how many
-// of ten LEDs are lit, plus 20 to 110 in tens for the one its peak holds at. A control
+// of ten LEDs are lit, plus 20 to 110 in tens for the one its peak holds at.
+// With "levels", the assignment file's ledCCValues, the value is the highest
+// of them it reaches instead, as most products send their meters. A control
 // with only a "lamp" sends nothing, as an LED or an indicator does.
 //
 // Lamps come back as Engine lights the product: a note on the lamp's channel

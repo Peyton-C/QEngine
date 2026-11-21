@@ -135,7 +135,7 @@ void deviceStep(App& app) {
 
         const ImVec2 min = ImGui::GetItemRectMin();
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        deviceIcon(dl, app, min + ImVec2(4, 5), 28, p.family, p.code);
+        deviceIcon(dl, min + ImVec2(4, 5), 28, p.family, p.code);
         dl->AddText(app.fonts.ui, 14.5f, min + ImVec2(42, 2), ImGui::GetColorU32(ImGuiCol_Text), p.name.c_str());
         const std::string sub = p.code + "  " + p.arch;
         dl->AddText(app.fonts.ui, 12.0f, min + ImVec2(42, 20), ImGui::GetColorU32(ImGuiCol_TextDisabled), sub.c_str());
@@ -174,7 +174,7 @@ void deviceStep(App& app) {
     } else {
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 at = ImGui::GetCursorScreenPos() + avail * 0.5f - ImVec2(48, 48);
-        deviceIcon(ImGui::GetWindowDrawList(), app, at, 96, p->family, p->code);
+        deviceIcon(ImGui::GetWindowDrawList(), at, 96, p->family, p->code);
     }
 
     ImGui::EndChild();

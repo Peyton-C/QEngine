@@ -244,7 +244,7 @@ void sidebar(App& app, float width) {
         else if (hot) dl->AddRectFilled(rowMin, rowMax, IM_COL32(255, 255, 255, 14), 8.0f);
 
         const Product* p = findProduct(i.product);
-        deviceIcon(dl, app, rowMin + ImVec2(8, 9), 38.0f, familyOf(i), i.product);
+        deviceIcon(dl, rowMin + ImVec2(8, 9), 38.0f, familyOf(i), i.product);
 
         // The state on the icon, as a dot, unless it is simply stopped.
         if (i.state != MachineState::Stopped) {
@@ -534,7 +534,7 @@ void screenOnly(App& app, const Instance& inst) {
         const bool stopped = inst.state == MachineState::Stopped;
         const ImVec2 c = pos + avail * 0.5f + ImVec2(0, stopped ? 60.0f : 0.0f);
 
-        if (!stopped) deviceIcon(dl, app, c - ImVec2(s * 0.5f, s * 0.5f + 40), s, familyOf(inst), inst.product);
+        if (!stopped) deviceIcon(dl, c - ImVec2(s * 0.5f, s * 0.5f + 40), s, familyOf(inst), inst.product);
 
         const std::string name = productName(inst.product);
         const std::string note = inst.state == MachineState::Running
@@ -997,23 +997,28 @@ void drawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
     dl->AddText(gIcons, size, ImFloor(c - mid), col, utf8);
 }
 
-void deviceIcon(ImDrawList* dl, const App& app, ImVec2 min, float s, const std::string& family,
-                const std::string& code) {
+// HeadRush is three kinds of device under one name: guitar processors, the
+// VX5 vocal processor and the loopers, each with its own icon.
+Icon productIcon(const std::string& family, const std::string& code) {
+    if (family == "Engine") return Icon::Engine;
+    if (family == "MPC") return Icon::Mpc;
+    if (family == "Alesis") return Icon::Drums;
+
+    if (family == "HeadRush") {
+        if (code == "HV03") return Icon::Vocal;
+        if (code == "HG08" || code == "HG03") return Icon::Looper;
+        return Icon::Guitar;
+    }
+
+    return Icon::Unknown;
+}
+
+void deviceIcon(ImDrawList* dl, ImVec2 min, float s, const std::string& family, const std::string& code) {
     const ImVec2 max = min + ImVec2(s, s);
     dl->AddRectFilled(min, max, familyColour(family), s * 0.24f);
     dl->AddRectFilled(min, ImVec2(max.x, min.y + s * 0.5f), IM_COL32(255, 255, 255, 28), s * 0.24f,
                       ImDrawFlags_RoundCornersTop);
-
-    const std::string text = code.empty() ? "?" : code;
-    float size = s * 0.3f;
-    ImVec2 ts = app.fonts.title->CalcTextSizeA(size, FLT_MAX, 0, text.c_str());
-
-    if (ts.x > s * 0.84f) {
-        size *= s * 0.84f / ts.x;
-        ts = app.fonts.title->CalcTextSizeA(size, FLT_MAX, 0, text.c_str());
-    }
-
-    dl->AddText(app.fonts.title, size, min + (ImVec2(s, s) - ts) * 0.5f, IM_COL32(255, 255, 255, 245), text.c_str());
+    drawIcon(dl, productIcon(family, code), min + ImVec2(s, s) * 0.5f, s * 0.5f, IM_COL32(255, 255, 255, 245));
 }
 
 bool iconButton(const char* id, Icon icon, const char* tip, bool on, float size) {

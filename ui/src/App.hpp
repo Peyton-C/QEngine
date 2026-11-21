@@ -147,6 +147,15 @@ enum class Icon : uint32_t {
     Delete = 0xF09E7,       // delete-outline
     Alert = 0xF0028,        // alert-circle
     Check = 0xF012C,        // check
+
+    // What each kind of device is shown as, see productIcon().
+    Engine = 0xF0EC2,       // record-circle
+    Mpc = 0xF0570,          // view-grid
+    Guitar = 0xF02C4,       // guitar-electric
+    Vocal = 0xF0370,        // microphone-variant
+    Looper = 0xF0456,       // repeat
+    Drums = 0xF0AA5,        // circle-slice-8
+    Unknown = 0xF0625,      // help-circle-outline
 };
 
 // The font the icons are drawn from, set once it is loaded.
@@ -155,8 +164,8 @@ void setIconFont(ImFont* font);
 std::string familyOf(const Instance& i);
 ImU32 familyColour(const std::string& family, float alpha = 1.0f);
 void drawIcon(ImDrawList* dl, Icon icon, ImVec2 centre, float size, ImU32 col);
-void deviceIcon(ImDrawList* dl, const App& app, ImVec2 min, float size, const std::string& family,
-                const std::string& code);
+Icon productIcon(const std::string& family, const std::string& code);
+void deviceIcon(ImDrawList* dl, ImVec2 min, float size, const std::string& family, const std::string& code);
 bool iconButton(const char* id, Icon icon, const char* tip, bool on = false, float size = 32.0f);
 bool pillButton(const char* label, Icon icon, bool primary, bool danger = false);
 void spinner(ImDrawList* dl, ImVec2 centre, float radius, ImU32 col);

@@ -107,6 +107,7 @@ struct App {
     LogTail consoleTail;
     LogTail buildTail;
     bool layoutsOpen = false;
+    bool sidebarOpen = true;
 
     std::string confirmDelete;
     std::string message;  // a failure to show for a few seconds
@@ -147,6 +148,7 @@ enum class Icon : uint32_t {
     Delete = 0xF09E7,       // delete-outline
     Alert = 0xF0028,        // alert-circle
     Check = 0xF012C,        // check
+    Sidebar = 0xF06FD,      // page-layout-sidebar-left
 
     // What each kind of device is shown as, see productIcon().
     Engine = 0xF0EC2,       // record-circle

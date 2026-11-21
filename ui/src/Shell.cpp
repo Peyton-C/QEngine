@@ -191,13 +191,14 @@ void sidebar(App& app, float width) {
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar();
 
-    // Title, and the plus that adds a device.
-    ImGui::SetCursorPosX(16);
+    // Title, and the plus that adds a device, centred on the same line as
+    // the main area's toolbar, 32 down, so the sidebar toggle lines up.
+    ImGui::SetCursorPos({16, 32 - 12});
     ImGui::PushFont(app.fonts.title, 24.0f);
     ImGui::TextUnformatted("QEngine");
     ImGui::PopFont();
     ImGui::SameLine(width - 46);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 3);
+    ImGui::SetCursorPosY(32 - 16);
 
     if (iconButton("##new", Icon::Plus, "New Device (Cmd+N)")) wizardOpen(app);
 
@@ -340,7 +341,21 @@ bool tile(const char* id, Icon icon, const char* label, ImVec2 size) {
     return pressed;
 }
 
+// Shows or hides the sidebar, from the top left of the main area. Cmd+Ctrl+S
+// does the same, as it does in Finder and Xcode.
+void sidebarToggle(App& app) {
+    const char* tip = app.sidebarOpen ? "Hide Sidebar (Cmd+Ctrl+S)" : "Show Sidebar (Cmd+Ctrl+S)";
+
+    if (iconButton("##sidebar", Icon::Sidebar, tip)) app.sidebarOpen = !app.sidebarOpen;
+}
+
 void welcome(App& app) {
+    // Without a toolbar here, the toggle sits alone where the toolbar has it.
+    const ImVec2 top = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(top + ImVec2(14, 16));
+    sidebarToggle(app);
+    ImGui::SetCursorScreenPos(top);
+
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const ImVec2 t(430, 76);
     const float gap = 10;
@@ -408,7 +423,10 @@ void toolbar(App& app, const Instance* inst) {
         sub = d.path.filename().string() + ", reloads on save";
     }
 
-    const float textX = 20.0f;
+    ImGui::SetCursorScreenPos(min + ImVec2(14, (h - 32) * 0.5f));
+    sidebarToggle(app);
+
+    const float textX = 58.0f;
     dl->AddText(app.fonts.ui, 18.0f, min + ImVec2(textX, 12), ImGui::GetColorU32(ImGuiCol_Text), title.c_str());
     dl->AddText(app.fonts.ui, 13.0f, min + ImVec2(textX, 35), u32(subColour), sub.c_str());
 
@@ -1218,6 +1236,7 @@ void drawApp(App& app) {
     app.instances = app.machines->list();
 
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) wizardOpen(app);
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Super | ImGuiKey_S)) app.sidebarOpen = !app.sidebarOpen;
 
     // The selected instance can disappear, deleted from a terminal.
     if (app.pane == Pane::Instance && !selectedInstance(app)) {
@@ -1227,8 +1246,8 @@ void drawApp(App& app) {
 
     syncGuest(app);
 
-    const float side = 290.0f;
-    sidebar(app, side);
+    const float side = app.sidebarOpen ? 290.0f : 0.0f;
+    if (app.sidebarOpen) sidebar(app, side);
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos + ImVec2(side, 0));

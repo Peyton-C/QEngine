@@ -11,7 +11,7 @@ ui/build/qengine-ui
 A system SDL3 is used when CMake finds one, otherwise it is fetched with Dear ImGui, nlohmann/json and the Material Design Icons font, which draws the UI's own buttons.
 
 ## Devices
-The sidebar lists every instance, with a button to start or stop it, and its context menu edits, rebuilds, shows or deletes it. The plus button, or Cmd+N, opens the New Device sheet: pick a product, open its update image, and give it a name, and the UI runs `new_instance.sh` with `--product-code` and `--montero` as chosen. Edit runs it again on an existing instance with `--force`, which keeps `/data`. A JP22 also gets `GPU_MAX_OUTPUTS=3` in its `instance.env`.
+The sidebar lists every instance, with a button to start or stop it, and its context menu edits, rebuilds, shows or deletes it. The button at the toolbar's left, or Cmd+Ctrl+S, hides it and gives the panel the whole window. The plus button, or Cmd+N, opens the New Device sheet: pick a product, open its update image, and give it a name, and the UI runs `new_instance.sh` with `--product-code` and `--montero` as chosen. Edit runs it again on an existing instance with `--force`, which keeps `/data`. A JP22 also gets `GPU_MAX_OUTPUTS=3` in its `instance.env`.
 
 Builds and VMs run detached, with their output in `build.log` and `console.log` in the instance's directory, so they carry on when the UI closes. The UI reads what runs from the process table, so a VM started from a terminal is listed as running too, and the console button shows both logs. Start runs `run_instance.sh` with `--display vnc`, or `egl-vnc` where the instance records a GL display, since the panel reads the screen over VNC.
 

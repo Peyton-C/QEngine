@@ -156,8 +156,7 @@ void rowAction(App& app, const Instance& i, ImVec2 centre) {
     }
 
     if (i.state == MachineState::Failed) {
-        dl->AddCircleFilled(centre, 9.0f, u32(kRed, 0.9f));
-        dl->AddText(app.fonts.title, 13.0f, centre - ImVec2(2, 7.5f), IM_COL32(20, 20, 20, 255), "!");
+        drawIcon(dl, Icon::Alert, centre, 20.0f, u32(kRed));
         return;
     }
 
@@ -496,7 +495,7 @@ void toolbar(App& app, const Instance* inst) {
         case MachineState::Stopped: label = "Start"; break;
         case MachineState::Running: label = "Stop"; icon = Icon::Stop; primary = false; break;
         case MachineState::Stopping: label = "Force Stop"; icon = Icon::Stop; primary = false; danger = true; break;
-        case MachineState::Building: label = "Cancel Build"; icon = Icon::Stop; primary = false; break;
+        case MachineState::Building: label = "Cancel Build"; icon = Icon::Close; primary = false; break;
         case MachineState::Failed: label = "Retry"; icon = Icon::Refresh; break;
         }
 
@@ -588,7 +587,7 @@ void playOverlay(App& app, const Instance& inst, ImVec2 min, ImVec2 max) {
     const bool hot = ImGui::IsItemHovered();
     ImDrawList* cdl = ImGui::GetWindowDrawList();
     cdl->AddCircleFilled(c, r, hot ? IM_COL32(255, 255, 255, 250) : IM_COL32(240, 240, 244, 225), 64);
-    drawIcon(cdl, Icon::Play, c + ImVec2(3, 0), 34.0f, IM_COL32(25, 25, 30, 255));
+    drawIcon(cdl, Icon::Play, c, 34.0f, IM_COL32(25, 25, 30, 255));
     ImGui::EndChild();
 
     if (pressed) startInstance(app, inst);
@@ -757,9 +756,7 @@ void buildPane(App& app, const Instance& inst) {
     const ImVec2 head = ImGui::GetCursorScreenPos();
 
     if (failed) {
-        ImGui::GetWindowDrawList()->AddCircleFilled(head + ImVec2(14, 16), 14, u32(kRed));
-        ImGui::GetWindowDrawList()->AddText(app.fonts.title, 20.0f, head + ImVec2(10.5f, 5),
-                                            IM_COL32(25, 25, 30, 255), "!");
+        drawIcon(ImGui::GetWindowDrawList(), Icon::Alert, head + ImVec2(14, 16), 28.0f, u32(kRed));
     } else {
         spinner(ImGui::GetWindowDrawList(), head + ImVec2(14, 16), 12, u32(kAccent));
     }
@@ -873,14 +870,14 @@ void deleteModal(App& app) {
 
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 200);
 
-    if (pillButton("Cancel", Icon::Stop, false) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (pillButton("Cancel", Icon::Close, false) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         app.confirmDelete.clear();
         ImGui::CloseCurrentPopup();
     }
 
     ImGui::SameLine();
 
-    if (pillButton("Delete", Icon::Stop, false, true)) {
+    if (pillButton("Delete", Icon::Delete, false, true)) {
         for (const Instance& i : app.instances) {
             if (i.name != app.confirmDelete) continue;
 
@@ -974,58 +971,30 @@ ImU32 familyColour(const std::string& family, float alpha) {
     return u32(c, alpha);
 }
 
-void drawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
-    const float h = s * 0.5f;
-    const float t = std::max(1.5f, s * 0.09f);
+namespace {
+ImFont* gIcons = nullptr;
+}
 
-    switch (icon) {
-    case Icon::Play:
-        dl->AddTriangleFilled(c + ImVec2(-h * 0.6f, -h * 0.75f), c + ImVec2(h * 0.8f, 0),
-                              c + ImVec2(-h * 0.6f, h * 0.75f), col);
-        break;
-    case Icon::Back:
-        dl->AddTriangleFilled(c + ImVec2(h * 0.6f, -h * 0.75f), c + ImVec2(h * 0.6f, h * 0.75f),
-                              c + ImVec2(-h * 0.8f, 0), col);
-        break;
-    case Icon::Stop:
-        dl->AddRectFilled(c - ImVec2(h * 0.6f, h * 0.6f), c + ImVec2(h * 0.6f, h * 0.6f), col, s * 0.08f);
-        break;
-    case Icon::Plus:
-        dl->AddLine(c - ImVec2(h * 0.75f, 0), c + ImVec2(h * 0.75f, 0), col, t);
-        dl->AddLine(c - ImVec2(0, h * 0.75f), c + ImVec2(0, h * 0.75f), col, t);
-        break;
-    case Icon::More:
-        for (int k = -1; k <= 1; ++k) dl->AddCircleFilled(c + ImVec2(k * h * 0.6f, 0), s * 0.08f, col);
-        break;
-    case Icon::Console:
-        dl->AddRect(c - ImVec2(h * 0.85f, h * 0.65f), c + ImVec2(h * 0.85f, h * 0.65f), col, s * 0.08f, 0, t * 0.8f);
-        dl->AddLine(c + ImVec2(-h * 0.5f, -h * 0.25f), c + ImVec2(-h * 0.2f, 0), col, t * 0.8f);
-        dl->AddLine(c + ImVec2(-h * 0.2f, 0), c + ImVec2(-h * 0.5f, h * 0.25f), col, t * 0.8f);
-        dl->AddLine(c + ImVec2(0, h * 0.3f), c + ImVec2(h * 0.45f, h * 0.3f), col, t * 0.8f);
-        break;
-    case Icon::Eye:
-        dl->PathArcTo(c + ImVec2(0, h * 0.9f), h * 1.25f, -2.35f, -0.79f, 16);
-        dl->PathArcTo(c - ImVec2(0, h * 0.9f), h * 1.25f, 0.79f, 2.35f, 16);
-        dl->PathStroke(col, ImDrawFlags_Closed, t * 0.8f);
-        dl->AddCircleFilled(c, h * 0.3f, col);
-        break;
-    case Icon::Folder:
-        dl->AddRect(c + ImVec2(-h * 0.8f, -h * 0.4f), c + ImVec2(h * 0.8f, h * 0.6f), col, s * 0.06f, 0, t);
-        dl->AddLine(c + ImVec2(-h * 0.8f, -h * 0.4f), c + ImVec2(-h * 0.8f, -h * 0.6f), col, t);
-        dl->AddLine(c + ImVec2(-h * 0.8f, -h * 0.6f), c + ImVec2(-h * 0.15f, -h * 0.6f), col, t);
-        dl->AddLine(c + ImVec2(-h * 0.15f, -h * 0.6f), c + ImVec2(0, -h * 0.4f), col, t);
-        break;
-    case Icon::Book:
-        dl->AddRect(c + ImVec2(-h * 0.8f, -h * 0.55f), c + ImVec2(-h * 0.05f, h * 0.55f), col, s * 0.05f, 0, t);
-        dl->AddRect(c + ImVec2(h * 0.05f, -h * 0.55f), c + ImVec2(h * 0.8f, h * 0.55f), col, s * 0.05f, 0, t);
-        break;
-    case Icon::Refresh:
-        dl->PathArcTo(c, h * 0.6f, 0.6f, 5.6f, 20);
-        dl->PathStroke(col, 0, t);
-        dl->AddTriangleFilled(c + ImVec2(h * 0.75f, -h * 0.05f), c + ImVec2(h * 0.25f, -h * 0.05f),
-                              c + ImVec2(h * 0.6f, h * 0.4f), col);
-        break;
-    }
+void setIconFont(ImFont* font) { gIcons = font; }
+
+// The glyph about `s` across, centred on `c`.
+void drawIcon(ImDrawList* dl, Icon icon, ImVec2 c, float s, ImU32 col) {
+    if (!gIcons) return;
+
+    const float size = s * 1.25f;
+    const ImWchar cp = ImWchar(icon);
+    ImFontBaked* baked = gIcons->GetFontBaked(size);
+
+    char utf8[5] = {};
+    ImTextCharToUtf8(utf8, cp);
+    // Each icon is drawn centred in a square the size of the em, which in
+    // MDI's font runs from 64 units below the baseline to 448 above it, of
+    // 512. So its middle is half the advance across, and 0.375 of the size
+    // above the baseline. ImGui's own outline of a glyph is no use here: it
+    // puts the left edge at the pen and pads the top and bottom unevenly,
+    // which threw icons a few points right and up or down.
+    const ImVec2 mid(size * 0.5f, baked->Ascent - size * 0.375f);
+    dl->AddText(gIcons, size, ImFloor(c - mid), col, utf8);
 }
 
 void deviceIcon(ImDrawList* dl, const App& app, ImVec2 min, float s, const std::string& family,

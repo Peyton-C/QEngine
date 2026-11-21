@@ -14,6 +14,7 @@ struct Fonts {
     ImFont* label = nullptr;  // condensed bold, the way panels are printed
     ImFont* title = nullptr;  // model names
     ImFont* mono = nullptr;   // logs
+    ImFont* icons = nullptr;  // Material Design Icons, see Icon in App.hpp
 };
 
 enum class View {

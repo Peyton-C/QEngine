@@ -176,6 +176,14 @@ Fonts loadFonts() {
                       13.0f);
 
     if (!f.mono) f.mono = f.ui;
+
+    f.icons = loadFont({QENGINE_UI_ICONS}, 16.0f);
+
+    if (!f.icons) {
+        std::fprintf(stderr, "no icon font at %s\n", QENGINE_UI_ICONS);
+    }
+
+    setIconFont(f.icons);
     if (!f.label) f.label = f.ui;
     if (!f.title) f.title = f.label;
     return f;

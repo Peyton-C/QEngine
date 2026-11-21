@@ -8,7 +8,7 @@ cmake --build ui/build
 ui/build/qengine-ui
 ```
 
-A system SDL3 is used when CMake finds one, otherwise it is fetched with Dear ImGui and nlohmann/json.
+A system SDL3 is used when CMake finds one, otherwise it is fetched with Dear ImGui, nlohmann/json and the Material Design Icons font, which draws the UI's own buttons.
 
 ## Devices
 The sidebar lists every instance, with a button to start or stop it, and its context menu edits, rebuilds, shows or deletes it. The plus button, or Cmd+N, opens the New Device sheet: pick a product, open its update image, and give it a name, and the UI runs `new_instance.sh` with `--product-code` and `--montero` as chosen. Edit runs it again on an existing instance with `--force`, which keeps `/data`. A JP22 also gets `GPU_MAX_OUTPUTS=3` in its `instance.env`.

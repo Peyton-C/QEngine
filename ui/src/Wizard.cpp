@@ -227,7 +227,7 @@ void firmwareStep(App& app) {
 
     ImGui::SetCursorPosY(card.y - 22 - 32);
 
-    if (pillButton(w.firmware.empty() ? "Open..." : "Choose Another...", Icon::Folder, w.firmware.empty())) {
+    if (pillButton(w.firmware.empty() ? "Open..." : "Choose Another...", Icon::FolderOpen, w.firmware.empty())) {
         browse(app);
     }
 
@@ -418,7 +418,7 @@ void wizardDraw(App& app) {
 
     bool close = false;
 
-    if (pillButton("Cancel", Icon::Stop, false) || ImGui::IsKeyPressed(ImGuiKey_Escape)) close = true;
+    if (pillButton("Cancel", Icon::Close, false) || ImGui::IsKeyPressed(ImGuiKey_Escape)) close = true;
 
     if (!w.error.empty()) {
         ImGui::SameLine(0, 16);
@@ -440,7 +440,7 @@ void wizardDraw(App& app) {
 
     ImGui::BeginDisabled(!canContinue(app));
 
-    if (pillButton(next, last ? Icon::Plus : Icon::Play, true) ||
+    if (pillButton(next, last ? (w.edit ? Icon::Refresh : Icon::Check) : Icon::Forward, true) ||
         (ImGui::IsKeyPressed(ImGuiKey_Enter) && canContinue(app) && !ImGui::IsAnyItemActive())) {
         if (!last) {
             ++w.step;

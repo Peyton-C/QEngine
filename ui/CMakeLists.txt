@@ -34,7 +34,13 @@ FetchContent_Declare(imgui
 FetchContent_Declare(json
   URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 
-FetchContent_MakeAvailable(imgui json)
+# Material Design Icons, as a font, for the UI's own buttons. The fonts are
+# Apache 2.0; the package's LICENSE says which icons came from where.
+FetchContent_Declare(mdi
+  URL https://registry.npmjs.org/@mdi/font/-/font-7.4.47.tgz
+  URL_HASH SHA256=66131558352dc8df724feac30f3b7bf7ee7311a79e4f8436f3637c0993edb773)
+
+FetchContent_MakeAvailable(imgui json mdi)
 
 add_library(qengine_imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
@@ -45,8 +51,9 @@ add_library(qengine_imgui STATIC
   ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlgpu3.cpp)
 
 target_include_directories(qengine_imgui PUBLIC ${imgui_SOURCE_DIR})
-# Drawing code is all ImVec2 arithmetic.
-target_compile_definitions(qengine_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
+# Drawing code is all ImVec2 arithmetic. MDI's codepoints are in plane 15,
+# past what a 16-bit ImWchar holds.
+target_compile_definitions(qengine_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS IMGUI_USE_WCHAR32)
 target_link_libraries(qengine_imgui PUBLIC SDL3::SDL3)
 
 add_executable(qengine-ui
@@ -80,6 +87,7 @@ endif()
 # its untracked build/ directory, since they are inMusic's.
 target_compile_definitions(qengine-ui PRIVATE
   QENGINE_UI_LAYOUTS="${CMAKE_CURRENT_SOURCE_DIR}/layouts"
+  QENGINE_UI_ICONS="${mdi_SOURCE_DIR}/fonts/materialdesignicons-webfont.ttf"
   QENGINE_UI_REPO="${CMAKE_CURRENT_SOURCE_DIR}/.."
   QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos"
   QENGINE_UI_INSTANCES="${CMAKE_CURRENT_SOURCE_DIR}/../build/instances")

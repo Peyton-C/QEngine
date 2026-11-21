@@ -129,7 +129,28 @@ void wizardOpen(App& app, const Instance* edit = nullptr);
 void wizardDraw(App& app);
 
 // Drawing shared by both.
-enum class Icon { Play, Stop, Plus, More, Console, Eye, Folder, Book, Refresh, Back };
+// Material Design Icons, by codepoint in its font, as its CSS names them.
+enum class Icon : uint32_t {
+    Play = 0xF040A,         // play
+    Stop = 0xF04DB,         // stop
+    Plus = 0xF0415,         // plus
+    More = 0xF01D8,         // dots-horizontal
+    Console = 0xF018D,      // console
+    Eye = 0xF06D0,          // eye-outline
+    Folder = 0xF0256,       // folder-outline
+    FolderOpen = 0xF0DCF,   // folder-open-outline
+    Book = 0xF14F7,         // book-open-variant
+    Refresh = 0xF0450,      // refresh
+    Back = 0xF004D,         // arrow-left
+    Forward = 0xF0054,      // arrow-right
+    Close = 0xF0156,        // close
+    Delete = 0xF09E7,       // delete-outline
+    Alert = 0xF0028,        // alert-circle
+    Check = 0xF012C,        // check
+};
+
+// The font the icons are drawn from, set once it is loaded.
+void setIconFont(ImFont* font);
 
 std::string familyOf(const Instance& i);
 ImU32 familyColour(const std::string& family, float alpha = 1.0f);

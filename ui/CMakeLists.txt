@@ -51,12 +51,16 @@ target_link_libraries(qengine_imgui PUBLIC SDL3::SDL3)
 
 add_executable(qengine-ui
   src/main.cpp
+  src/Catalog.cpp
   src/Layout.cpp
+  src/Machines.cpp
   src/Midi.cpp
   src/Screen.cpp
+  src/Shell.cpp
   src/Surface.cpp
   src/Texture.cpp
-  src/Touch.cpp)
+  src/Touch.cpp
+  src/Wizard.cpp)
 
 # AppKit only gives a touchscreen's fingers to gesture recognizers, which SDL
 # does not install, so macOS gets one of its own.
@@ -71,10 +75,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(qengine-ui PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Defaults for running from the build tree: the layouts beside this file, and
-# the photos in QEngine's untracked build/ directory, since they are inMusic's.
+# Defaults for running from the build tree: the layouts beside this file, the
+# repo whose scripts build and run instances, and the photos and instances in
+# its untracked build/ directory, since they are inMusic's.
 target_compile_definitions(qengine-ui PRIVATE
   QENGINE_UI_LAYOUTS="${CMAKE_CURRENT_SOURCE_DIR}/layouts"
+  QENGINE_UI_REPO="${CMAKE_CURRENT_SOURCE_DIR}/.."
   QENGINE_UI_PHOTOS="${CMAKE_CURRENT_SOURCE_DIR}/../build/product_photos"
   QENGINE_UI_INSTANCES="${CMAKE_CURRENT_SOURCE_DIR}/../build/instances")
 

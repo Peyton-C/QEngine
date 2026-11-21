@@ -13,6 +13,7 @@ struct Fonts {
     ImFont* ui = nullptr;
     ImFont* label = nullptr;  // condensed bold, the way panels are printed
     ImFont* title = nullptr;  // model names
+    ImFont* mono = nullptr;   // logs
 };
 
 enum class View {

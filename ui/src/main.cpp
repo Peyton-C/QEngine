@@ -1,24 +1,24 @@
-// QEngine's surface concept: a device's front panel drawn from its layout
-// file, to try out how a UI for every emulated device could look. It can play
-// a running Engine or MPC instance over MIDI, see Midi.hpp, and shows its screen in
-// the panel's lcd over VNC, see Screen.hpp.
+// QEngine's front end, laid out like a VM manager: the instances under
+// build/instances down the side, each started and stopped from there, and a
+// New Device sheet that builds one. The selected instance is drawn as its
+// front panel from a layout file, played into the guest over MIDI, see
+// Midi.hpp, with the guest's screen in the panel's lcd over VNC, see
+// Screen.hpp. Shell.cpp draws the window and Wizard.cpp the sheet.
 //
 //   qengine-ui [layout name] [--layouts DIR] [--photos DIR] [--instance NAME]
-//              [--view drawn|photo|trace] [--screenshot out.png] [--log-input]
+//              [--new] [--view drawn|photo|trace] [--screenshot out.png]
+//              [--log-input]
 //
-// --instance connects to that instance's MIDI and screen at start; the sidebar
-// does the same for any instance under build/instances.
+// A layout name or product code opens that layout on its own, without a
+// guest. --instance selects that instance, and connects to it if it runs.
+// --new opens the New Device sheet.
 // --screenshot renders one frame offscreen into a PNG and quits, without
 // showing a window, so a layout change can be checked from a script. With
 // --instance it waits first for the guest's lamps, four seconds or --wait.
 // --log-input prints the pointer, touch and scroll events SDL delivers, to
 // see what a touchscreen or a pen actually sends.
 
-#include "Layout.hpp"
-#include "Midi.hpp"
-#include "Screen.hpp"
-#include "Surface.hpp"
-#include "Texture.hpp"
+#include "App.hpp"
 #include "Touch.hpp"
 
 #include <SDL3/SDL.h>
@@ -41,18 +41,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-struct Args {
-    std::string device;
-    fs::path layouts = QENGINE_UI_LAYOUTS;
-    fs::path photos = QENGINE_UI_PHOTOS;
-    fs::path instances = QENGINE_UI_INSTANCES;
-    std::string instance;
-    View view = View::Drawn;
-    std::string screenshot;
-    double wait = 4.0;  // before a screenshot with a guest connected
-    bool logInput = false;
-};
-
 bool parseArgs(int argc, char** argv, Args& args) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -71,6 +59,8 @@ bool parseArgs(int argc, char** argv, Args& args) {
         } else if (a == "--view" && more) {
             const std::string v = argv[++i];
             args.view = v == "photo" ? View::Photo : v == "trace" ? View::Trace : View::Drawn;
+        } else if (a == "--new") {
+            args.newDevice = true;
         } else if (a == "--log-input") {
             args.logInput = true;
         } else if (!a.empty() && a[0] != '-') {
@@ -78,7 +68,7 @@ bool parseArgs(int argc, char** argv, Args& args) {
         } else {
             std::fprintf(stderr,
                          "usage: %s [layout] [--layouts DIR] [--photos DIR] [--instance NAME] "
-                         "[--view drawn|photo|trace] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
+                         "[--new] [--view drawn|photo|trace] [--screenshot out.png] [--wait SECONDS] [--log-input]\n",
                          argv[0]);
             return false;
         }
@@ -180,6 +170,12 @@ Fonts loadFonts() {
                         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"},
                        15.0f);
 
+    f.mono = loadFont({"/System/Library/Fonts/SFNSMono.ttf", "/System/Library/Fonts/Menlo.ttc",
+                       "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                       "/usr/share/fonts/TTF/DejaVuSansMono.ttf"},
+                      13.0f);
+
+    if (!f.mono) f.mono = f.ui;
     if (!f.label) f.label = f.ui;
     if (!f.title) f.title = f.label;
     return f;
@@ -209,204 +205,6 @@ void applyStyle() {
     c[ImGuiCol_ButtonHovered] = {0.2f, 0.22f, 0.26f, 1};
     c[ImGuiCol_ButtonActive] = {0.21f, 0.28f, 0.38f, 1};
     c[ImGuiCol_Separator] = {0.18f, 0.19f, 0.22f, 1};
-}
-
-// One entry in the device list: a layout file, or one product variant of it.
-struct Device {
-    fs::path path;
-    std::string variant;
-    Layout layout;
-    std::string error;
-};
-
-struct App {
-    SDL_Window* window = nullptr;
-    SDL_GPUDevice* gpu = nullptr;
-    Fonts fonts;
-    Args args;
-
-    std::vector<Device> devices;
-    int current = 0;
-    Surface surface;
-    SurfaceOptions options;
-    // One per face of the current device. Texture is not movable, hence
-    // the pointers.
-    std::vector<std::unique_ptr<Texture>> photos;
-    std::string photosFor;  // the paths now loaded, to skip reloading them
-    double lastReloadCheck = 0;
-
-    // Fingers on the device go to the surface, and one elsewhere drives the
-    // sidebar as a mouse would.
-    std::unordered_set<uint64_t> surfaceTouches;
-    uint64_t uiTouch = 0;
-    bool swallowedClick = false;
-
-    // The instance the panel plays, over MIDI, and shows the screen of.
-    GuestLink link;
-    GuestScreen screen;
-    std::vector<Instance> instances;
-    int instance = -1;
-    double lastInstanceScan = -10;
-};
-
-void connectGuest(App& app, const Instance& i) {
-    app.link.connect(i.port);
-
-    if (i.screenPort > 0) {
-        app.screen.connect(i.screenPort);
-    }
-}
-
-void disconnectGuest(App& app) {
-    app.link.disconnect();
-    app.screen.disconnect();
-}
-
-// What the screen half of the guest section says.
-void screenStatus(const App& app, const Instance& inst) {
-    const char* what = inst.engineVnc ? "Engine's VNC" : "QEMU's VNC";
-
-    if (app.screen.connected()) {
-        ImGui::TextColored({0.45f, 0.85f, 0.5f, 1}, "Screen, %s", app.screen.status().c_str());
-        ImGui::TextDisabled("%s on :%d", what, app.screen.port());
-        return;
-    }
-
-    ImGui::TextColored({0.95f, 0.75f, 0.3f, 1}, "Screen waiting for :%d", app.screen.port());
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", app.screen.status().c_str());
-
-    // QEMU only serves VNC for these two; sdl and cocoa open a window instead.
-    if (!inst.engineVnc && inst.display != "vnc" && inst.display != "egl-vnc") {
-        ImGui::TextWrapped("QEMU serves the screen over VNC only with run_instance.sh --display vnc, or "
-                           "egl-vnc, the macOS default with virgl.");
-    }
-
-    ImGui::PopStyleColor();
-}
-
-// The instance to offer first: the one named on the command line, else one
-// built as this device's product.
-int pickInstance(const App& app) {
-    const Layout& layout = app.devices[size_t(app.current)].layout;
-
-    for (int i = 0; i < int(app.instances.size()); ++i) {
-        if (app.instances[size_t(i)].name == app.args.instance) return i;
-    }
-
-    for (int i = 0; i < int(app.instances.size()); ++i) {
-        const auto& codes = layout.products;
-        if (std::find(codes.begin(), codes.end(), app.instances[size_t(i)].product) != codes.end()) return i;
-    }
-
-    return app.instances.empty() ? -1 : 0;
-}
-
-void guestPanel(App& app) {
-    ImGui::TextDisabled("GUEST");
-
-    // Instances come and go as they are built, so the list is read again
-    // every few seconds.
-    if (ImGui::GetTime() - app.lastInstanceScan > 3.0) {
-        const std::string chosen = app.instance >= 0 ? app.instances[size_t(app.instance)].name : "";
-        app.instances = findInstances(app.args.instances);
-        app.lastInstanceScan = ImGui::GetTime();
-        app.instance = -1;
-
-        for (int i = 0; i < int(app.instances.size()); ++i) {
-            if (app.instances[size_t(i)].name == chosen) app.instance = i;
-        }
-
-        if (app.instance < 0 && !app.devices.empty()) {
-            app.instance = pickInstance(app);
-        }
-    }
-
-    if (app.instances.empty()) {
-        ImGui::TextWrapped("No Engine or MPC instances in %s.", app.args.instances.string().c_str());
-        return;
-    }
-
-    auto label = [](const Instance& i) { return i.name + "  " + i.product; };
-    ImGui::SetNextItemWidth(-1);
-
-    if (ImGui::BeginCombo("##instance", app.instance >= 0 ? label(app.instances[size_t(app.instance)]).c_str() : "")) {
-        for (int i = 0; i < int(app.instances.size()); ++i) {
-            if (ImGui::Selectable(label(app.instances[size_t(i)]).c_str(), app.instance == i)) {
-                app.instance = i;
-
-                if (app.link.wanted()) {
-                    connectGuest(app, app.instances[size_t(i)]);
-                }
-            }
-        }
-        ImGui::EndCombo();
-    }
-
-    const Instance& inst = app.instances[size_t(std::max(app.instance, 0))];
-
-    if (!app.link.wanted()) {
-        if (ImGui::Button("Connect", {-1, 0})) {
-            connectGuest(app, inst);
-        }
-        ImGui::TextDisabled("MIDI on localhost:%d", inst.port);
-
-        if (inst.screenPort > 0) {
-            ImGui::TextDisabled("Screen on localhost:%d", inst.screenPort);
-        }
-    } else {
-        if (ImGui::Button("Disconnect", {-1, 0})) {
-            disconnectGuest(app);
-            return;
-        }
-
-        if (app.link.connected()) {
-            ImGui::TextColored({0.45f, 0.85f, 0.5f, 1}, "Connected, :%d", app.link.port());
-
-            // midibridge and mpcsurface replay the guest's lamps the moment a
-            // client connects, so silence means nothing in it reads the port.
-            if (app.link.received() == 0) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-                ImGui::TextWrapped("Nothing from the guest yet. An image built before it served MIDI to the host "
-                                   "has nothing reading this port; rebuild it with new_instance.sh --force.");
-                ImGui::PopStyleColor();
-            }
-        } else {
-            ImGui::TextColored({0.95f, 0.75f, 0.3f, 1}, "Waiting for :%d", app.link.port());
-
-            if (!app.link.problem().empty()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-                ImGui::TextWrapped("%s", app.link.problem().c_str());
-                ImGui::PopStyleColor();
-            }
-        }
-
-        const auto& codes = app.devices[size_t(app.current)].layout.products;
-
-        if (std::find(codes.begin(), codes.end(), inst.product) == codes.end()) {
-            ImGui::TextWrapped("This panel is not a %s, so the guest will read its controls as that product's.",
-                               inst.product.c_str());
-        }
-
-        if (app.screen.wanted()) {
-            screenStatus(app, inst);
-        }
-
-        ImGui::TextDisabled("%u sent, %u received", app.link.sent(), app.link.received());
-        ImGui::BeginChild("##midilog", {-1, 120}, ImGuiChildFlags_Borders);
-        ImGui::PushFont(nullptr, 12.0f);
-
-        for (const std::string& line : app.link.log()) {
-            ImGui::TextUnformatted(line.c_str());
-        }
-
-        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4) {
-            ImGui::SetScrollHereY(1.0f);
-        }
-
-        ImGui::PopFont();
-        ImGui::EndChild();
-    }
 }
 
 void loadDevices(App& app) {
@@ -443,14 +241,19 @@ void loadDevices(App& app) {
     }
 }
 
+}  // namespace
+
+// Draws the layout at `index`, or none for -1, and loads its photos.
 void selectDevice(App& app, int index) {
     app.current = index;
-    Device& d = app.devices[size_t(index)];
-    app.surface.setLayout(d.error.empty() ? &d.layout : nullptr);
+    static const Layout none;
+    const Device* d = index >= 0 ? &app.devices[size_t(index)] : nullptr;
+    const Layout& layout = d ? d->layout : none;
+    app.surface.setLayout(d && d->error.empty() ? &d->layout : nullptr);
 
     std::string paths;
 
-    for (const Face& face : d.layout.faces) {
+    for (const Face& face : layout.faces) {
         paths += face.photoFile + "\n";
     }
 
@@ -458,7 +261,7 @@ void selectDevice(App& app, int index) {
         SDL_WaitForGPUIdle(app.gpu);
         app.photos.clear();
 
-        for (const Face& face : d.layout.faces) {
+        for (const Face& face : layout.faces) {
             auto texture = std::make_unique<Texture>();
 
             if (!face.photoFile.empty()) {
@@ -478,27 +281,14 @@ void selectDevice(App& app, int index) {
     }
 }
 
-// The photo files a layout names that are not in the photos directory.
-std::string missingPhotos(const App& app) {
-    std::string missing;
-
-    for (size_t i = 0; i < app.photos.size() && i < app.devices[size_t(app.current)].layout.faces.size(); ++i) {
-        const std::string& file = app.devices[size_t(app.current)].layout.faces[i].photoFile;
-
-        if (!file.empty() && !app.photos[i]->valid()) {
-            missing += (missing.empty() ? "" : ", ") + file;
-        }
-    }
-
-    return missing;
-}
+namespace {
 
 // Re-reads the current layout when its file changes, so a layout can be
 // edited with the app open beside it.
 void hotReload(App& app) {
     const double now = ImGui::GetTime();
 
-    if (now - app.lastReloadCheck < 0.4 || app.devices.empty()) {
+    if (now - app.lastReloadCheck < 0.4 || app.current < 0) {
         return;
     }
 
@@ -524,159 +314,6 @@ void hotReload(App& app) {
     }
 
     selectDevice(app, app.current);
-}
-
-void sidebar(App& app, float width) {
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize({width, vp->WorkSize.y});
-    ImGui::Begin("##sidebar", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
-
-    ImGui::PushFont(app.fonts.title, 26.0f);
-    ImGui::TextUnformatted("QEngine");
-    ImGui::PopFont();
-    ImGui::TextDisabled("Surface concept");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::TextDisabled("DEVICE");
-
-    for (int i = 0; i < int(app.devices.size()); ++i) {
-        const Device& d = app.devices[size_t(i)];
-        std::string codes;
-
-        for (const std::string& code : d.layout.products) {
-            codes += (codes.empty() ? "" : " ") + code;
-        }
-
-        ImGui::PushID(i);
-
-        if (ImGui::Selectable("##device", app.current == i, 0, {0, 44})) {
-            selectDevice(app, i);
-        }
-
-        const ImVec2 min = ImGui::GetItemRectMin();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddText(app.fonts.ui, 16.0f, min + ImVec2(10, 5), ImGui::GetColorU32(ImGuiCol_Text),
-                    d.layout.name.c_str());
-        dl->AddText(app.fonts.ui, 13.0f, min + ImVec2(10, 25), ImGui::GetColorU32(ImGuiCol_TextDisabled),
-                    codes.c_str());
-        ImGui::PopID();
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("VIEW");
-
-    bool havePhoto = false;
-
-    for (const auto& texture : app.photos) {
-        havePhoto = havePhoto || texture->valid();
-    }
-    int view = int(app.options.view);
-    ImGui::RadioButton("Drawn", &view, int(View::Drawn));
-    ImGui::BeginDisabled(!havePhoto);
-    ImGui::RadioButton("Photo", &view, int(View::Photo));
-    ImGui::RadioButton("Trace over photo", &view, int(View::Trace));
-    ImGui::EndDisabled();
-    app.options.view = View(view);
-
-    if (!app.devices.empty()) {
-        const std::string missing = missingPhotos(app);
-
-        if (!missing.empty()) {
-            ImGui::TextWrapped("Missing %s in %s.", missing.c_str(), app.args.photos.string().c_str());
-        }
-    }
-
-    if (app.options.view == View::Trace) {
-        ImGui::SetNextItemWidth(-1);
-        ImGui::SliderFloat("##trace", &app.options.traceAlpha, 0.1f, 1.0f, "drawing %.2f");
-    }
-
-    ImGui::Spacing();
-    ImGui::Checkbox("Lamps from layout", &app.options.layoutLamps);
-    ImGui::Checkbox("Animate meters", &app.options.animateMeters);
-    ImGui::Checkbox("Show control ids", &app.options.showIds);
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    guestPanel(app);
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("CONTROL");
-
-    if (const Element* e = app.surface.hovered()) {
-        const ImVec2 at = vec2(e->p, "at");
-        ImGui::TextUnformatted(e->id.c_str());
-        ImGui::TextDisabled("%s at %.1f, %.1f mm", e->kind.c_str(), at.x, at.y);
-
-        if (e->p.contains("midi")) {
-            ImGui::TextDisabled("midi %s", e->p["midi"].dump().c_str());
-        }
-    } else {
-        ImGui::TextDisabled("Hover a control");
-    }
-
-    if (!app.devices.empty()) {
-        const Device& d = app.devices[size_t(app.current)];
-
-        if (!d.error.empty()) {
-            ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.4f, 1));
-            ImGui::TextWrapped("%s", d.error.c_str());
-            ImGui::PopStyleColor();
-        }
-
-        // At the bottom, unless the list above has grown into it.
-        const float footer = ImGui::GetTextLineHeightWithSpacing() * 3.2f;
-        ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY() + 12.0f, ImGui::GetWindowHeight() - footer));
-        ImGui::Separator();
-        ImGui::TextDisabled("%s", d.path.filename().string().c_str());
-        ImGui::TextDisabled("%zu elements, reloads on save", d.layout.elements.size());
-    }
-
-    ImGui::End();
-}
-
-void frame(App& app) {
-    const float side = 270.0f;
-    sidebar(app, side);
-
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos + ImVec2(side, 0));
-    ImGui::SetNextWindowSize(vp->WorkSize - ImVec2(side, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-    ImGui::Begin("##surface", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse);
-    // With a guest connected its lamps are the ones shown.
-    if (app.link.connected()) {
-        app.options.layoutLamps = true;
-    }
-
-    app.options.screen = {};
-
-    if (app.screen.connected() && app.screen.texture() != ImTextureID_Invalid) {
-        app.options.screen = {app.screen.texture(), app.screen.size()};
-    }
-
-    app.surface.draw(app.options, app.fonts);
-    app.link.update(app.surface, ImGui::GetTime());
-
-    // Every frame, so a press dragged off the screen still lets go; only a
-    // change is sent.
-    const ScreenPointer& sp = app.surface.screenPointer();
-    app.screen.pointer(sp.uv, sp.down);
-    ImGui::End();
-    ImGui::PopStyleVar();
 }
 
 // Renders the frame into an offscreen texture and writes it out. The
@@ -881,20 +518,32 @@ int main(int argc, char** argv) {
 
     if (app.devices.empty()) {
         std::fprintf(stderr, "no layouts in %s\n", app.args.layouts.string().c_str());
-    } else {
+    }
+
+    app.machines = std::make_unique<Machines>(app.args.repo, app.args.instances);
+    app.instances = app.machines->list();
+
+    if (!app.args.instance.empty()) {
+        selectInstance(app, app.args.instance);
+
+        if (!selectedInstance(app)) {
+            std::fprintf(stderr, "no instance %s in %s\n", app.args.instance.c_str(),
+                         app.args.instances.string().c_str());
+        }
+    } else if (app.current >= 0) {
+        // A layout named on the command line, on its own.
+        app.pane = Pane::Layout;
+        app.layoutsOpen = true;
         selectDevice(app, app.current);
     }
 
-    if (!app.args.instance.empty()) {
-        for (const Instance& i : findInstances(app.args.instances)) {
-            if (i.name == app.args.instance) {
-                connectGuest(app, i);
-            }
-        }
+    if (app.args.newDevice) {
+        wizardOpen(app);
 
-        if (!app.link.wanted()) {
-            std::fprintf(stderr, "no instance %s in %s\n", app.args.instance.c_str(),
-                         app.args.instances.string().c_str());
+        // qengine-ui JP24 --new starts the sheet on that product.
+        if (findProduct(app.args.device)) {
+            app.pane = Pane::Welcome;
+            app.wizard.product = app.args.device;
         }
     }
 
@@ -947,7 +596,7 @@ int main(int argc, char** argv) {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         hotReload(app);
-        frame(app);
+        drawApp(app);
         ImGui::Render();
         ImDrawData* drawData = ImGui::GetDrawData();
 

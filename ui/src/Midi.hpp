@@ -60,20 +60,6 @@
 // its own note, 0 off, 1 dim and 3 lit, and a pad by Akai's pad colour,
 // F0 47 7F <product> 65 00 04 <pad> <r> <g> <b> F7.
 
-// An Engine or MPC instance under build/instances, and the ports its MIDI and its
-// screen are on. The screen is Engine's own Qt VNC server on a legacy rootfs,
-// else QEMU's VNC console, which only the vnc and egl-vnc displays serve.
-struct Instance {
-    std::string name;
-    std::string product;
-    int port = 0;
-    int screenPort = 0;
-    bool engineVnc = false;  // the screen is Engine's own server
-    std::string display;     // DISPLAY_MODE, empty when the host picks it
-};
-
-std::vector<Instance> findInstances(const std::filesystem::path& dir);
-
 class GuestLink {
 public:
     ~GuestLink() { close(); }

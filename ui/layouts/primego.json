@@ -60,7 +60,6 @@
     {"kind": "panel", "rect": [115.0, 0.0, 179.4, 113.1], "color": "#08090a", "radius": 1.5, "edge": "#202226"},
     {"id": "screen", "kind": "lcd", "rect": [127.9, 9.5, 154.6, 96.9], "note": "7\" touchscreen"},
     {"kind": "panel", "rect": [295.4, 0.0, 113.6, 113.1], "color": "#141518", "radius": 1.5, "edge": "#2a2c30"},
-    {"id": "title", "kind": "text", "text": "PRIME GO", "at": [346.5, 10.5], "size": 5.2, "font": "title", "tracking": 0.9},
     {"id": "eject", "kind": "button", "at": [391.8, 12.4], "size": [12.4, 12.4], "shape": "round", "icon": "eject"},
     {"kind": "text", "text": "MIC 1", "at": [308.8, 23.9], "size": 2.2},
     {"id": "mic1.signal", "kind": "led", "at": [317.4, 26.7], "size": 1.4, "color": "#36f06a", "lit": true},
@@ -161,7 +160,6 @@
       "front": {"body": {"color": "#85888c", "shade": "#5f6266", "edge": "#b0b3b7", "brushed": true}},
       "colors": {"#0b0b0c": "#8c8f93", "#141518": "#a9acb0", "#16171a": "#a9acb0", "#1b1c1f": "#a3a6aa", "#2a2c30": "#c4c7cb", "#2e3035": "#c4c7cb", "#e4e4e4": "#1d1e20", "#9a9da3": "#3a3b3e", "#dcdcdc": "#202124"},
       "elements": {
-        "title": {"text": "PRIME GO+"},
         "master_frame": {"label": "MAIN", "color": "#2a2b2e", "bg": "#a9acb0"},
         "master_label": {"text": "MAIN"}
       }

@@ -12,7 +12,6 @@
   },
   "elements": [
     {"kind": "panel", "rect": [0.6, 8.0, 249.4, 76.1], "color": "#141415", "radius": 1.5, "edge": "#000000"},
-    {"kind": "text", "text": "MPC SAMPLE", "at": [209.8, 18.7], "size": 5.0, "font": "title", "color": "#7a2a1c", "tracking": 0.6},
     {"id": "volume", "kind": "knob", "at": [30.7, 50.3], "size": 22.4, "cap": "#e4e4e2", "pointer": "#3a3a3a", "arc": "#9a9a9a", "value": 0.5},
     {"kind": "text", "text": "MAIN\nVOLUME", "at": [30.2, 69.8], "size": 2.6, "color": "#cfcfcf"},
     {"kind": "text", "text": "A", "at": [58.0, 54.0], "size": 4.0, "color": "#e8e8e8"},

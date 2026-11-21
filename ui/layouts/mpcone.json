@@ -12,7 +12,6 @@
     "text": {"color": "#ffffff"}
   },
   "elements": [
-    {"kind": "text", "text": "MPC ONE", "at": [95.4, 11.1], "size": 8.0, "font": "title", "tracking": 0.6},
     {"kind": "panel", "rect": [6.2, 20.7, 178.9, 113.4], "color": "#0a0a0b", "radius": 1.5, "edge": "#2a2a2c"},
     {"id": "screen", "kind": "lcd", "rect": [19.0, 28.8, 153.6, 96.1], "note": "7\" touchscreen"},
     {"id": "q1", "kind": "encoder", "at": [207.5, 30.1], "size": 19.7, "well": "#a5161a", "well_size": 22.2, "knurl": true, "midi": {"cc": 16, "relative": true, "touch": 84}},

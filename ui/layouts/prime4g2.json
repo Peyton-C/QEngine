@@ -96,7 +96,6 @@
     {"kind": "panel", "rect": [433.2, 46.0, 216.8, 107.3], "color": "#cfc6b6", "radius": 2.0, "edge": "#e6dfd2", "brushed": true},
     {"kind": "panel", "rect": [0.0, 130.5, 115.6, 22.8], "color": "#1a1b1e", "radius": 1.0},
     {"kind": "panel", "rect": [534.4, 130.5, 115.6, 22.8], "color": "#1a1b1e", "radius": 1.0},
-    {"id": "title", "kind": "text", "text": "PRIME 4", "at": [590.0, 139.3], "size": 4.2, "font": "title", "tracking": 0.6},
     {"kind": "text", "text": "MIC 1", "at": [16.2, 52.6], "size": 2.2, "color": "#2a2620"},
     {"kind": "text", "text": "MIC 2", "at": [16.2, 78.0], "size": 2.2, "color": "#2a2620"},
     {"kind": "text", "text": "TALK OVER", "at": [121.3, 67.9], "size": 1.2, "color": "#2a2620"},

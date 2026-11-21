@@ -45,7 +45,6 @@
     {"id": "humanize", "kind": "knob", "at": [158.1, 93.6], "size": 20.6, "cap": "#c9ccd0", "metal": true, "pointer": "#151515", "value": 0.6},
     {"kind": "text", "text": "OFF", "at": [147.6, 104.9], "size": 1.9},
     {"kind": "text", "text": "MAX", "at": [166.7, 104.9], "size": 1.9},
-    {"kind": "text", "text": "VX5", "at": [94.9, 132.5], "size": 8.0, "font": "title", "tracking": 1.2},
     {"kind": "icon", "icon": "triangle_down", "at": [33.4, 134.3], "size": 8.5, "color": "#e8e8e8"},
     {"kind": "icon", "icon": "triangle_up", "at": [156.6, 134.3], "size": 8.5, "color": "#e8e8e8"},
     {"id": "left", "kind": "footswitch", "at": [33.9, 157.1], "size": 20.6},

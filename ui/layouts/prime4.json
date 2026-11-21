@@ -246,9 +246,7 @@
     {"id": "sweep.wash", "kind": "button", "at": [305.0, 365.2], "size": [10.9, 5.9], "label": "WASH", "label_size": 0.9, "ring": "#3ee07a", "lamp": "#3ee07a", "text": "#3ee07a", "lit": false},
     {"id": "sweep.noise", "kind": "button", "at": [320.0, 365.2], "size": [10.9, 5.9], "label": "NOISE", "label_size": 0.9, "ring": "#3ee07a", "lamp": "#3ee07a", "text": "#3ee07a", "lit": false},
     {"kind": "panel", "rect": [268.6, 380.7, 87.9, 15.9], "color": "#121315", "radius": 1.0},
-    {"id": "crossfader", "kind": "fader", "at": [312.5, 388.6], "length": 33.5, "orient": "h", "value": 0.5, "ticks": 9, "tick_length": 5.0},
-    {"kind": "text", "text": "4-DECK STAND-ALONE\nPROFESSIONAL DJ CONSOLE", "at": [382.8, 388.2], "size": 1.0},
-    {"id": "title", "kind": "text", "text": "PRIME 4", "at": [523.8, 160.6], "size": 4.2, "font": "title", "tracking": 0.6}
+    {"id": "crossfader", "kind": "fader", "at": [312.5, 388.6], "length": 33.5, "orient": "h", "value": 0.5, "ticks": 9, "tick_length": 5.0}
   ],
   "front": {
     "gap": 16,
@@ -295,7 +293,6 @@
     "JC11S": {
       "name": "Prime 4+",
       "elements": {
-        "title": {"text": "PRIME 4+"},
         "master_label": {"text": "MAIN"},
         "master_meter_label": {"text": "MAIN"},
         "zone_assign_label": {"text": "PLAYLIST\nTO ZONE"},

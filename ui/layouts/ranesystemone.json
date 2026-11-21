@@ -169,7 +169,6 @@
     {"kind": "line", "to": [356.7, 344.0], "color": "#5a8cff", "from": [339.3, 344.0]},
     {"kind": "line", "to": [420.7, 344.0], "color": "#5a8cff", "from": [403.3, 344.0]},
     {"id": "crossfader", "kind": "fader", "at": [380.0, 367.0], "length": 43.4, "orient": "h", "value": 0.5, "ticks": 9, "tick_length": 8.0, "cap_size": [4.9, 20.6]},
-    {"kind": "text", "text": "SYSTEM ONE", "at": [438.0, 375.1], "size": 3.6, "font": "title"},
     {"id": "ch1.meter", "kind": "meter", "rect": [361.8, 291.6, 2.7, 39.0], "segments": 8, "round": true, "colors": ["#3df05a", "#3df05a", "#3df05a", "#3df05a", "#3df05a", "#ffb030", "#ffb030", "#ff4a3a"]},
     {"id": "main.left", "kind": "meter", "rect": [375.4, 291.6, 2.7, 39.0], "segments": 8, "round": true, "colors": ["#3df05a", "#3df05a", "#3df05a", "#3df05a", "#3df05a", "#ffb030", "#ffb030", "#ff4a3a"]},
     {"id": "main.right", "kind": "meter", "rect": [381.9, 291.6, 2.7, 39.0], "segments": 8, "round": true, "colors": ["#3df05a", "#3df05a", "#3df05a", "#3df05a", "#3df05a", "#ffb030", "#ffb030", "#ff4a3a"]},

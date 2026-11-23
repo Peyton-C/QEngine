@@ -24,9 +24,6 @@ namespace {
 
 constexpr float kTwoPi = 6.28318530718f;
 
-// One encoder click, in the radians the surface turns a knob by.
-constexpr float kEncoderStep = kTwoPi / 24.0f;
-
 // Engine sends lamp colours through gamma 3.5 (JP24_Controller_Device.qml), so
 // they are taken back out of it to look right on screen.
 constexpr float kLampGamma = 3.5f;
@@ -557,10 +554,10 @@ void GuestLink::track(Control& c, const ControlState& st, const Element& e) {
             note(ch, touch, true);
         }
 
-        c.turned += (st.angle - c.prev.angle) / kEncoderStep;
-
-        for (; c.turned >= 1.0f; c.turned -= 1.0f) cc(ch, m.value("cc", json()), 1);
-        for (; c.turned <= -1.0f; c.turned += 1.0f) cc(ch, m.value("cc", json()), 127);
+        const int64_t steps = st.encoderDetents - c.prev.encoderDetents;
+        for (int64_t i = 0; i < std::abs(steps); ++i) {
+            cc(ch, m.value("cc", json()), steps > 0 ? 1 : 127);
+        }
 
         // Dragging turns an encoder, so only a tap that leaves it where it
         // was pushes it.
@@ -644,7 +641,6 @@ void GuestLink::update(Surface& surface, double now) {
             track(c, st, layout->elements[size_t(c.index)]);
         } else {
             c.lastValue = outputOf(layout->elements[size_t(c.index)], st);
-            c.turned = 0.0f;
         }
 
         c.prev = st;

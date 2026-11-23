@@ -63,6 +63,8 @@ struct ScreenPointer {
 struct ControlState {
     float value = 0.0f;  // knobs and faders, 0 to 1
     float angle = 0.0f;  // encoders and jogs, radians clockwise
+    int64_t encoderDetents = 0;
+    float encoderRemainder = 0.0f;  // fraction of a detent left over from the last turn
     float spin = 0.0f;   // jog velocity, radians a second
     float flash = 0.0f;  // pads, fades after a hit
     int quadrant = -1;   // the quarter of a split pad last hit, 0 to 3

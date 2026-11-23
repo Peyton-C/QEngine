@@ -73,7 +73,7 @@ add_executable(qengine-ui
 # does not install, so macOS gets one of its own.
 if(APPLE)
   enable_language(OBJCXX)
-  target_sources(qengine-ui PRIVATE src/TouchMac.mm)
+  target_sources(qengine-ui PRIVATE src/HapticsMac.mm src/TouchMac.mm)
   set_source_files_properties(src/TouchMac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(qengine-ui PRIVATE "-framework AppKit")
 endif()

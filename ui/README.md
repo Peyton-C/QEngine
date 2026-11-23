@@ -38,6 +38,8 @@ A product that differs only in finish or printing is a `variants` entry in its s
 
 Text sizes are cap heights, as measured off a photo, and `fonts.scale` widens a maker whose printing runs wider than ours.
 
+On a Mac with a Force Touch trackpad, drag or scroll an encoder to feel its detents. This works in standalone layouts too.
+
 ## Guest
 Selecting a running Engine, MPC or MPC Sample instance connects the panel to its MIDI port, the one `run_instance.sh` prints, and the status strip shows how that is going. The panel then speaks the product's own protocol through `midibridge` and `midisurface` in the guest, and Engine lights its lamps back, so Engine takes it for the real control surface. See [Audio and MIDI](../docs/engine/AUDIO_MIDI.md#host-midi).
 

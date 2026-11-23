@@ -93,7 +93,6 @@ private:
         int index = -1;
         int ch = 0;
         ControlState prev;
-        float turned = 0.0f;  // encoder steps not yet sent
         float pressAngle = 0.0f;
         int lastValue = -1;  // what a knob, fader or jog last sent
     };

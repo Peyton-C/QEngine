@@ -15,9 +15,30 @@
 
 using nlohmann::json;
 
+#ifdef __APPLE__
+void encoderHaptic();
+#endif
+
 namespace {
 
 constexpr float kPi = 3.14159265f;
+constexpr float kEncoderStep = 2.0f * kPi / 24.0f;
+
+void turnEncoder(ControlState& st, float angle) {
+    // The cap turns freely, but MIDI and the trackpad share one detent for
+    // each full step of travel, including when the direction reverses.
+    st.encoderRemainder += (angle - st.angle) / kEncoderStep;
+    st.angle = angle;
+    const int steps = int(st.encoderRemainder);
+    st.encoderRemainder -= float(steps);
+    st.encoderDetents += steps;
+
+#ifdef __APPLE__
+    for (int i = 0; i < std::abs(steps); ++i) {
+        encoderHaptic();
+    }
+#endif
+}
 
 ImVec4 mix(ImVec4 a, ImVec4 b, float t) {
     return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t,
@@ -1469,7 +1490,7 @@ void Surface::drag(Contact& c, ImVec2 at) {
     if (e.kind == "knob") {
         st.value = std::clamp(c.value + travel / 160.0f, 0.0f, 1.0f);
     } else if (e.kind == "encoder") {
-        st.angle = c.angle + travel * 0.02f;
+        turnEncoder(st, c.angle + travel * 0.02f);
     } else if (e.kind == "fader") {
         const ImVec2 cap = origin_ + vec2(e.p, "at") * scale_;
         const float len = num(e.p, "length", 40) * scale_;
@@ -1589,7 +1610,7 @@ void Surface::scrolled(int index, ImVec2 finger) {
     if (e.kind == "knob") {
         st.value = std::clamp(st.value + travel / 160.0f, 0.0f, 1.0f);
     } else if (e.kind == "encoder") {
-        st.angle += travel * 0.02f;
+        turnEncoder(st, st.angle + travel * 0.02f);
     } else if (e.kind == "fader") {
         const float len = std::max(num(e.p, "length", 40) * scale_, 1.0f);
         const bool vertical = str(e.p, "orient", "v") != "h";

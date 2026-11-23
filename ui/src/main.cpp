@@ -222,6 +222,7 @@ void applyStyle() {
 
     ImVec4* c = s.Colors;
     c[ImGuiCol_WindowBg] = {0.075f, 0.08f, 0.09f, 1};
+    c[ImGuiCol_ModalWindowDimBg] = {0.0f, 0.0f, 0.0f, 0.45f};
     c[ImGuiCol_FrameBg] = {0.13f, 0.14f, 0.16f, 1};
     c[ImGuiCol_FrameBgHovered] = {0.17f, 0.18f, 0.21f, 1};
     c[ImGuiCol_Header] = {0.16f, 0.2f, 0.27f, 1};

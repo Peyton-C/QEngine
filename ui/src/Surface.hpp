@@ -62,6 +62,7 @@ struct ScreenPointer {
 // layout reload.
 struct ControlState {
     float value = 0.0f;  // knobs and faders, 0 to 1
+    float centreOffset = 0.0f;  // movement hidden by the centre snap
     float angle = 0.0f;  // encoders and jogs, radians clockwise
     int64_t encoderDetents = 0;
     float encoderRemainder = 0.0f;  // fraction of a detent left over from the last turn

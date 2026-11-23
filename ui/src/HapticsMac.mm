@@ -1,6 +1,6 @@
 #import <AppKit/AppKit.h>
 
-void encoderHaptic() {
+void detentHaptic() {
     [NSHapticFeedbackManager.defaultPerformer performFeedbackPattern:NSHapticFeedbackPatternGeneric
                                                      performanceTime:NSHapticFeedbackPerformanceTimeNow];
 }

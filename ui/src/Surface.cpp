@@ -16,7 +16,7 @@
 using nlohmann::json;
 
 #ifdef __APPLE__
-void encoderHaptic();
+void detentHaptic();
 #endif
 
 namespace {
@@ -35,9 +35,28 @@ void turnEncoder(ControlState& st, float angle) {
 
 #ifdef __APPLE__
     for (int i = 0; i < std::abs(steps); ++i) {
-        encoderHaptic();
+        detentHaptic();
     }
 #endif
+}
+
+void moveControl(const Element& e, ControlState& st, float value) {
+    constexpr float centre = 0.5f;
+    constexpr float snap = 0.025f;
+    const bool detent = flag(e.p, "detent", e.kind == "knob" && flag(e.p, "bipolar"));
+    const float raw = std::clamp(value, 0.0f, 1.0f);
+    const float next = detent && std::fabs(raw - centre) < snap ? centre : raw;
+
+#ifdef __APPLE__
+    if (detent && ((st.value < centre && next >= centre) || (st.value > centre && next <= centre))) {
+        detentHaptic();
+    }
+#endif
+
+    // Scroll deltas are relative. Keep the movement within the snap zone so
+    // a series of small deltas can still move the control out of the centre.
+    st.centreOffset = raw - next;
+    st.value = next;
 }
 
 ImVec4 mix(ImVec4 a, ImVec4 b, float t) {
@@ -1488,7 +1507,7 @@ void Surface::drag(Contact& c, ImVec2 at) {
     const float travel = (at.x - c.start.x) - (at.y - c.start.y);
 
     if (e.kind == "knob") {
-        st.value = std::clamp(c.value + travel / 160.0f, 0.0f, 1.0f);
+        moveControl(e, st, c.value + travel / 160.0f);
     } else if (e.kind == "encoder") {
         turnEncoder(st, c.angle + travel * 0.02f);
     } else if (e.kind == "fader") {
@@ -1496,12 +1515,7 @@ void Surface::drag(Contact& c, ImVec2 at) {
         const float len = num(e.p, "length", 40) * scale_;
         const bool vertical = str(e.p, "orient", "v") != "h";
         const float t = vertical ? 0.5f - (at.y - cap.y) / len : 0.5f + (at.x - cap.x) / len;
-        st.value = std::clamp(t, 0.0f, 1.0f);
-
-        // Centre detent, for pitch faders.
-        if (flag(e.p, "detent") && std::fabs(st.value - 0.5f) < 0.025f) {
-            st.value = 0.5f;
-        }
+        moveControl(e, st, t);
     } else if (e.kind == "jog") {
         const ImVec2 centre = origin_ + vec2(e.p, "at") * scale_;
         const float now = std::atan2(at.y - centre.y, at.x - centre.x);
@@ -1608,13 +1622,13 @@ void Surface::scrolled(int index, ImVec2 finger) {
     const float travel = finger.x - finger.y;
 
     if (e.kind == "knob") {
-        st.value = std::clamp(st.value + travel / 160.0f, 0.0f, 1.0f);
+        moveControl(e, st, st.value + st.centreOffset + travel / 160.0f);
     } else if (e.kind == "encoder") {
         turnEncoder(st, st.angle + travel * 0.02f);
     } else if (e.kind == "fader") {
         const float len = std::max(num(e.p, "length", 40) * scale_, 1.0f);
         const bool vertical = str(e.p, "orient", "v") != "h";
-        st.value = std::clamp(st.value + (vertical ? -finger.y : finger.x) / len, 0.0f, 1.0f);
+        moveControl(e, st, st.value + st.centreOffset + (vertical ? -finger.y : finger.x) / len);
     } else if (e.kind == "jog") {
         // A scroll carries no position, only how far the finger went, and
         // the pointer stays where the touch began. Turning by the finger's
@@ -1632,6 +1646,7 @@ void Surface::reset(int index) {
     const Element& e = layout_->elements[size_t(index)];
     ControlState& st = state_[e.id];
     st.value = num(e.p, "value", 0.0f);
+    st.centreOffset = 0.0f;
     st.spin = 0.0f;
 }
 

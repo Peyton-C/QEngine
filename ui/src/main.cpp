@@ -426,7 +426,7 @@ void routeTouch(App& app, const TouchEvent& t) {
 
     if (t.phase == TouchEvent::Down) {
         // The Screen view draws no panel, so a finger there is a mouse.
-        if (app.options.view != View::Screen && app.surface.contains(t.pos)) {
+        if (!app.settingsOpen && app.options.view != View::Screen && app.surface.contains(t.pos)) {
             app.surfaceTouches.insert(t.id);
         } else if (app.uiTouch == 0) {
             app.uiTouch = t.id;
@@ -472,6 +472,11 @@ int main(int argc, char** argv) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
+    }
+
+    if (!shot) {
+        app.settingsFile = settingsPath();
+        app.settings = Settings::load(app.settingsFile);
     }
 
     SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -582,7 +587,7 @@ int main(int argc, char** argv) {
                 running = false;
             }
 
-            if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+            if (event.type == SDL_EVENT_MOUSE_WHEEL && !app.settingsOpen) {
                 app.surface.scroll(fingerMotion(event.wheel));
             }
         }
@@ -661,6 +666,7 @@ int main(int argc, char** argv) {
         SDL_SubmitGPUCommandBuffer(cmd);
     }
 
+    saveSettings(app);
     disconnectGuest(app);
     SDL_WaitForGPUIdle(app.gpu);
     app.screen.release();

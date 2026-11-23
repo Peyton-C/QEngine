@@ -170,7 +170,7 @@ void deviceStep(App& app) {
     if (d >= 0) {
         SurfaceOptions o;
         o.view = View::Drawn;
-        w.preview.draw(o, app.fonts);
+        w.preview.draw(o, app.fonts, app.settings);
     } else {
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 at = ImGui::GetCursorScreenPos() + avail * 0.5f - ImVec2(48, 48);

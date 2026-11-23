@@ -349,14 +349,19 @@ void sidebarToggle(App& app) {
     if (iconButton("##sidebar", Icon::Sidebar, tip)) app.sidebarOpen = !app.sidebarOpen;
 }
 
+void settingsButton(App& app) {
+    if (iconButton("##settings", Icon::Settings, "Settings")) app.settingsOpen = true;
+}
+
 void welcome(App& app) {
-    // Without a toolbar here, the toggle sits alone where the toolbar has it.
     const ImVec2 top = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
     ImGui::SetCursorScreenPos(top + ImVec2(14, 16));
     sidebarToggle(app);
+    ImGui::SetCursorScreenPos(top + ImVec2(avail.x - 48, 16));
+    settingsButton(app);
     ImGui::SetCursorScreenPos(top);
 
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
     const ImVec2 t(430, 76);
     const float gap = 10;
     const ImVec2 row(t.x, t.y * 3 + gap * 2);
@@ -449,6 +454,9 @@ void toolbar(App& app, const Instance* inst) {
         ImGui::SetCursorScreenPos(ImVec2(x, min.y + (h - 32) * 0.5f));
         x -= 8;
     };
+
+    place(32);
+    settingsButton(app);
 
     if (inst) {
         place(32);
@@ -935,7 +943,7 @@ void instancePane(App& app, const Instance& inst) {
         // With a guest connected its lamps are the ones shown.
         if (app.link.connected()) app.options.layoutLamps = true;
 
-        app.surface.draw(app.options, app.fonts);
+        app.surface.draw(app.options, app.fonts, app.settings);
         app.link.update(app.surface, ImGui::GetTime());
 
         // Every frame, so a press dragged off the screen still lets go; only
@@ -967,12 +975,52 @@ void layoutPane(App& app) {
     if (app.options.view == View::Screen) {
         bezelScreen(app, nullptr, app.devices[size_t(app.current)].layout);
     } else {
-        app.surface.draw(app.options, app.fonts);
+        app.surface.draw(app.options, app.fonts, app.settings);
     }
 
     ImGui::EndChild();
     ImGui::SetCursorScreenPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
     statusStrip(app, nullptr);
+}
+
+void settingsModal(App& app) {
+    if (!app.settingsOpen) return;
+
+    if (!ImGui::IsPopupOpen("Settings")) ImGui::OpenPopup("Settings");
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({std::min(400.0f, vp->WorkSize.x - 32), 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.15f, 0.15f, 0.17f, 1));
+    const bool shown = ImGui::BeginPopupModal("Settings", &app.settingsOpen,
+                                              ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+
+    if (shown) {
+        ImGui::TextUnformatted("Jogwheel sensitivity");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::SliderFloat("##jogSensitivity", &app.settings.jogSensitivity, Settings::minJogSensitivity,
+                               Settings::maxJogSensitivity, "%.2fx",
+                               ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+            app.settingsDirty = true;
+        }
+
+#ifdef __APPLE__
+        if (ImGui::Checkbox("Enable haptics", &app.settings.haptics)) app.settingsDirty = true;
+#endif
+
+        ImGui::Separator();
+        if (pillButton("Done", Icon::Check, true) || ImGui::Shortcut(ImGuiKey_Escape)) {
+            app.settingsOpen = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    if (!app.settingsOpen) saveSettings(app);
 }
 
 void deleteModal(App& app) {
@@ -1232,11 +1280,23 @@ void showMessage(App& app, const std::string& text) {
     std::fprintf(stderr, "%s\n", text.c_str());
 }
 
+void saveSettings(App& app) {
+    if (!app.settingsDirty) return;
+
+    if (app.settings.save(app.settingsFile)) {
+        app.settingsDirty = false;
+    } else {
+        showMessage(app, "Could not save settings.");
+    }
+}
+
 void drawApp(App& app) {
     app.instances = app.machines->list();
 
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) wizardOpen(app);
-    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Super | ImGuiKey_S)) app.sidebarOpen = !app.sidebarOpen;
+    if (!app.settingsOpen) {
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) wizardOpen(app);
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Super | ImGuiKey_S)) app.sidebarOpen = !app.sidebarOpen;
+    }
 
     // The selected instance can disappear, deleted from a terminal.
     if (app.pane == Pane::Instance && !selectedInstance(app)) {
@@ -1268,6 +1328,7 @@ void drawApp(App& app) {
     ImGui::End();
     ImGui::PopStyleVar();
 
+    settingsModal(app);
     wizardDraw(app);
     deleteModal(app);
     messageToast(app);

@@ -17,6 +17,14 @@ Builds and VMs run detached, with their output in `build.log` and `console.log` 
 
 A product with no layout shows its screen on its own. `--instance NAME` selects an instance at start, and `--new` opens the sheet, on a product with `qengine-ui JP24 --new`.
 
+## Settings
+Open Settings with the gear on the welcome screen or toolbar. QEngine saves these settings for your user account and applies them to every device.
+
+| Setting | What |
+| --- | --- |
+| Jogwheel sensitivity | Scales jog movement from drags and scrolls, from 0.25× to 4×. The default is 1×. |
+| Enable haptics | On by default on macOS. Turn it off to mute trackpad feedback from encoders, knobs and faders. |
+
 ## Layouts
 Each device is one file in `layouts/`, in millimetres from the faceplate's top left, so every device shares the same drawing code and a button is the same size on all of them. `defaults` sets each kind's style once per device, and `templates` lets a two deck unit draw its deck once and place it twice. An optional `front` block adds the front panel, drawn below the top with its own size, body and elements, and sharing the top's defaults and templates. The app reloads a layout when its file is saved.
 

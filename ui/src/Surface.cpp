@@ -24,7 +24,7 @@ namespace {
 constexpr float kPi = 3.14159265f;
 constexpr float kEncoderStep = 2.0f * kPi / 24.0f;
 
-void turnEncoder(ControlState& st, float angle) {
+void turnEncoder(ControlState& st, float angle, [[maybe_unused]] bool haptics) {
     // The cap turns freely, but MIDI and the trackpad share one detent for
     // each full step of travel, including when the direction reverses.
     st.encoderRemainder += (angle - st.angle) / kEncoderStep;
@@ -34,13 +34,15 @@ void turnEncoder(ControlState& st, float angle) {
     st.encoderDetents += steps;
 
 #ifdef __APPLE__
-    for (int i = 0; i < std::abs(steps); ++i) {
-        detentHaptic();
+    if (haptics) {
+        for (int i = 0; i < std::abs(steps); ++i) {
+            detentHaptic();
+        }
     }
 #endif
 }
 
-void moveControl(const Element& e, ControlState& st, float value) {
+void moveControl(const Element& e, ControlState& st, float value, [[maybe_unused]] bool haptics) {
     constexpr float centre = 0.5f;
     constexpr float snap = 0.025f;
     const bool detent = flag(e.p, "detent", e.kind == "knob" && flag(e.p, "bipolar"));
@@ -52,7 +54,7 @@ void moveControl(const Element& e, ControlState& st, float value) {
     const bool crossedCentre = detent && ((st.value < centre && next >= centre) ||
                                           (st.value > centre && next <= centre));
 
-    if (reachedEnd || crossedCentre) {
+    if (haptics && (reachedEnd || crossedCentre)) {
         detentHaptic();
     }
 #endif
@@ -1465,7 +1467,7 @@ bool Surface::onScreen(ImVec2 at, ImVec2* uv) const {
     return true;
 }
 
-void Surface::begin(uint64_t who, int index, ImVec2 at) {
+void Surface::begin(uint64_t who, int index, ImVec2 at, const Settings& settings) {
     const Element& e = layout_->elements[size_t(index)];
     ControlState& st = state_[e.id];
 
@@ -1498,10 +1500,10 @@ void Surface::begin(uint64_t who, int index, ImVec2 at) {
 
     // A fader cap jumps to where it is grabbed, as a real one would be
     // grabbed and moved.
-    drag(c, at);
+    drag(c, at, settings);
 }
 
-void Surface::drag(Contact& c, ImVec2 at) {
+void Surface::drag(Contact& c, ImVec2 at, const Settings& settings) {
     c.pos = at;
     const Element& e = layout_->elements[size_t(c.index)];
     ControlState& st = state_[e.id];
@@ -1511,15 +1513,15 @@ void Surface::drag(Contact& c, ImVec2 at) {
     const float travel = (at.x - c.start.x) - (at.y - c.start.y);
 
     if (e.kind == "knob") {
-        moveControl(e, st, c.value + travel / 160.0f);
+        moveControl(e, st, c.value + travel / 160.0f, settings.haptics);
     } else if (e.kind == "encoder") {
-        turnEncoder(st, c.angle + travel * 0.02f);
+        turnEncoder(st, c.angle + travel * 0.02f, settings.haptics);
     } else if (e.kind == "fader") {
         const ImVec2 cap = origin_ + vec2(e.p, "at") * scale_;
         const float len = num(e.p, "length", 40) * scale_;
         const bool vertical = str(e.p, "orient", "v") != "h";
         const float t = vertical ? 0.5f - (at.y - cap.y) / len : 0.5f + (at.x - cap.x) / len;
-        moveControl(e, st, t);
+        moveControl(e, st, t, settings.haptics);
     } else if (e.kind == "jog") {
         const ImVec2 centre = origin_ + vec2(e.p, "at") * scale_;
         const float now = std::atan2(at.y - centre.y, at.x - centre.x);
@@ -1529,6 +1531,7 @@ void Surface::drag(Contact& c, ImVec2 at) {
         if (delta < -kPi) delta += 2 * kPi;
 
         c.lastJogAngle = now;
+        delta *= settings.jogSensitivity;
         st.angle += delta;
 
         const float dt = std::max(ImGui::GetIO().DeltaTime, 1.0f / 240.0f);
@@ -1556,7 +1559,7 @@ void Surface::end(uint64_t who) {
     state_[layout_->elements[size_t(index)].id].pressed = false;
 }
 
-void Surface::touches() {
+void Surface::touches(const Settings& settings) {
     // A finger moves several times a frame. Only its last position counts,
     // so a jog's speed is measured over a whole frame as the mouse's is.
     std::unordered_map<uint64_t, ImVec2> moved;
@@ -1566,7 +1569,7 @@ void Surface::touches() {
         auto c = contacts_.find(id);
 
         if (m != moved.end() && c != contacts_.end()) {
-            drag(c->second, m->second);
+            drag(c->second, m->second, settings);
         }
 
         if (m != moved.end()) {
@@ -1592,7 +1595,7 @@ void Surface::touches() {
             const int index = elementAt(t.pos);
 
             if (index >= 0) {
-                begin(t.id, index, t.pos);
+                begin(t.id, index, t.pos, settings);
             } else if (screenHolder_ == kNobody && onScreen(t.pos, &screenPointer_.uv)) {
                 screenHolder_ = t.id;
                 screenPointer_.inside = true;
@@ -1610,14 +1613,14 @@ void Surface::touches() {
         auto c = contacts_.find(id);
 
         if (c != contacts_.end()) {
-            drag(c->second, pos);
+            drag(c->second, pos, settings);
         }
     }
 
     touches_.clear();
 }
 
-void Surface::scrolled(int index, ImVec2 finger) {
+void Surface::scrolled(int index, ImVec2 finger, const Settings& settings) {
     const Element& e = layout_->elements[size_t(index)];
     ControlState& st = state_[e.id];
 
@@ -1626,13 +1629,13 @@ void Surface::scrolled(int index, ImVec2 finger) {
     const float travel = finger.x - finger.y;
 
     if (e.kind == "knob") {
-        moveControl(e, st, st.value + st.centreOffset + travel / 160.0f);
+        moveControl(e, st, st.value + st.centreOffset + travel / 160.0f, settings.haptics);
     } else if (e.kind == "encoder") {
-        turnEncoder(st, st.angle + travel * 0.02f);
+        turnEncoder(st, st.angle + travel * 0.02f, settings.haptics);
     } else if (e.kind == "fader") {
         const float len = std::max(num(e.p, "length", 40) * scale_, 1.0f);
         const bool vertical = str(e.p, "orient", "v") != "h";
-        moveControl(e, st, st.value + st.centreOffset + (vertical ? -finger.y : finger.x) / len);
+        moveControl(e, st, st.value + st.centreOffset + (vertical ? -finger.y : finger.x) / len, settings.haptics);
     } else if (e.kind == "jog") {
         // A scroll carries no position, only how far the finger went, and
         // the pointer stays where the touch began. Turning by the finger's
@@ -1641,7 +1644,8 @@ void Surface::scrolled(int index, ImVec2 finger) {
         // coast.
         const ImVec2 r = ImGui::GetIO().MousePos - (origin_ + vec2(e.p, "at") * scale_);
         const float r2 = std::max(r.x * r.x + r.y * r.y, 400.0f);
-        st.angle += (r.x * finger.y - r.y * finger.x) / r2;
+        const float delta = (r.x * finger.y - r.y * finger.x) / r2;
+        st.angle += delta * settings.jogSensitivity;
         st.spin = 0.0f;
     }
 }
@@ -1654,7 +1658,7 @@ void Surface::reset(int index) {
     st.spin = 0.0f;
 }
 
-void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
+void Surface::draw(const SurfaceOptions& options, const Fonts& fonts, const Settings& settings) {
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
 
@@ -1710,7 +1714,7 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
     }
 
     if (ImGui::IsItemActivated() && hovered_ >= 0) {
-        begin(kMouse, hovered_, io.MousePos);
+        begin(kMouse, hovered_, io.MousePos, settings);
     } else if (ImGui::IsItemActivated() && screenHolder_ == kNobody && onScreen(io.MousePos)) {
         screenHolder_ = kMouse;
     }
@@ -1732,13 +1736,13 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
 
     if (auto it = contacts_.find(kMouse); it != contacts_.end()) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            drag(it->second, io.MousePos);
+            drag(it->second, io.MousePos, settings);
         } else {
             end(kMouse);
         }
     }
 
-    touches();
+    touches(settings);
 
     if (canvasHovered && hovered_ >= 0) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -1748,7 +1752,7 @@ void Surface::draw(const SurfaceOptions& options, const Fonts& fonts) {
         }
 
         if (scroll_.x != 0.0f || scroll_.y != 0.0f) {
-            scrolled(hovered_, scroll_);
+            scrolled(hovered_, scroll_, settings);
         }
     }
 

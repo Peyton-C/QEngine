@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Layout.hpp"
+#include "Settings.hpp"
 #include "Touch.hpp"
 
 #include "imgui.h"
@@ -88,7 +89,7 @@ public:
 
     // Fills the current window's remaining space with the device and handles
     // the mouse on it.
-    void draw(const SurfaceOptions& options, const Fonts& fonts);
+    void draw(const SurfaceOptions& options, const Fonts& fonts, const Settings& settings);
 
     // The control under the mouse, or null.
     const Element* hovered() const;
@@ -130,11 +131,11 @@ private:
     static constexpr uint64_t kMouse = ~uint64_t(0);
 
     int elementAt(ImVec2 screen) const;
-    void begin(uint64_t who, int index, ImVec2 at);
-    void drag(Contact& c, ImVec2 at);
+    void begin(uint64_t who, int index, ImVec2 at, const Settings& settings);
+    void drag(Contact& c, ImVec2 at, const Settings& settings);
     void end(uint64_t who);
-    void touches();
-    void scrolled(int index, ImVec2 finger);
+    void touches(const Settings& settings);
+    void scrolled(int index, ImVec2 finger, const Settings& settings);
     void reset(int index);
     bool hit(const Element& e, ImVec2 mouseMm) const;
     bool onScreen(ImVec2 at, ImVec2* uv = nullptr) const;

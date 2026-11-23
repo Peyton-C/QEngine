@@ -5,6 +5,7 @@
 #include "Machines.hpp"
 #include "Midi.hpp"
 #include "Screen.hpp"
+#include "Settings.hpp"
 #include "Surface.hpp"
 #include "Texture.hpp"
 
@@ -81,6 +82,10 @@ struct App {
     int current = -1;  // the layout drawn, or -1 for none
     Surface surface;
     SurfaceOptions options;
+    Settings settings;
+    std::string settingsFile;
+    bool settingsOpen = false;
+    bool settingsDirty = false;
     Texture overlay;
     double lastReloadCheck = 0;
 
@@ -124,6 +129,7 @@ int layoutFor(const App& app, const std::string& product);
 const Instance* selectedInstance(const App& app);
 void selectInstance(App& app, const std::string& name);
 void showMessage(App& app, const std::string& text);
+void saveSettings(App& app);
 
 // Wizard.cpp: the New Device sheet.
 void wizardOpen(App& app, const Instance* edit = nullptr);
@@ -136,6 +142,7 @@ enum class Icon : uint32_t {
     Stop = 0xF04DB,         // stop
     Plus = 0xF0415,         // plus
     More = 0xF01D8,         // dots-horizontal
+    Settings = 0xF08BB,     // cog-outline
     Console = 0xF018D,      // console
     Eye = 0xF06D0,          // eye-outline
     Folder = 0xF0256,       // folder-outline

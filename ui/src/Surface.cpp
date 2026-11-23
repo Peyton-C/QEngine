@@ -48,7 +48,11 @@ void moveControl(const Element& e, ControlState& st, float value) {
     const float next = detent && std::fabs(raw - centre) < snap ? centre : raw;
 
 #ifdef __APPLE__
-    if (detent && ((st.value < centre && next >= centre) || (st.value > centre && next <= centre))) {
+    const bool reachedEnd = next != st.value && (next == 0.0f || next == 1.0f);
+    const bool crossedCentre = detent && ((st.value < centre && next >= centre) ||
+                                          (st.value > centre && next <= centre));
+
+    if (reachedEnd || crossedCentre) {
         detentHaptic();
     }
 #endif
